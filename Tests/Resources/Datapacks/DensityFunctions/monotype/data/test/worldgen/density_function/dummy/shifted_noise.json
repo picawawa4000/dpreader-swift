@@ -1,0 +1,9 @@
+{
+    "type": "minecraft:shifted_noise",
+    "shift_x": 1.5,
+    "shift_y": 3.0,
+    "shift_z": 5.0,
+    "xz_scale": 0.5,
+    "y_scale": 0.75,
+    "noise": "test:continents"
+}

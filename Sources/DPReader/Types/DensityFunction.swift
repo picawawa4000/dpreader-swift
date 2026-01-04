@@ -244,9 +244,9 @@ final class BakedNoise: DensityFunctionNoise {
 
     enum OperationType: String, Decodable {
         case ADD = "minecraft:add"
-        case MULTIPLY = "minecraft:multiply"
-        case MAXIMUM = "minecraft:maximum"
-        case MINIMUM = "minecraft:minimum"
+        case MULTIPLY = "minecraft:mul"
+        case MAXIMUM = "minecraft:max"
+        case MINIMUM = "minecraft:min"
     }
 
     private enum CodingKeys: String, CodingKey {
