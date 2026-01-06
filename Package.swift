@@ -5,9 +5,10 @@ import PackageDescription
 
 let package = Package(
     name: "DPReader",
-    platforms: [
-        SupportedPlatform.macOS(SupportedPlatform.MacOSVersion.v15)
-    ],
+    // Is this necessary?
+//    platforms: [
+//        SupportedPlatform.macOS(SupportedPlatform.MacOSVersion.v15)
+//    ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(

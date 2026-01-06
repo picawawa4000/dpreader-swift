@@ -7,17 +7,18 @@ import TestVisible
 protocol DensityFunction: Codable {
     /// Samples this density function at the given position.
     /// This function is not particularly supported on raw density functions for a variety of reasons.
-    /// It is best to use `bake` instead.
+    /// It is best to use `bake` instead before sampling.
     func sample(pos: Pos3D) -> Double
-    func bake(withBaker: DensityFunctionBaker) -> DensityFunction
+    /// "Bake" this density function to prepare it for repeated usage.
+    func bake(withBaker: DensityFunctionBaker) throws -> DensityFunction
 }
 
 /// "Bakes" a density function; that is, prepares it for proper usage.
 protocol DensityFunctionBaker {
     /// "Bakes" a noise definition; that is, converts it to a sampler ready for usage.
-    func bake(noise: DensityFunctionNoise) -> BakedNoise
+    func bake(noise: DensityFunctionNoise) throws -> BakedNoise
     /// "Bakes" a reference; that is, converts it to a non-reference density function.
-    func bake(referenceDensityFunction: ReferenceDensityFunction) -> DensityFunction
+    func bake(referenceDensityFunction: ReferenceDensityFunction) throws -> DensityFunction
 }
 
 /// Represents a noise within a density function.
@@ -75,7 +76,7 @@ final class BakedNoise: DensityFunctionNoise {
 
 /// A density function that references another density function via a namespaced ID.
 @TestVisible(property: "testingAttributes") final class ReferenceDensityFunction: DensityFunction {
-    private let targetKey: RegistryKey<DensityFunction>
+    public let targetKey: RegistryKey<DensityFunction>
     private var densityFunctionRegistry: Registry<DensityFunction>? = nil
 
     init(target: String) {
@@ -109,8 +110,8 @@ final class BakedNoise: DensityFunctionNoise {
         return registry.get(self.targetKey)!.sample(pos: pos)
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
-        return baker.bake(referenceDensityFunction: self)
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return try baker.bake(referenceDensityFunction: self)
     }
 }
 
@@ -182,8 +183,8 @@ final class BakedNoise: DensityFunctionNoise {
         return e / 2.0 - e * e * e / 24.0
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
-        return UnaryDensityFunction(operand: self.operand.bake(withBaker: baker), type: self.operation)
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return UnaryDensityFunction(operand: try self.operand.bake(withBaker: baker), type: self.operation)
     }
 
     enum OperationType: String, Decodable {
@@ -238,8 +239,8 @@ final class BakedNoise: DensityFunctionNoise {
         }
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
-        return BinaryDensityFunction(firstOperand: self.first.bake(withBaker: baker), secondOperand: self.second.bake(withBaker: baker), type: self.operation)
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return BinaryDensityFunction(firstOperand: try self.first.bake(withBaker: baker), secondOperand: try self.second.bake(withBaker: baker), type: self.operation)
     }
 
     enum OperationType: String, Decodable {
@@ -287,8 +288,8 @@ final class BakedNoise: DensityFunctionNoise {
         return clamp(value: self.input.sample(pos: pos), lowerBound: self.lowerBound, upperBound: self.upperBound)
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
-        return ClampDensityFunction(input: self.input.bake(withBaker: baker), lowerBound: self.lowerBound, upperBound: self.upperBound)
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return ClampDensityFunction(input: try self.input.bake(withBaker: baker), lowerBound: self.lowerBound, upperBound: self.upperBound)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -390,13 +391,13 @@ final class BakedNoise: DensityFunctionNoise {
         return self.whenOutOfRange.sample(pos: pos)
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return RangeChoice(
-            inputChoice: self.inputChoice.bake(withBaker: baker),
+            inputChoice: try self.inputChoice.bake(withBaker: baker),
             minInclusive: self.minInclusive,
             maxExclusive: self.maxExclusive,
-            whenInRange: self.whenInRange.bake(withBaker: baker),
-            whenOutOfRange: self.whenInRange.bake(withBaker: baker)
+            whenInRange: try self.whenInRange.bake(withBaker: baker),
+            whenOutOfRange: try self.whenInRange.bake(withBaker: baker)
         )
     }
 
@@ -447,9 +448,9 @@ final class BakedNoise: DensityFunctionNoise {
         }
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return ShiftDensityFunction(
-            noise: baker.bake(noise: self.noise),
+            noise: try baker.bake(noise: self.noise),
             shiftType: self.shiftType
         )
     }
@@ -523,12 +524,12 @@ final class BakedNoise: DensityFunctionNoise {
         return self.noise.sample(x: x, y: y, z: z)
     }
 
-    func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return ShiftedNoise(
-            noise: baker.bake(noise: self.noise),
-            shiftX: self.shiftX.bake(withBaker: baker),
-            shiftY: self.shiftY.bake(withBaker: baker),
-            shiftZ: self.shiftZ.bake(withBaker: baker),
+            noise: try baker.bake(noise: self.noise),
+            shiftX: try self.shiftX.bake(withBaker: baker),
+            shiftY: try self.shiftY.bake(withBaker: baker),
+            shiftZ: try self.shiftZ.bake(withBaker: baker),
             scaleXZ: self.scaleXZ,
             scaleY: self.scaleY
         )
