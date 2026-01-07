@@ -158,13 +158,14 @@ public struct XoroshiroRandom: Random {
 
     public mutating func next(bound: UInt32) -> UInt32 {
         let l = UInt64(self.nextInt());
-        let m = l &* UInt64(bound);
+        var m = l &* UInt64(bound);
         var n = m & XoroshiroRandom.BITMASK_32;
 
-        if (n < bound) {
+        if n < bound {
             let j = (~bound + 1) % bound
             while n < j {
-                n = (UInt64(self.nextInt()) &* UInt64(bound)) & XoroshiroRandom.BITMASK_32
+                m = UInt64(self.nextInt()) &* UInt64(bound)
+                n = m & XoroshiroRandom.BITMASK_32
             }
         }
 

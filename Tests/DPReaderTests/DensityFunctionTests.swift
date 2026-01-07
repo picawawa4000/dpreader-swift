@@ -164,17 +164,17 @@ private enum TestingError: Error {
         "argument2": 2.0
     ]))
     #expect(try checkJSON(mulData, [
-        "type": "minecraft:multiply",
+        "type": "minecraft:mul",
         "argument1": 1.5,
         "argument2": 2.0
     ]))
     #expect(try checkJSON(maxData, [
-        "type": "minecraft:maximum",
+        "type": "minecraft:max",
         "argument1": 1.5,
         "argument2": 2.0
     ]))
     #expect(try checkJSON(minData, [
-        "type": "minecraft:minimum",
+        "type": "minecraft:min",
         "argument1": 1.5,
         "argument2": 2.0
     ]))
@@ -271,7 +271,7 @@ private enum TestingError: Error {
     """.data(using: .utf8)!
     let decoder = JSONDecoder()
     let densityFunction = try decoder.decode(DensityFunctionInitializer.self, from: data).value
-    #expect((densityFunction as! ReferenceDensityFunction).testingAttributes.targetKey.name == "minecraft:erosion")
+    #expect((densityFunction as! ReferenceDensityFunction).targetKey.name == "minecraft:erosion")
 }
 
 @Test func testDecodingForConstant() async throws {

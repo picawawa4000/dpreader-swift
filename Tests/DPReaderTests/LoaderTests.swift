@@ -3,7 +3,7 @@ import Foundation
 @testable import DPReader
 
 private func testReference(densityFunction: DensityFunction, expectedID: String) -> Bool {
-    return densityFunction is ReferenceDensityFunction && (densityFunction as! ReferenceDensityFunction).testingAttributes.targetKey.name == expectedID
+    return densityFunction is ReferenceDensityFunction && (densityFunction as! ReferenceDensityFunction).targetKey.name == expectedID
 }
 private func testConstant(densityFunction: DensityFunction, expectedValue: Double) -> Bool {
     return densityFunction is ConstantDensityFunction && (densityFunction as! ConstantDensityFunction).testingAttributes.value == expectedValue
