@@ -4,6 +4,14 @@ fileprivate extension URL {
     var isDirectory: Bool {
        (try? resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
+
+    func appendingDirectory(path: String) -> URL {
+        if #available(macOS 13.0, *) {
+            return self.appending(component: path, directoryHint: .isDirectory)
+        } else {
+            return URL(fileURLWithPath: self.relativeString + path, relativeTo: self.baseURL)
+        }
+    }
 }
 
 public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
@@ -27,10 +35,10 @@ public final class DataPack {
     }
 
     public init(fromRootPath rootPath: URL, loadingOptions options: DataPackRegistryLoadingOptions) throws {
-        let namespacesPath = rootPath.appending(component: "data", directoryHint: .isDirectory)
+        let namespacesPath = rootPath.appendingDirectory(path: "data")
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
             let namespace = namespaceURL.lastPathComponent
-            let worldgenURL = namespaceURL.appending(component: "worldgen")
+            let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
 
             if options.contains(.loadDensityFunctions) { try self.loadDensityFunctions(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if options.contains(.loadNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
@@ -42,7 +50,7 @@ public final class DataPack {
     }
 
     private func loadDensityFunctions(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
-        let root = worldgenURL.appending(component: "density_function")
+        let root = worldgenURL.appendingDirectory(path: "density_function")
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
@@ -57,7 +65,7 @@ public final class DataPack {
     }
 
     private func loadNoises(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
-        let root = worldgenURL.appending(component: "noise")
+        let root = worldgenURL.appendingDirectory(path: "noise")
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
