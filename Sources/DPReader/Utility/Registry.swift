@@ -27,15 +27,23 @@ public final class Registry<T> {
     /// Adds all elements of other to self.
     /// - Parameter other: The other registry.
     public func mergeDown(with other: Registry<T>) {
-        other.map { (key, value) in
+        other.forEach { (key, value) in
             self.registry[key] = value
         }
     }
 
     /// Call body on every key-value pair in this registry.
     /// - Parameter body: The function to call on every key-value pair in this registry.
-    public func map(_ body: ((key: RegistryKey<T>, value: T)) -> Void) {
-        self.registry.forEach(body)
+    public func forEach(_ body: ((key: RegistryKey<T>, value: T)) throws -> Void) rethrows {
+        try self.registry.forEach(body)
+    }
+
+    /// Replace every value in each key-value pair in this registry with the output of calling body on it.
+    /// - Parameter body: The function to call and get the new value from.
+    public func map(_ body: ((key: RegistryKey<T>, value: T)) throws -> T) rethrows {
+        self.registry = try self.registry.reduce(into: [:]) { partialResult, pair in
+            partialResult[pair.key] = try body(pair)
+        }
     }
 }
 
