@@ -6,24 +6,28 @@ fileprivate extension URL {
     }
 }
 
-struct DataPackRegistryLoadingOptions: OptionSet {
-    var rawValue: UInt64
+public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
+    public var rawValue: UInt64
 
-    static let loadDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
-    static let loadNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
+    public init(rawValue: UInt64) {
+        self.rawValue = rawValue
+    }
+
+    public static let loadDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
+    public static let loadNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
 }
 
 /// Represents a data pack.
-final class DataPack {
-    let densityFunctionRegistry = Registry<DensityFunction>()
-    let noiseRegistry = Registry<NoiseDefinition>()
+public final class DataPack {
+    public let densityFunctionRegistry = Registry<DensityFunction>()
+    public let noiseRegistry = Registry<NoiseDefinition>()
 
-    convenience init(fromRootPath rootPath: URL) throws {
+    public convenience init(fromRootPath rootPath: URL) throws {
         try self.init(fromRootPath: rootPath, loadingOptions: DataPackRegistryLoadingOptions(rawValue: UInt64.max))
     }
 
-    init(fromRootPath rootPath: URL, loadingOptions options: DataPackRegistryLoadingOptions) throws {
-        let namespacesPath = rootPath.appending(path: "data", directoryHint: .isDirectory)
+    public init(fromRootPath rootPath: URL, loadingOptions options: DataPackRegistryLoadingOptions) throws {
+        let namespacesPath = rootPath.appending(component: "data", directoryHint: .isDirectory)
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
             let namespace = namespaceURL.lastPathComponent
             let worldgenURL = namespaceURL.appending(component: "worldgen")

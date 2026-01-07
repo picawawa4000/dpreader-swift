@@ -6,7 +6,7 @@ import CryptoSwift
 
 /// ----- RNG -----
 
-protocol Random {
+public protocol Random {
     // is this necessary?
     /// The random splitter type associated with this random number generator.
     associatedtype Splitter: RandomSplitter
@@ -18,7 +18,7 @@ protocol Random {
     mutating func skip(calls: UInt)
 }
 
-protocol RandomSplitter {
+public protocol RandomSplitter {
     /// The random type returned by this splitter's methods.
     associatedtype ReturnedRandom: Random
 
@@ -28,28 +28,28 @@ protocol RandomSplitter {
 }
 
 /// A basic LCG used by Minecraft in a couple of places.
-struct CheckedRandom: Random {
+public struct CheckedRandom: Random {
     private var seed: UInt64 = 0
 
     private static let MULTIPLIER: UInt64 = 25214903917
     private static let INCREMENT: UInt64 = 11
     private static let BITMASK_48: UInt64 = 0xFFFFFFFFFFFF
 
-    init(seed: UInt64) {
+    public init(seed: UInt64) {
         self.setSeed(newSeed: seed)
     }
 
-    mutating func setSeed(newSeed seed: UInt64) {
+    public mutating func setSeed(newSeed seed: UInt64) {
         self.seed = (seed ^ 25214903917) & CheckedRandom.BITMASK_48
     }
 
-    mutating func next(bits: UInt8) -> UInt32 {
+    public mutating func next(bits: UInt8) -> UInt32 {
         self.seed = (self.seed &* CheckedRandom.MULTIPLIER &+ CheckedRandom.INCREMENT) & CheckedRandom.BITMASK_48
         // masking to ensure that the value is within bounds (how to not do that?)
         return UInt32((self.seed >> (48 - bits)) & ((1 << 32) - 1))
     }
 
-    mutating func next(bound: UInt32) -> UInt32 {
+    public mutating func next(bound: UInt32) -> UInt32 {
         if ((bound & (bound - 1)) == 0) {
             return UInt32((UInt64(bound) * UInt64(self.next(bits: 31))) >> 31);
         } else {
@@ -62,22 +62,22 @@ struct CheckedRandom: Random {
         }
     }
 
-    mutating func nextLong() -> UInt64 {
+    public mutating func nextLong() -> UInt64 {
         return UInt64(self.next(bits: 32)) << 32 + UInt64(self.next(bits: 32))
     }
 
-    mutating func nextDouble() -> Double {
+    public mutating func nextDouble() -> Double {
         let i: UInt64 = UInt64(self.next(bits: 26));
         let j: UInt64 = UInt64(self.next(bits: 27));
         let l = (UInt64(i) << 27) + j;
         return Double(l) * 1.110223E-16;
     }
 
-    mutating func nextSplitter() -> some RandomSplitter {
+    public mutating func nextSplitter() -> some RandomSplitter {
         return CheckedRandomSplitter(seed: self.nextLong())
     }
 
-    mutating func skip(calls: UInt) {
+    public mutating func skip(calls: UInt) {
         for _ in 0..<calls {
             let _ = self.next(bits: 32)
         }
@@ -88,33 +88,33 @@ struct CheckedRandom: Random {
     }
 }
 
-struct CheckedRandomSplitter: RandomSplitter {
-    internal typealias ReturnedRandom = CheckedRandom
+public struct CheckedRandomSplitter: RandomSplitter {
+    public typealias ReturnedRandom = CheckedRandom
 
     private let seed: UInt64
 
-    init(seed: UInt64) {
+    public init(seed: UInt64) {
         self.seed = seed
     }
 
-    func split(usingPos pos: BlockPos) -> ReturnedRandom {
+    public func split(usingPos pos: BlockPos) -> ReturnedRandom {
         let l: UInt64 = UInt64(pos.x) * 3129871 ^ UInt64(pos.z) * 116129781 ^ UInt64(pos.y)
         let m = l * l * 42317861 + l * 11
         return CheckedRandom(seed: (m >> 16) ^ self.seed)
     }
 
-    func split(usingString string: String) -> ReturnedRandom {
+    public func split(usingString string: String) -> ReturnedRandom {
         fatalError("CheckedRandomSplitter(usingString:) is currently unsupported (because I don't think it's ever used)!")
         return CheckedRandom(seed: 0)
     }
 
-    func split(usingLong seed: WorldSeed) -> ReturnedRandom {
+    public func split(usingLong seed: WorldSeed) -> ReturnedRandom {
         return CheckedRandom(seed: seed)
     }
 }
 
 /// A more sophisticated random number generator used by Minecraft for most things.
-struct XoroshiroRandom: Random {
+public struct XoroshiroRandom: Random {
     private var seedLo, seedHi: UInt64
 
     private static func mixStafford13(seed: UInt64) -> UInt64 {
@@ -123,14 +123,14 @@ struct XoroshiroRandom: Random {
         return n ^ n >> 31;
     }
 
-    init(seed: UInt64) {
+    public init(seed: UInt64) {
         self.seedLo = seed ^ 7640891576956012809;
         self.seedHi = self.seedLo &+ overflow(-7046029254386353131);
         self.seedLo = XoroshiroRandom.mixStafford13(seed: self.seedLo)
         self.seedHi = XoroshiroRandom.mixStafford13(seed: self.seedHi)
     }
 
-    init(seedLo: UInt64, seedHi: UInt64) {
+    public init(seedLo: UInt64, seedHi: UInt64) {
         if ((seedLo | seedHi) == 0) {
             self.seedLo = overflow(-7046029254386353131)
             self.seedHi = 7640891576956012809
@@ -140,7 +140,7 @@ struct XoroshiroRandom: Random {
         }
     }
 
-    mutating func nextLong() -> UInt64 {
+    public mutating func nextLong() -> UInt64 {
         let lo = self.seedLo
         let hi = self.seedHi
         let ret = rotateLeft(lo &+ hi, 17) &+ lo
@@ -150,13 +150,13 @@ struct XoroshiroRandom: Random {
         return ret
     }
 
-    mutating func nextInt() -> UInt32 {
+    public mutating func nextInt() -> UInt32 {
         return UInt32(truncatingIfNeeded: self.nextLong())
     }
 
     private static let BITMASK_32: UInt64 = (1 << 32) - 1
 
-    mutating func next(bound: UInt32) -> UInt32 {
+    public mutating func next(bound: UInt32) -> UInt32 {
         let l = UInt64(self.nextInt());
         let m = l &* UInt64(bound);
         var n = m & XoroshiroRandom.BITMASK_32;
@@ -171,15 +171,15 @@ struct XoroshiroRandom: Random {
         return UInt32(m >> 32);
     }
 
-    mutating func nextDouble() -> Double {
+    public mutating func nextDouble() -> Double {
         return Double(self.nextLong() >> (64 - 53)) * 1.1102230246251565E-16
     }
 
-    mutating func nextSplitter() -> some RandomSplitter {
+    public mutating func nextSplitter() -> some RandomSplitter {
         return XoroshiroRandomSplitter(seedLo: self.nextLong(), seedHi: self.nextLong())
     }
 
-    mutating func skip(calls: UInt) {
+    public mutating func skip(calls: UInt) {
         for _ in 0..<calls {
             let _ = self.nextLong()
         }
@@ -190,31 +190,31 @@ struct XoroshiroRandom: Random {
     }
 }
 
-struct XoroshiroRandomSplitter: RandomSplitter {
-    internal typealias ReturnedRandom = XoroshiroRandom
+public struct XoroshiroRandomSplitter: RandomSplitter {
+    public typealias ReturnedRandom = XoroshiroRandom
 
     private let seedLo: UInt64
     private let seedHi: UInt64
 
-    init(seedLo: UInt64, seedHi: UInt64) {
+    public init(seedLo: UInt64, seedHi: UInt64) {
         self.seedLo = seedLo
         self.seedHi = seedHi
     }
 
-    func split(usingPos pos: BlockPos) -> ReturnedRandom {
+    public func split(usingPos pos: BlockPos) -> ReturnedRandom {
         let l: UInt64 = UInt64(pos.x) * 3129871 ^ UInt64(pos.z) * 116129781 ^ UInt64(pos.y)
         let m = l * l * 42317861 + l * 11
         return XoroshiroRandom(seedLo: m ^ self.seedLo, seedHi: self.seedHi)
     }
 
-    func split(usingString string: String) -> ReturnedRandom {
+    public func split(usingString string: String) -> ReturnedRandom {
         let hashBytes = string.bytes.md5()
         let lo = hashBytes[0..<8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         let hi = hashBytes[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         return XoroshiroRandom(seedLo: lo ^ self.seedLo, seedHi: hi ^ self.seedHi)
     }
 
-    func split(usingLong seed: WorldSeed) -> ReturnedRandom {
+    public func split(usingLong seed: WorldSeed) -> ReturnedRandom {
         return XoroshiroRandom(seedLo: seed ^ self.seedLo, seedHi: seed ^ self.seedHi)
     }
 }
@@ -259,11 +259,11 @@ private func perlinFade(_ value: Double) -> Double {
 }
 
 // For end islands.
-class SimplexNoise {
+public class SimplexNoise {
     private let permutation: [UInt8]
     private let originX, originY, originZ: Double
 
-    init<R: Random>(random rng: inout R) {
+    public init<R: Random>(random rng: inout R) {
         self.originX = rng.nextDouble() * 256.0
         self.originY = rng.nextDouble() * 256.0
         self.originZ = rng.nextDouble() * 256.0
@@ -285,7 +285,7 @@ class SimplexNoise {
         return d < 0.0 ? 0.0 : d * d * d * d * dot(GRADIENTS[hash], x, y, z)
     }
 
-    func sample(x: Double, y: Double) -> Double {
+    public func sample(x: Double, y: Double) -> Double {
         let skew = (x + y) * SKEW_FACTOR_2D
         let skewedX = Int((x + skew).rounded(FloatingPointRoundingRule.down))
         let skewedY = Int((y + skew).rounded(FloatingPointRoundingRule.down))
@@ -328,11 +328,11 @@ class SimplexNoise {
     }
 }
 
-class PerlinNoise {
+public class PerlinNoise {
     private let permutation: [UInt8]
     private let originX, originY, originZ: Double
 
-    init<R: Random>(random rng: inout R) {
+    public init<R: Random>(random rng: inout R) {
         self.originX = rng.nextDouble() * 256.0
         self.originY = rng.nextDouble() * 256.0
         self.originZ = rng.nextDouble() * 256.0
@@ -345,7 +345,7 @@ class PerlinNoise {
         self.permutation = permutation
     }
 
-    init<R: Random>(immutableRandom irng: R) {
+    public init<R: Random>(immutableRandom irng: R) {
         var rng = irng
         self.originX = rng.nextDouble() * 256.0
         self.originY = rng.nextDouble() * 256.0
@@ -359,7 +359,7 @@ class PerlinNoise {
         self.permutation = permutation
     }
 
-    func sample(x: Double, y: Double, z: Double) -> Double {
+    public func sample(x: Double, y: Double, z: Double) -> Double {
         let sampleX = x + self.originX
         let sampleY = y + self.originY
         let sampleZ = z + self.originZ
@@ -375,7 +375,7 @@ class PerlinNoise {
         return self.sampleInternal(Int(sectionX), Int(sectionY), Int(sectionZ), localX, localY, localZ, localY)
     }
 
-    func sample(x: Double, y: Double, z: Double, yScale: Double, yMax: Double) -> Double {
+    public func sample(x: Double, y: Double, z: Double, yScale: Double, yMax: Double) -> Double {
         let sampleX = x + self.originX
         let sampleY = y + self.originY
         let sampleZ = z + self.originZ
@@ -435,10 +435,10 @@ class PerlinNoise {
     }
 }
 
-class OctavePerlinNoise {
+public class OctavePerlinNoise {
     private let octaves: [Octave]
 
-    init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
+    public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
         if !useModernInitialization {
             debugPrint("WARNING: OctavePerlinNoise.init(useModernInitialization:false) is not tested. Proceed with caution.")
         }
@@ -479,7 +479,7 @@ class OctavePerlinNoise {
         self.octaves = octaves
     }
 
-    func sample(x: Double, y: Double, z: Double) -> Double {
+    public func sample(x: Double, y: Double, z: Double) -> Double {
         var out = 0.0
         for octave in self.octaves {
             out += octave.sample(x: x, y: y, z: z)
@@ -498,12 +498,12 @@ class OctavePerlinNoise {
     }
 }
 
-class DoublePerlinNoise {
+public class DoublePerlinNoise {
     internal let firstSampler: OctavePerlinNoise
     internal let secondSampler: OctavePerlinNoise
     private let amplitude: Double
 
-    init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
+    public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
         self.firstSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
         self.secondSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
 
@@ -515,7 +515,7 @@ class DoublePerlinNoise {
         self.amplitude = (5.0 / 3.0) * Double(octaves) / Double(octaves + 1)
     }
 
-    func sample(x: Double, y: Double, z: Double) -> Double {
+    public func sample(x: Double, y: Double, z: Double) -> Double {
         let multiplier = 337.0 / 331.0
         let firstOutput = self.firstSampler.sample(x: x, y: y, z: z)
         let secondOutput = self.secondSampler.sample(x: x * multiplier, y: y * multiplier, z: z * multiplier)
@@ -523,7 +523,8 @@ class DoublePerlinNoise {
     }
 }
 
-class InterpolatedNoise {
+/// TODO: add `DensityFunction` conformance
+public class InterpolatedNoise {
     private let xzScale: Double, yScale: Double
     private let scaledXZScale: Double, scaledYScale: Double
     private let xzFactor: Double, yFactor: Double
@@ -540,7 +541,7 @@ class InterpolatedNoise {
         return octaves
     }
 
-    init<R: Random>(random rng: inout R, xzScale: Double, yScale: Double, xzFactor: Double, yFactor: Double, smearScaleMultiplier: Double) {
+    public init<R: Random>(random rng: inout R, xzScale: Double, yScale: Double, xzFactor: Double, yFactor: Double, smearScaleMultiplier: Double) {
         self.xzScale = xzScale
         self.yScale = yScale
         self.xzFactor = xzFactor
@@ -555,7 +556,7 @@ class InterpolatedNoise {
     }
 
     /// Because `InterpolatedNoise` is a density function, it uses ints instead of doubles.
-    func sample(x: Int, y: Int, z: Int) -> Double {
+    public func sample(x: Int, y: Int, z: Int) -> Double {
         let scaledX = Double(x) * self.scaledXZScale
         let scaledY = Double(y) * self.scaledYScale
         let scaledZ = Double(z) * self.scaledXZScale

@@ -36,12 +36,12 @@ final class ReferenceResolvingDensityFunctionBaker: DensityFunctionBaker {
 }
 
 /// The thing that actually generates worlds.
-final class WorldGenerator {
+public final class WorldGenerator {
     private let worldSeed: WorldSeed
     private let noiseSplitter: any RandomSplitter
     private var registries = WorldGenerationRegistries()
 
-    init(withWorldSeed seed: WorldSeed) {
+    public init(withWorldSeed seed: WorldSeed) {
         self.worldSeed = seed
         var random = XoroshiroRandom(seed: seed)
         self.noiseSplitter = random.nextSplitter()
@@ -49,7 +49,7 @@ final class WorldGenerator {
 
     /// Add a data pack to this world generator.
     /// - Parameter datapack: The datapack to add. Cannot be removed without resetting the entire world generator.
-    func addDataPack(_ datapack: DataPack) {
+    public func addDataPack(_ datapack: DataPack) {
         self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
 
         datapack.noiseRegistry.map() { (key, value) in

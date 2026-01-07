@@ -1,6 +1,6 @@
 /// So I don't forget whether seeds are unsigned or signed
 /// (Swift has stricter rules about that than C++).
-typealias WorldSeed = UInt64
+public typealias WorldSeed = UInt64
 
 // why are none of these in the standard library
 func rotateLeft(_ x: UInt64, _ bits: UInt8) -> UInt64 {
@@ -72,12 +72,12 @@ enum Identifiers: Codable, Equatable {
 }
 
 /// A 3D block position.
-struct BlockPos {
+public struct BlockPos {
     let x, y, z: UInt32
 }
 
 /// A 3D position.
-struct Pos3D {
+public struct Pos3D {
     let x, y, z: Double
 }
 
@@ -89,4 +89,4 @@ func addDefaultNamespace(_ id: String) -> String {
 }
 
 // Stub for places in the code that can't be reached, used for IDE warnings.
-internal func unreachable() {}
+func unreachable() {}
