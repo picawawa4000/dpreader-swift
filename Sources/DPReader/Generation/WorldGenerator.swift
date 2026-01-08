@@ -4,9 +4,10 @@ final class WorldGenerationRegistries {
     var bakedNoiseRegistry = Registry<DoublePerlinNoise>()
 }
 
-/// A density function baker that does all baking steps except for resolving references.
-final class NoiseDensityFunctionBaker: DensityFunctionBaker {
+/// A density function baker that does all baking steps.
+final class FullDensityFunctionBaker: DensityFunctionBaker {
     private let registries: WorldGenerationRegistries
+    private var initialisedFunctionIds = Set<RegistryKey<DensityFunction>>()
 
     init(registries: WorldGenerationRegistries) {
         self.registries = registries
@@ -19,38 +20,28 @@ final class NoiseDensityFunctionBaker: DensityFunctionBaker {
         return BakedNoise(fromKey: noise.key, withSampler: sampler)
     }
 
-    func bake(referenceDensityFunction: ReferenceDensityFunction) throws -> any DensityFunction {
-        return referenceDensityFunction
-    }
-}
-
-/// A density function baker that only resolves registry references.
-final class ReferenceResolvingDensityFunctionBaker: DensityFunctionBaker {
-    private let densityFunctionRegistry: Registry<DensityFunction>
-
-    init(usingDensityFunctionRegistry registry: Registry<DensityFunction>) {
-        self.densityFunctionRegistry = registry
-    }
-
-    func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
-        if noise is BakedNoise { return noise as! BakedNoise }
-        throw BakingErrors.noiseUnbakedDuringReferenceResolution(noise.key.name)
-    }
-
     func bake(referenceDensityFunction reference: ReferenceDensityFunction) throws -> any DensityFunction {
-        // Unwrap the reference.
-        guard let returnFunction = self.densityFunctionRegistry.get(reference.targetKey) else {
+        guard let referencedFunction = self.registries.densityFunctionRegistry.get(reference.targetKey) else {
             throw BakingErrors.noDensityFunctionAtKey(reference.targetKey.name)
         }
-        // Also bake the referenced function (which might lead to some functions being baked multiple times, but it's fine).
-        return try returnFunction.bake(withBaker: self)
+
+        // The referenced function has already been baked
+        if self.hasBeenBaked(atKey: reference.targetKey) { return referencedFunction }
+
+        // Bake the function and insert the baked verson
+        let bakedDensityFunction = try referencedFunction.bake(withBaker: self)
+        self.registries.densityFunctionRegistry.register(bakedDensityFunction, forKey: reference.targetKey)
+        return bakedDensityFunction
+    }
+
+    func hasBeenBaked(atKey key: RegistryKey<DensityFunction>) -> Bool {
+        return self.initialisedFunctionIds.contains(key)
     }
 }
 
 private enum BakingErrors: Error {
     case noDensityFunctionAtKey(String)
     case noNoiseAtKey(String)
-    case noiseUnbakedDuringReferenceResolution(String)
 }
 
 /// The thing that actually generates worlds.
@@ -91,24 +82,20 @@ public final class WorldGenerator {
         // The trick here is that, if every density function in the registries is baked in an arbitrary order,
         // some references may be resolved before the function they refer to has been baked, which will result
         // in an unbaked function in the hierarchy.
-        // To fix this issue, there are two main options.
+        // To fix this issue, there are three main options.
         // The first option is to separate the baking process into two stages, such that references are resolved
         // before (or after) all other baking occurs. This will ensure that the full tree is walked, although with
         // a performance overhead since the tree has to be walked multiple times.
         // The second option is to only bake density functions that are required by the world's noise settings.
         // While this has the advantage of performance, it is technically challenging to implement for a number of reasons
         // and so is left unimplemented here.
-        // This function is an implementation of the first option with the reference resolution stage occurring after
-        // the main baking stage.
+        // The option used here, which the initial comment here missed, is to include a set of keys to resolved references
+        // in the baker object, which can be queried to ensure that each density function only gets baked once.
 
-        let noiseBaker = NoiseDensityFunctionBaker(registries: self.registries)
+        let baker = FullDensityFunctionBaker(registries: self.registries)
         try self.registries.densityFunctionRegistry.map { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
-            return try value.bake(withBaker: noiseBaker)
-        }
-
-        let refBaker = ReferenceResolvingDensityFunctionBaker(usingDensityFunctionRegistry: self.registries.densityFunctionRegistry)
-        try self.registries.densityFunctionRegistry.map { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
-            return try value.bake(withBaker: refBaker)
+            if baker.hasBeenBaked(atKey: key) { return value }
+            return try value.bake(withBaker: baker)
         }
     }
 }
