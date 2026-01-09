@@ -1,3 +1,5 @@
+import TestVisible
+
 /// Stores all of the registries needed for world generation.
 final class WorldGenerationRegistries {
     var densityFunctionRegistry = Registry<DensityFunction>()
@@ -45,29 +47,28 @@ private enum BakingErrors: Error {
 }
 
 /// The thing that actually generates worlds.
-public final class WorldGenerator {
+@TestVisible(property: "testingAttributes") public final class WorldGenerator {
     private let worldSeed: WorldSeed
-    private let noiseSplitter: any RandomSplitter
+    //private let noiseSplitter: any RandomSplitter
     private var registries = WorldGenerationRegistries()
 
     /// Initialise this world generator.
     /// This function bakes all datapacks supplied to it, which is why it is impossible to add datapacks to an
     /// already-created world generator.
     /// - Parameters:
-    ///   - seed: 
-    ///   - datapacks: 
+    ///   - seed: The seed of the world to generate.
+    ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
+    /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
     public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack]) throws {
         self.worldSeed = seed
         var random = XoroshiroRandom(seed: seed)
-        self.noiseSplitter = random.nextSplitter()
+        let low = random.nextLong()
+        let high = random.nextLong()
 
         for datapack in datapacks {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
 
             datapack.noiseRegistry.forEach() { (key, value) in
-                var random = self.noiseSplitter.split(usingString: key.name)
-                let low = random.nextLong()
-                let high = random.nextLong()
                 let noise = value.instantiate(seedLo: low, seedHi: high)
                 self.registries.bakedNoiseRegistry.register(noise, forKey: key.convertType())
             }
@@ -77,7 +78,6 @@ public final class WorldGenerator {
     }
 
     /// Convert the density functions to a usable format.
-    /// Datapacks should not be added after this call.
     private func bakeDensityFunctions() throws {
         // The trick here is that, if every density function in the registries is baked in an arbitrary order,
         // some references may be resolved before the function they refer to has been baked, which will result
@@ -98,4 +98,16 @@ public final class WorldGenerator {
             return try value.bake(withBaker: baker)
         }
     }
+
+    // Currently visible for testing only.
+    func getBakedNoiseOrThrow(at key: RegistryKey<DoublePerlinNoise>) throws -> DoublePerlinNoise {
+        guard let ret = self.registries.bakedNoiseRegistry.get(key) else {
+            throw WorldGenerationErrors.noiseNotPresent(key.name)
+        }
+        return ret
+    }
+}
+
+enum WorldGenerationErrors: Error {
+    case noiseNotPresent(String)
 }

@@ -39,7 +39,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(combinedHighBytes == 0x74a4a31ca21b48b8)
 }
 
-@Test func testXoroshiroSplitter() async throws {
+@Test func testXoroshiroSplitterUsingString() async throws {
     let seed: UInt64 = 167197105033405
     var xr = XoroshiroRandom(seed: seed)
     let splitter = xr.nextSplitter()

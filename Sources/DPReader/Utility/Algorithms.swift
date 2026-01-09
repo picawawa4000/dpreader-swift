@@ -569,8 +569,7 @@ public class InterpolatedNoise {
         var lowerTotal = 0.0, upperTotal = 0.0, interpolationTotal = 0.0
         var factor = 1.0
 
-        for idx in 0..<8 {
-            let sampler = self.interpolationOctaves[idx]
+        for sampler in self.interpolationOctaves {
             interpolationTotal += sampler.sample(x: factoredX * factor, y: factoredY * factor, z: factoredZ * factor, yScale: factoredYScale * factor, yMax: factoredY * factor) / factor
             factor *= 0.5
         }

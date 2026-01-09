@@ -229,6 +229,25 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(shift.testingAttributes.noise.key.name == "test:continents")
 }
 
+private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> Bool {
+    let roundedActualValue = Int((actualValue * 1_000_000).rounded(FloatingPointRoundingRule.toNearestOrEven))
+    guard roundedExpectedValue == roundedActualValue else {
+        print("Error in checkDouble: expected value", roundedExpectedValue, "did not match actual value", actualValue, "(rounded to", roundedActualValue, ")!")
+        return false
+    }
+    return true
+}
+
+@Test func testBakingForNoises() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadNoises])
+
+    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack])
+    let bakedNoise: DoublePerlinNoise = try worldGenerator.getBakedNoiseOrThrow(at: RegistryKey(referencing: "test:example"))
+
+    #expect(checkDouble(bakedNoise.sample(x: -65, y: 48, z: 36), -329271))
+}
+
 private enum Errors: Error {
     case densityFunctionNotFound(String)
     case densityFunctionWrongType(String)

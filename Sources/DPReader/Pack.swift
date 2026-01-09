@@ -72,7 +72,9 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let noise = try decoder.decode(NoiseDefinition.self, from: data)
-                self.noiseRegistry.register(noise, forKey: RegistryKey(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath)))
+                let id = RegistryKey<NoiseDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                noise.initHashes(forID: id)
+                self.noiseRegistry.register(noise, forKey: id)
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("noise")
