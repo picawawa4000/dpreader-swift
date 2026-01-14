@@ -1,7 +1,7 @@
 {
     "type": "minecraft:range_choice",
     "input": "test:dummy/shifted_noise",
-    "min_inclusive": 0.5,
+    "min_inclusive": 0.0,
     "max_exclusive": 1.5,
     "when_in_range": "test:dummy/clamp",
     "when_out_of_range": "test:dummy/y_clamped_gradient"

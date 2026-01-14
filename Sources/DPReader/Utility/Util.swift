@@ -72,12 +72,12 @@ enum Identifiers: Codable, Equatable {
 }
 
 /// A 3D block position.
-public struct BlockPos {
-    let x, y, z: UInt32
+public struct PosInt3D {
+    let x, y, z: Int32
 }
 
 /// A 3D position.
-public struct Pos3D {
+public struct PosDouble3D {
     let x, y, z: Double
 }
 
@@ -87,6 +87,3 @@ public struct Pos3D {
 func addDefaultNamespace(_ id: String) -> String {
     return id.contains(":") ? id : "minecraft:" + id
 }
-
-// Stub for places in the code that can't be reached, used for IDE warnings.
-func unreachable() {}

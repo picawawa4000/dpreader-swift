@@ -11,7 +11,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 
 @Test func testLoadingForNoises() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadNoises])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noNoises])
 
     guard let noise = dataPack.noiseRegistry.get(RegistryKey(referencing: "test:example")) else {
         throw Errors.noiseNotFound("test:example")
@@ -29,7 +29,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - YClampedGradient
 @Test func testLoadingForMonotypeDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/monotype")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
 
     guard let continentalness = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:continentalness")) else {
         throw Errors.densityFunctionNotFound("test:continentalness")
@@ -37,7 +37,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     guard let rcContinentalness = continentalness as? RangeChoice else {
         throw Errors.densityFunctionWrongType("test:continentalness -> RangeChoice")
     }
-    #expect(rcContinentalness.testingAttributes.minInclusive == 0.5)
+    #expect(rcContinentalness.testingAttributes.minInclusive == 0.0)
     #expect(rcContinentalness.testingAttributes.maxExclusive == 1.5)
     #expect(testReference(densityFunction: rcContinentalness.testingAttributes.inputChoice, expectedID: "test:dummy/shifted_noise"))
     #expect(testReference(densityFunction: rcContinentalness.testingAttributes.whenInRange, expectedID: "test:dummy/clamp"))
@@ -82,7 +82,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Unary
 @Test func testLoadingForUnaryDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/unary")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
 
     guard let iAbs = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:abs")) else {
         throw Errors.densityFunctionNotFound("test:abs")
@@ -152,7 +152,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Binary
 @Test func testLoadingForBinaryDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/binary")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
 
     guard let iAdd = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:add")) else {
         throw Errors.densityFunctionNotFound("test:add")
@@ -199,7 +199,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Shift
 @Test func testLoadingForShiftDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/shift")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
 
     guard let iShiftA = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:shift_a")) else {
         throw Errors.densityFunctionNotFound("test:shift_a")
@@ -240,12 +240,27 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 
 @Test func testBakingForNoises() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.loadNoises])
-
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
     let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack])
     let bakedNoise: DoublePerlinNoise = try worldGenerator.getBakedNoiseOrThrow(at: RegistryKey(referencing: "test:example"))
 
     #expect(checkDouble(bakedNoise.sample(x: -65, y: 48, z: 36), -329271))
+}
+
+@Test func testBakingForDensityFunctions() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/monotype")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
+    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack])
+    let bakedShiftedNoiseDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey(referencing: "test:dummy/shifted_noise"))
+    let bakedContinentalnessDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey(referencing: "test:continentalness"))
+
+    #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: 532, y: -20, z: 2963)), -508485))
+    #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: -9238, y: 35, z: -356)), -334149))
+    #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: 32535, y: 200, z: 13923)), 170124))
+
+    #expect(bakedContinentalnessDensityFunction.sample(at: PosInt3D(x: 532, y: -20, z: 2963)) == -0.5)
+    #expect(bakedContinentalnessDensityFunction.sample(at: PosInt3D(x: -9238, y: 35, z: -356)) == 0.28125)
+    #expect(bakedContinentalnessDensityFunction.sample(at: PosInt3D(x: 32535, y: 200, z: 13923)) == 0.5)
 }
 
 private enum Errors: Error {

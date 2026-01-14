@@ -22,6 +22,8 @@ import TestVisible
         self.hashHigh = hashBytes[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     }
 
+    /// Set this instance's sampling seed. Somewhat deprecated.
+    /// - Parameter seed: The seed to use when calling `sample()` or `instantiate()`
     public func setSeed(to seed: WorldSeed) {
         self.samplingSeed = seed
     }
@@ -31,25 +33,28 @@ import TestVisible
     ///   - x: The x-coordinate to sample at.
     ///   - y: The y-coordinate to sample at.
     ///   - z: The z-coordinate to sample at.
+    /// - Throws: If `setSeed(to:)` has not been called on this instance yet.
     /// - Returns: The return value of `DoublePerlinNoise.sample(x:y:z:)` with the given coordinates, using this configuration.
     public func sample(x: Double, y: Double, z: Double) throws -> Double {
         return try self.instantiate().sample(x: x, y: y, z: z)
     }
 
     /// Instantiates a new `DoublePerlinNoise` using this configuration and whatever seed was last passed to `setSeed`.
+    /// - Throws: If `setSeed(to:)` has not been called on this instance yet.
     /// - Returns: A `DoublePerlinNoise` with this configuration.
     public func instantiate() throws -> DoublePerlinNoise {
         guard let seed = self.samplingSeed else {
             throw Errors.noSeed
         }
-        return try self.instantiate(forSeed: seed)
+        return self.instantiate(forSeed: seed)
     }
 
     /// Instantiates a new `DoublePerlinNoise` using this seed.
+    /// It is recommended to call `initHashes(forID:)` on this instance first
+    /// (note that this is done by the data pack loader automatically).
     /// - Parameter seed: The seed to use when instantiating this noise.
-    /// - Throws: 
-    /// - Returns: 
-    public func instantiate(forSeed seed: WorldSeed) throws -> DoublePerlinNoise {
+    /// - Returns: A `DoublePerlinNoise` instance using the given seed.
+    public func instantiate(forSeed seed: WorldSeed) -> DoublePerlinNoise {
         var random = XoroshiroRandom(seed: seed)
         let lo = random.nextLong()
         let hi = random.nextLong()
@@ -68,6 +73,7 @@ import TestVisible
         }
         let lo = seedLo ^ (self.hashLow ?? 0)
         let hi = seedHi ^ (self.hashHigh ?? 0)
+        print("lo", lo, ", hi", hi)
         var random = XoroshiroRandom(seedLo: lo, seedHi: hi)
         return DoublePerlinNoise(random: &random, firstOctave: self.firstOctave, amplitudes: self.amplitudes, useModernInitialization: true)
     }
@@ -85,7 +91,7 @@ import TestVisible
     /// - Returns: 
     public func instantiateLegacy(forSeed seed: WorldSeed) throws -> DoublePerlinNoise {
         fatalError("Unimplemented function NoiseDefinition::instantiateLegacy!")
-        unreachable()
+        #warning("Unimplemented function NoiseDefinition.instantiateLegacy(forSeed:)!")
     }
 
     private enum CodingKeys: String, CodingKey {

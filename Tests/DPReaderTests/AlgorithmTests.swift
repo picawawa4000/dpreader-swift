@@ -54,6 +54,8 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(noise.compareForTest(permutation: [209, 132, 245, 123, 20, 90, 242, 94, 166, 173, 255, 200, 45, 224, 250, 55, 103, 140, 172, 3, 111, 50, 67, 29, 175, 31, 100, 60, 36, 30, 70, 47, 157, 189, 0, 222, 32, 27, 141, 52, 254, 75, 186, 133, 210, 89, 109, 139, 153, 11, 164, 202, 81, 71, 80, 227, 142, 46, 68, 43, 159, 243, 193, 167, 38, 236, 40, 120, 58, 121, 24, 158, 83, 203, 97, 12, 225, 138, 190, 18, 198, 54, 246, 128, 99, 13, 42, 1, 113, 151, 144, 145, 125, 44, 104, 114, 135, 233, 217, 170, 85, 220, 34, 62, 116, 180, 9, 163, 171, 82, 182, 63, 15, 10, 5, 127, 204, 156, 102, 22, 134, 41, 146, 136, 51, 39, 8, 177, 37, 91, 124, 92, 196, 137, 65, 98, 168, 148, 118, 218, 78, 244, 223, 253, 28, 154, 95, 23, 26, 130, 174, 105, 162, 208, 216, 184, 230, 169, 187, 213, 107, 147, 86, 179, 165, 211, 221, 7, 199, 48, 150, 108, 231, 73, 88, 252, 249, 155, 117, 25, 247, 201, 49, 21, 188, 76, 152, 16, 19, 207, 212, 194, 59, 214, 122, 6, 149, 251, 205, 57, 181, 143, 215, 129, 101, 69, 84, 248, 235, 33, 206, 161, 79, 238, 237, 112, 131, 176, 53, 64, 61, 229, 192, 17, 14, 241, 115, 87, 185, 93, 56, 234, 66, 226, 119, 74, 126, 110, 195, 2, 77, 96, 106, 239, 160, 240, 219, 35, 178, 4, 191, 72, 197, 232, 183, 228],
         originX: 7.4859, originY: 243.3, originZ: 56.8863))
     #expect(checkDouble(noise.sample(x: 67, y: 41, z: -32), 173011))
+    // This was tested against cubiomes, not vanilla
+    #expect(checkDouble(noise.sample(x: -16391203, y: 32105323, z: 25392892), 234528))
 }
 
 @Test func testOctavePerlinNoise() async throws {
@@ -63,6 +65,8 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(checkDouble(noise.sample(x: 67, y: 41, z: 32), 122127))
     #expect(checkDouble(noise.sample(x: 67, y: 41, z: -32), 130615))
     #expect(checkDouble(noise.sample(x: -99, y: -43, z: 62), 105898))
+    // This was tested against cubiomes, not vanilla
+    #expect(checkDouble(noise.sample(x: -28353269, y: -32516609, z: 18239509), 176828))
 }
 
 @Test func testDoublePerlinNoise() async throws {
@@ -72,6 +76,8 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(checkDouble(noise.sample(x: -67, y: 41, z: 32), -10581))
     #expect(checkDouble(noise.sample(x: 67, y: -41, z: -32), 5572))
     #expect(checkDouble(noise.sample(x: -99, y: 43, z: -62), -33107))
+    // This was tested against cubiomes, not vanilla
+    #expect(checkDouble(noise.sample(x: 14253532, y: -3512332, z: -25321807), -99810))
 }
 
 @Test func testSimplexNoise() async throws {
@@ -81,6 +87,8 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(noise.compareForTest(permutation: [209, 132, 245, 123, 20, 90, 242, 94, 166, 173, 255, 200, 45, 224, 250, 55, 103, 140, 172, 3, 111, 50, 67, 29, 175, 31, 100, 60, 36, 30, 70, 47, 157, 189, 0, 222, 32, 27, 141, 52, 254, 75, 186, 133, 210, 89, 109, 139, 153, 11, 164, 202, 81, 71, 80, 227, 142, 46, 68, 43, 159, 243, 193, 167, 38, 236, 40, 120, 58, 121, 24, 158, 83, 203, 97, 12, 225, 138, 190, 18, 198, 54, 246, 128, 99, 13, 42, 1, 113, 151, 144, 145, 125, 44, 104, 114, 135, 233, 217, 170, 85, 220, 34, 62, 116, 180, 9, 163, 171, 82, 182, 63, 15, 10, 5, 127, 204, 156, 102, 22, 134, 41, 146, 136, 51, 39, 8, 177, 37, 91, 124, 92, 196, 137, 65, 98, 168, 148, 118, 218, 78, 244, 223, 253, 28, 154, 95, 23, 26, 130, 174, 105, 162, 208, 216, 184, 230, 169, 187, 213, 107, 147, 86, 179, 165, 211, 221, 7, 199, 48, 150, 108, 231, 73, 88, 252, 249, 155, 117, 25, 247, 201, 49, 21, 188, 76, 152, 16, 19, 207, 212, 194, 59, 214, 122, 6, 149, 251, 205, 57, 181, 143, 215, 129, 101, 69, 84, 248, 235, 33, 206, 161, 79, 238, 237, 112, 131, 176, 53, 64, 61, 229, 192, 17, 14, 241, 115, 87, 185, 93, 56, 234, 66, 226, 119, 74, 126, 110, 195, 2, 77, 96, 106, 239, 160, 240, 219, 35, 178, 4, 191, 72, 197, 232, 183, 228],
         originX: 7.4859, originY: 243.3, originZ: 56.8863))
     #expect(checkDouble(noise.sample(x: 67, y: -41), 449178))
+    // This was tested against cubiomes, not vanilla
+    #expect(checkDouble(noise.sample(x: 14253532, y: -3512332), 165524))
 }
 
 @Test func testInterpolatedNoise() async throws {

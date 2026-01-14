@@ -477,16 +477,16 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     registry.register(referencedDensityFunction, forKey: registryKey)
     let referenceDensityFunction = ReferenceDensityFunction(targetKey: registryKey)
     referenceDensityFunction.setDensityFunctionRegistry(registry)
-    #expect(referenceDensityFunction.sample(pos: Pos3D(x: 0, y: 0, z: 0)) == 20.0)
+    #expect(referenceDensityFunction.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == 20.0)
 }
 
 @Test func testOutputForConstant() async throws {
     let densityFunction1 = ConstantDensityFunction(value: 0.5)
     let densityFunction2 = ConstantDensityFunction(value: -3.25)
     let densityFunction3 = ConstantDensityFunction(value: 10000.0)
-    #expect(densityFunction1.sample(pos: Pos3D(x: -5, y: 20, z: 42)) == 0.5)
-    #expect(densityFunction2.sample(pos: Pos3D(x: 0, y: 0, z: 0)) == -3.25)
-    #expect(densityFunction3.sample(pos: Pos3D(x: 20, y: -4, z: 83)) == 10000.0)
+    #expect(densityFunction1.sample(at: PosInt3D(x: -5, y: 20, z: 42)) == 0.5)
+    #expect(densityFunction2.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == -3.25)
+    #expect(densityFunction3.sample(at: PosInt3D(x: 20, y: -4, z: 83)) == 10000.0)
 }
 
 // Copy of `squeeze` from `UnaryDensityFunction`.
@@ -506,15 +506,15 @@ private func squeeze(_ x: Double) -> Double {
     let squeezeDensityFunction = UnaryDensityFunction(operand: baseDensityFunction, type: .SQUEEZE)
     let invertDensityFunction = UnaryDensityFunction(operand: baseDensityFunction, type: .INVERT)
 
-    let samplingPos = Pos3D(x: 0, y: 0, z: 0)
-    #expect(absDensityFunction.sample(pos: samplingPos) == 0.75)
-    #expect(squareDensityFunction.sample(pos: samplingPos) == 0.5625)
-    #expect(cubeDensityFunction.sample(pos: samplingPos) == -0.421875)
-    #expect(halfNegativeDensityFunction.sample(pos: samplingPos) == -0.375)
-    #expect(quarterNegativeDensityFunction.sample(pos: samplingPos) == -0.1875)
-    #expect(squeezeDensityFunction.sample(pos: samplingPos) == squeeze(-0.75))
+    let samplingPos = PosInt3D(x: 0, y: 0, z: 0)
+    #expect(absDensityFunction.sample(at: samplingPos) == 0.75)
+    #expect(squareDensityFunction.sample(at: samplingPos) == 0.5625)
+    #expect(cubeDensityFunction.sample(at: samplingPos) == -0.421875)
+    #expect(halfNegativeDensityFunction.sample(at: samplingPos) == -0.375)
+    #expect(quarterNegativeDensityFunction.sample(at: samplingPos) == -0.1875)
+    #expect(squeezeDensityFunction.sample(at: samplingPos) == squeeze(-0.75))
     // Have to use `checkDouble` because `-1.333333` isn't exact.
-    #expect(checkDouble(invertDensityFunction.sample(pos: samplingPos), -1333333))
+    #expect(checkDouble(invertDensityFunction.sample(at: samplingPos), -1333333))
 }
 
 @Test func testOutputForBinaryOperation() async throws {
@@ -526,11 +526,11 @@ private func squeeze(_ x: Double) -> Double {
     let maximumDensityFunction = BinaryDensityFunction(firstOperand: firstDensityFunction, secondOperand: secondDensityFunction, type: .MAXIMUM)
     let minimumDensityFunction = BinaryDensityFunction(firstOperand: firstDensityFunction, secondOperand: secondDensityFunction, type: .MINIMUM)
 
-    let samplingPos = Pos3D(x: 0, y: 0, z: 0)
-    #expect(addDensityFunction.sample(pos: samplingPos) == 0.25)
-    #expect(multiplyDensityFunction.sample(pos: samplingPos) == -0.375)
-    #expect(maximumDensityFunction.sample(pos: samplingPos) == 0.75)
-    #expect(minimumDensityFunction.sample(pos: samplingPos) == -0.5)
+    let samplingPos = PosInt3D(x: 0, y: 0, z: 0)
+    #expect(addDensityFunction.sample(at: samplingPos) == 0.25)
+    #expect(multiplyDensityFunction.sample(at: samplingPos) == -0.375)
+    #expect(maximumDensityFunction.sample(at: samplingPos) == 0.75)
+    #expect(minimumDensityFunction.sample(at: samplingPos) == -0.5)
 }
 
 @Test func testOutputForClamp() async throws {
@@ -538,17 +538,17 @@ private func squeeze(_ x: Double) -> Double {
     let densityFunction2 = ClampDensityFunction(input: ConstantDensityFunction(value: -0.5), lowerBound: 0.0, upperBound: 1.0)
     let densityFunction3 = ClampDensityFunction(input: ConstantDensityFunction(value: 1.5), lowerBound: 0.0, upperBound: 1.0)
 
-    let samplingPos = Pos3D(x: 0, y: 0, z: 0)
-    #expect(densityFunction1.sample(pos: samplingPos) == 0.5)
-    #expect(densityFunction2.sample(pos: samplingPos) == 0.0)
-    #expect(densityFunction3.sample(pos: samplingPos) == 1.0)
+    let samplingPos = PosInt3D(x: 0, y: 0, z: 0)
+    #expect(densityFunction1.sample(at: samplingPos) == 0.5)
+    #expect(densityFunction2.sample(at: samplingPos) == 0.0)
+    #expect(densityFunction3.sample(at: samplingPos) == 1.0)
 }
 
 @Test func testOutputForYClampedGradient() async throws {
     let gradient = YClampedGradient(fromY: 0, toY: 256, fromValue: -256.0, toValue: 256.0)
-    #expect(gradient.sample(pos: Pos3D(x: 0, y: 128, z: 0)) == 0.0)
-    #expect(gradient.sample(pos: Pos3D(x: 0, y: 512, z: 0)) == 256.0)
-    #expect(gradient.sample(pos: Pos3D(x: 0, y: -256, z: 0)) == -256.0)
+    #expect(gradient.sample(at: PosInt3D(x: 0, y: 128, z: 0)) == 0.0)
+    #expect(gradient.sample(at: PosInt3D(x: 0, y: 512, z: 0)) == 256.0)
+    #expect(gradient.sample(at: PosInt3D(x: 0, y: -256, z: 0)) == -256.0)
 }
 
 @Test func testOutputForRangeChoice() async throws {
@@ -557,15 +557,15 @@ private func squeeze(_ x: Double) -> Double {
 
     let inputInside = ConstantDensityFunction(value: 0.5)
     let rcInside = RangeChoice(inputChoice: inputInside, minInclusive: 0.0, maxExclusive: 1.0, whenInRange: inRange, whenOutOfRange: outRange)
-    #expect(rcInside.sample(pos: Pos3D(x: 0, y: 0, z: 0)) == 10.0)
+    #expect(rcInside.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == 10.0)
 
     let inputEdge = ConstantDensityFunction(value: 1.0)
     let rcEdge = RangeChoice(inputChoice: inputEdge, minInclusive: 0.0, maxExclusive: 1.0, whenInRange: inRange, whenOutOfRange: outRange)
-    #expect(rcEdge.sample(pos: Pos3D(x: 0, y: 0, z: 0)) == -10.0)
+    #expect(rcEdge.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == -10.0)
 
     let inputOutside = ConstantDensityFunction(value: -5.0)
     let rcOutside = RangeChoice(inputChoice: inputOutside, minInclusive: 0.0, maxExclusive: 1.0, whenInRange: inRange, whenOutOfRange: outRange)
-    #expect(rcOutside.sample(pos: Pos3D(x: 0, y: 0, z: 0)) == -10.0)
+    #expect(rcOutside.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == -10.0)
 }
 
 // Helper deterministic noise for Shift / ShiftedNoise tests.
@@ -586,14 +586,14 @@ fileprivate struct TestNoise: DensityFunctionNoise {
     let shiftXZ = ShiftDensityFunction(noise: noise, shiftType: .SHIFT_XZ)
     let shiftZX = ShiftDensityFunction(noise: noise, shiftType: .SHIFT_ZX)
 
-    let pos = Pos3D(x: 1, y: 2, z: 3)
+    let pos = PosInt3D(x: 1, y: 2, z: 3)
     // With TestNoise.sample(x,y,z) = x + y + z and ShiftDensityFunction logic:
     // SHIFT_ALL: 4 * noise.sample(pos*0.25) = pos.x + pos.y + pos.z
-    #expect(shiftAll.sample(pos: pos) == 6.0)
+    #expect(shiftAll.sample(at: pos) == 6.0)
     // SHIFT_XZ: 4 * noise.sample(x*0.25, 0, z*0.25) = pos.x + pos.z
-    #expect(shiftXZ.sample(pos: pos) == 4.0)
+    #expect(shiftXZ.sample(at: pos) == 4.0)
     // SHIFT_ZX: 4 * noise.sample(z*0.25, x*0.25, 0) = pos.z + pos.x
-    #expect(shiftZX.sample(pos: pos) == 4.0)
+    #expect(shiftZX.sample(at: pos) == 4.0)
 }
 
 @Test func testOutputForShiftedNoise() async throws {
@@ -608,6 +608,6 @@ fileprivate struct TestNoise: DensityFunctionNoise {
     // y' = pos.y * 0.5  + shiftY = 20 * 0.5 + 2 = 12.0
     // z' = pos.z * 0.25 + shiftZ = 30 * 0.25 + 3 = 10.5
     // noise.sample = x' + y' + z' = 3.5 + 12.0 + 10.5 = 26.0
-    let pos = Pos3D(x: 10, y: 20, z: 30)
-    #expect(shifted.sample(pos: pos) == 26.0)
+    let pos = PosInt3D(x: 10, y: 20, z: 30)
+    #expect(shifted.sample(at: pos) == 26.0)
 }

@@ -8,7 +8,7 @@ public protocol DensityFunction: Codable {
     /// Samples this density function at the given position.
     /// This function is not particularly supported on raw density functions for a variety of reasons.
     /// It is best to use `bake` instead before sampling.
-    func sample(pos: Pos3D) -> Double
+    func sample(at: PosInt3D) -> Double
     /// "Bake" this density function to prepare it for repeated usage.
     func bake(withBaker: DensityFunctionBaker) throws -> DensityFunction
 }
@@ -42,9 +42,9 @@ public final class UnbakedNoise: DensityFunctionNoise {
     }
 
     public func sample(x: Double, y: Double, z: Double) -> Double {
-        print("WARNING: Deprecated function UnbakedNoise.sample(x:y:z:) called! Maybe a noise wasn't baked ")
+        print("WARNING: Deprecated function UnbakedNoise.sample(x:y:z:) called! Maybe a noise wasn't baked?")
         guard let noise = self.defaultNoiseRegistry?.get(self.key) else {
-            print("WARNING: Uninitialised noise in density function of type \"minecraft:shifted_noise\" referencing noise key \(self.key.name). Returning 0.0.")
+            print("WARNING: Uninitialised noise in density function referencing noise key \(self.key.name). Returning 0.0.")
             // Bizarrely, this is vanilla behaviour.
             return 0.0
         }
@@ -54,7 +54,7 @@ public final class UnbakedNoise: DensityFunctionNoise {
         if let ret = optionalRet {
             return ret
         } else {
-            print("WARNING: Error in noise sampling for density function of type \"minecraft:shifted_noise\" (was a seed not set?) Returning 0.0.")
+            print("WARNING: Error in noise sampling for density function (was a seed not set?) Returning 0.0.")
             return 0.0
         }
     }
@@ -101,13 +101,13 @@ public final class BakedNoise: DensityFunctionNoise {
         self.densityFunctionRegistry = registry
     }
 
-    public func sample(pos: Pos3D) -> Double {
+    public func sample(at pos: PosInt3D) -> Double {
         print("WARNING: Deprecated function ReferenceDensityFunction.sample(pos:) called!")
         guard let registry = self.densityFunctionRegistry else {
             print("WARNING: No density function registry provided to ReferenceDensityFunction! Returning 0.0.")
             return 0.0
         }
-        return registry.get(self.targetKey)!.sample(pos: pos)
+        return registry.get(self.targetKey)!.sample(at: pos)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -128,7 +128,7 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.value)
     }
 
-    public func sample(pos: Pos3D) -> Double {
+    public func sample(at pos: PosInt3D) -> Double {
         return self.value
     }
 
@@ -163,8 +163,8 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.operation.rawValue, forKey: .operation)
     }
 
-    public func sample(pos: Pos3D) -> Double {
-        let x = self.operand.sample(pos: pos)
+    public func sample(at pos: PosInt3D) -> Double {
+        let x = self.operand.sample(at: pos)
         return switch self.operation {
             case .ABS: abs(x)
             // where's the standard library function for exponentiaton?
@@ -230,12 +230,12 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.operation.rawValue, forKey: .operation)
     }
 
-    public func sample(pos: Pos3D) -> Double {
+    public func sample(at pos: PosInt3D) -> Double {
         return switch self.operation {
-            case .ADD: self.first.sample(pos: pos) + self.second.sample(pos: pos)
-            case .MULTIPLY: self.first.sample(pos: pos) * self.second.sample(pos: pos)
-            case .MAXIMUM: max(self.first.sample(pos: pos), self.second.sample(pos: pos))
-            case .MINIMUM: min(self.first.sample(pos: pos), self.second.sample(pos: pos))
+            case .ADD: self.first.sample(at: pos) + self.second.sample(at: pos)
+            case .MULTIPLY: self.first.sample(at: pos) * self.second.sample(at: pos)
+            case .MAXIMUM: max(self.first.sample(at: pos), self.second.sample(at: pos))
+            case .MINIMUM: min(self.first.sample(at: pos), self.second.sample(at: pos))
         }
     }
 
@@ -284,8 +284,8 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.upperBound, forKey: .upperBound)
     }
 
-    public func sample(pos: Pos3D) -> Double {
-        return clamp(value: self.input.sample(pos: pos), lowerBound: self.lowerBound, upperBound: self.upperBound)
+    public func sample(at pos: PosInt3D) -> Double {
+        return clamp(value: self.input.sample(at: pos), lowerBound: self.lowerBound, upperBound: self.upperBound)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -331,8 +331,8 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.toValue, forKey: .toValue)
     }
 
-    public func sample(pos: Pos3D) -> Double {
-        return clampedMap(value: pos.y, oldStart: Double(self.fromY), oldEnd: Double(self.toY), newStart: self.fromValue, newEnd: self.toValue)
+    public func sample(at pos: PosInt3D) -> Double {
+        return clampedMap(value: Double(pos.y), oldStart: Double(self.fromY), oldEnd: Double(self.toY), newStart: self.fromValue, newEnd: self.toValue)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
@@ -383,12 +383,12 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.whenOutOfRange, forKey: .whenOutOfRange)
     }
 
-    public func sample(pos: Pos3D) -> Double {
-        let x = self.inputChoice.sample(pos: pos)
+    public func sample(at pos: PosInt3D) -> Double {
+        let x = self.inputChoice.sample(at: pos)
         if (self.minInclusive <= x && x < self.maxExclusive) {
-            return self.whenInRange.sample(pos: pos)
+            return self.whenInRange.sample(at: pos)
         }
-        return self.whenOutOfRange.sample(pos: pos)
+        return self.whenOutOfRange.sample(at: pos)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -397,7 +397,7 @@ public final class BakedNoise: DensityFunctionNoise {
             minInclusive: self.minInclusive,
             maxExclusive: self.maxExclusive,
             whenInRange: try self.whenInRange.bake(withBaker: baker),
-            whenOutOfRange: try self.whenInRange.bake(withBaker: baker)
+            whenOutOfRange: try self.whenOutOfRange.bake(withBaker: baker)
         )
     }
 
@@ -439,12 +439,12 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.noise.key.name, forKey: .noiseKey)
     }
 
-    public func sample(pos: Pos3D) -> Double {
+    public func sample(at pos: PosInt3D) -> Double {
         return switch self.shiftType {
             // replace self with noise
-            case .SHIFT_ALL: 4.0 * self.noise.sample(x: pos.x * 0.25, y: pos.y * 0.25, z: pos.z * 0.25)
-            case .SHIFT_XZ: 4.0 * self.noise.sample(x: pos.x * 0.25, y: 0.0, z: pos.z * 0.25)
-            case .SHIFT_ZX: 4.0 * self.noise.sample(x: pos.z * 0.25, y: pos.x * 0.25, z: 0.0)
+            case .SHIFT_ALL: 4.0 * self.noise.sample(x: Double(pos.x) * 0.25, y: Double(pos.y) * 0.25, z: Double(pos.z) * 0.25)
+            case .SHIFT_XZ: 4.0 * self.noise.sample(x: Double(pos.x) * 0.25, y: 0.0, z: Double(pos.z) * 0.25)
+            case .SHIFT_ZX: 4.0 * self.noise.sample(x: Double(pos.z) * 0.25, y: Double(pos.x) * 0.25, z: 0.0)
         }
     }
 
@@ -517,10 +517,10 @@ public final class BakedNoise: DensityFunctionNoise {
         try container.encode(self.noise.key.name, forKey: .noiseKey)
     }
 
-    public func sample(pos: Pos3D) -> Double {
-        let x = pos.x * self.scaleXZ + self.shiftX.sample(pos: pos)
-        let y = pos.y * self.scaleY + self.shiftY.sample(pos: pos)
-        let z: Double = pos.z * self.scaleXZ + self.shiftZ.sample(pos: pos)
+    public func sample(at pos: PosInt3D) -> Double {
+        let x = Double(pos.x) * self.scaleXZ + self.shiftX.sample(at: pos)
+        let y = Double(pos.y) * self.scaleY + self.shiftY.sample(at: pos)
+        let z = Double(pos.z) * self.scaleXZ + self.shiftZ.sample(at: pos)
         return self.noise.sample(x: x, y: y, z: z)
     }
 
@@ -592,7 +592,7 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
 }
 
 /// An error that might come up when decoding a density function.
-private enum DensityFunctionDecodingError: Error {
+public enum DensityFunctionDecodingError: Error {
     /// Either the type key is missing or a decoding container couldn't be synthesized
     /// (potentially because an array was decoded instead of a compound).
     case invalidStructure

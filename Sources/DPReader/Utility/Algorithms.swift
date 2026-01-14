@@ -22,7 +22,7 @@ public protocol RandomSplitter {
     /// The random type returned by this splitter's methods.
     associatedtype ReturnedRandom: Random
 
-    func split(usingPos: BlockPos) -> ReturnedRandom
+    func split(usingPos: PosInt3D) -> ReturnedRandom
     func split(usingString: String) -> ReturnedRandom
     func split(usingLong: WorldSeed) -> ReturnedRandom
 }
@@ -97,7 +97,7 @@ public struct CheckedRandomSplitter: RandomSplitter {
         self.seed = seed
     }
 
-    public func split(usingPos pos: BlockPos) -> ReturnedRandom {
+    public func split(usingPos pos: PosInt3D) -> ReturnedRandom {
         let l: UInt64 = UInt64(pos.x) * 3129871 ^ UInt64(pos.z) * 116129781 ^ UInt64(pos.y)
         let m = l * l * 42317861 + l * 11
         return CheckedRandom(seed: (m >> 16) ^ self.seed)
@@ -105,7 +105,7 @@ public struct CheckedRandomSplitter: RandomSplitter {
 
     public func split(usingString string: String) -> ReturnedRandom {
         fatalError("CheckedRandomSplitter(usingString:) is currently unsupported (because I don't think it's ever used)!")
-        return CheckedRandom(seed: 0)
+        #warning("Unimplemented function CheckedRandomSplitter.split(usingString:)!")
     }
 
     public func split(usingLong seed: WorldSeed) -> ReturnedRandom {
@@ -202,7 +202,7 @@ public struct XoroshiroRandomSplitter: RandomSplitter {
         self.seedHi = seedHi
     }
 
-    public func split(usingPos pos: BlockPos) -> ReturnedRandom {
+    public func split(usingPos pos: PosInt3D) -> ReturnedRandom {
         let l: UInt64 = UInt64(pos.x) * 3129871 ^ UInt64(pos.z) * 116129781 ^ UInt64(pos.y)
         let m = l * l * 42317861 + l * 11
         return XoroshiroRandom(seedLo: m ^ self.seedLo, seedHi: self.seedHi)

@@ -8,7 +8,7 @@ final class WorldGenerationRegistries {
 
 /// A density function baker that does all baking steps.
 final class FullDensityFunctionBaker: DensityFunctionBaker {
-    private let registries: WorldGenerationRegistries
+    fileprivate let registries: WorldGenerationRegistries
     private var initialisedFunctionIds = Set<RegistryKey<DensityFunction>>()
 
     init(registries: WorldGenerationRegistries) {
@@ -17,14 +17,14 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
 
     func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
         guard let sampler = self.registries.bakedNoiseRegistry.get(noise.key.convertType()) else {
-            throw BakingErrors.noNoiseAtKey(noise.key.name)
+            throw WorldGenerationErrors.noiseNotPresent(noise.key.name)
         }
         return BakedNoise(fromKey: noise.key, withSampler: sampler)
     }
 
     func bake(referenceDensityFunction reference: ReferenceDensityFunction) throws -> any DensityFunction {
         guard let referencedFunction = self.registries.densityFunctionRegistry.get(reference.targetKey) else {
-            throw BakingErrors.noDensityFunctionAtKey(reference.targetKey.name)
+            throw WorldGenerationErrors.densityFunctionNotPresent(reference.targetKey.name)
         }
 
         // The referenced function has already been baked
@@ -36,20 +36,19 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
         return bakedDensityFunction
     }
 
+    /// If this function key has already been baked, return true. Otherwise, mark it as baked and return false.
+    /// - Parameter key: The key to test at.
+    /// - Returns: Whether the function at the key had been baked prior to the call to this function.
     func hasBeenBaked(atKey key: RegistryKey<DensityFunction>) -> Bool {
-        return self.initialisedFunctionIds.contains(key)
+        if self.initialisedFunctionIds.contains(key) { return true }
+        self.initialisedFunctionIds.insert(key)
+        return false
     }
-}
-
-private enum BakingErrors: Error {
-    case noDensityFunctionAtKey(String)
-    case noNoiseAtKey(String)
 }
 
 /// The thing that actually generates worlds.
 @TestVisible(property: "testingAttributes") public final class WorldGenerator {
     private let worldSeed: WorldSeed
-    //private let noiseSplitter: any RandomSplitter
     private var registries = WorldGenerationRegistries()
 
     /// Initialise this world generator.
@@ -68,6 +67,7 @@ private enum BakingErrors: Error {
         for datapack in datapacks {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
 
+            // Bake noises.
             datapack.noiseRegistry.forEach() { (key, value) in
                 let noise = value.instantiate(seedLo: low, seedHi: high)
                 self.registries.bakedNoiseRegistry.register(noise, forKey: key.convertType())
@@ -92,10 +92,11 @@ private enum BakingErrors: Error {
         // The option used here, which the initial comment here missed, is to include a set of keys to resolved references
         // in the baker object, which can be queried to ensure that each density function only gets baked once.
 
+        // Note: this solution is not concurrency-safe and is not a very good one in general.
         let baker = FullDensityFunctionBaker(registries: self.registries)
-        try self.registries.densityFunctionRegistry.map { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
-            if baker.hasBeenBaked(atKey: key) { return value }
-            return try value.bake(withBaker: baker)
+        try self.registries.densityFunctionRegistry.forEach { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
+            if baker.hasBeenBaked(atKey: key) { return }
+            baker.registries.densityFunctionRegistry.register(try value.bake(withBaker: baker), forKey: key)
         }
     }
 
@@ -106,8 +107,17 @@ private enum BakingErrors: Error {
         }
         return ret
     }
+
+    // Currently visible for testing only.
+    func getDensityFunctionOrThrow(at key: RegistryKey<DensityFunction>) throws -> DensityFunction {
+        guard let ret = self.registries.densityFunctionRegistry.get(key) else {
+            throw WorldGenerationErrors.densityFunctionNotPresent(key.name)
+        }
+        return ret
+    }
 }
 
 enum WorldGenerationErrors: Error {
+    case densityFunctionNotPresent(String)
     case noiseNotPresent(String)
 }

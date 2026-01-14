@@ -21,8 +21,8 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
         self.rawValue = rawValue
     }
 
-    public static let loadDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
-    public static let loadNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
+    public static let noDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
+    public static let noNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
 }
 
 /// Represents a data pack.
@@ -30,18 +30,27 @@ public final class DataPack {
     public let densityFunctionRegistry = Registry<DensityFunction>()
     public let noiseRegistry = Registry<NoiseDefinition>()
 
+    /// Loads a data pack from the given path. All loading options are turned off by default.
+    /// - Parameter rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
+    /// - Throws: Any errors thrown by the loading process.
     public convenience init(fromRootPath rootPath: URL) throws {
-        try self.init(fromRootPath: rootPath, loadingOptions: DataPackRegistryLoadingOptions(rawValue: UInt64.max))
+        try self.init(fromRootPath: rootPath, loadingOptions: DataPackRegistryLoadingOptions(rawValue: 0))
     }
 
+    /// Loads a data pack from the given path with the given options.
+    /// - Parameters:
+    ///   - rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
+    ///   - options: The options to use when loading the data pack. These are mostly for debugging purposes,
+    /// and not including the right ones may break the data pack. Use with caution.
+    /// - Throws: Any errors thrown by the loading process.
     public init(fromRootPath rootPath: URL, loadingOptions options: DataPackRegistryLoadingOptions) throws {
         let namespacesPath = rootPath.appendingDirectory(path: "data")
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
             let namespace = namespaceURL.lastPathComponent
             let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
 
-            if options.contains(.loadDensityFunctions) { try self.loadDensityFunctions(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
-            if options.contains(.loadNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noDensityFunctions) { try self.loadDensityFunctions(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
     }
 
