@@ -245,6 +245,18 @@ private enum TestingError: Error {
     ]))
 }
 
+@Test func testEncodingForNoise() async throws {
+    let noise = NoiseDensityFunction(noiseKey: "minecraft:noise", scaleXZ: 0.25, scaleY: 0.5)
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(noise)
+    #expect(try checkJSON(data, [
+        "type": "minecraft:noise",
+        "xz_scale": 0.25,
+        "y_scale": 0.5,
+        "noise": "minecraft:noise"
+    ]))
+}
+
 @Test func testEncodingForShiftedNoise() async throws {
     let sx = ConstantDensityFunction(value: 1.0)
     let sy = ConstantDensityFunction(value: 2.0)
@@ -252,8 +264,9 @@ private enum TestingError: Error {
     let shifted = ShiftedNoise(noiseKey: "minecraft:noise", shiftX: sx, shiftY: sy, shiftZ: sz, scaleXZ: 0.25, scaleY: 0.5)
     let encoder = JSONEncoder()
     let data = try encoder.encode(shifted)
-    // Note: current implementation encodes the "noise" key and the shift/scale keys, but does not include a "type" key due to a double-encode bug. Expect the final keys to include the noise name under "noise".
+    print(String(data: data, encoding: .utf8)!)
     #expect(try checkJSON(data, [
+        "type": "minecraft:shifted_noise",
         "shift_x": 1.0,
         "shift_y": 2.0,
         "shift_z": 3.0,
@@ -261,6 +274,69 @@ private enum TestingError: Error {
         "y_scale": 0.5,
         "noise": "minecraft:noise"
     ]))
+}
+
+@Test func testEncodingForCaches() async throws {
+    let interpolated = CacheMarker(type: .interpolated, wrapping: ConstantDensityFunction(value: 0.5))
+    let flatCache = CacheMarker(type: .flatCache, wrapping: ConstantDensityFunction(value: 0.5))
+    let cache2D = CacheMarker(type: .cache2D, wrapping: ConstantDensityFunction(value: 0.5))
+    let cacheOnce = CacheMarker(type: .cacheOnce, wrapping: ConstantDensityFunction(value: 0.5))
+    let cacheAllInCell = CacheMarker(type: .cacheAllInCell, wrapping: ConstantDensityFunction(value: 0.5))
+
+    let encoder = JSONEncoder()
+    let interpolatedData = try encoder.encode(interpolated)
+    let flatCacheData = try encoder.encode(flatCache)
+    let cache2DData = try encoder.encode(cache2D)
+    let cacheOnceData = try encoder.encode(cacheOnce)
+    let cacheAllInCellData = try encoder.encode(cacheAllInCell)
+
+    #expect(try checkJSON(interpolatedData, [
+        "type": "minecraft:interpolated",
+        "argument": 0.5
+    ]))
+    #expect(try checkJSON(flatCacheData, [
+        "type": "minecraft:flat_cache",
+        "argument": 0.5
+    ]))
+    #expect(try checkJSON(cache2DData, [
+        "type": "minecraft:cache_2d",
+        "argument": 0.5
+    ]))
+    #expect(try checkJSON(cacheOnceData, [
+        "type": "minecraft:cache_once",
+        "argument": 0.5
+    ]))
+    #expect(try checkJSON(cacheAllInCellData, [
+        "type": "minecraft:cache_all_in_cell",
+        "argument": 0.5
+    ]))
+}
+
+// "Zero states" are the density functions that don't have anything in their JSON format other than their type.
+// `blend_density` is also in here just because.
+@Test func testEncodingForZeroStates() async throws {
+    let blendAlpha = BlendAlpha()
+    let blendOffset = BlendOffset()
+    let blendDensity = BlendDensity(wrapping: ConstantDensityFunction(value: 2.0))
+    let beardifier = BeardifierMarker()
+    let endIslands = EndIslandsDensityFunction()
+
+    let encoder = JSONEncoder()
+    let blendAlphaData = try encoder.encode(blendAlpha)
+    let blendOffsetData = try encoder.encode(blendOffset)
+    let blendDensityData = try encoder.encode(blendDensity)
+    let beardifierData = try encoder.encode(beardifier)
+    let endIslandsData = try encoder.encode(endIslands)
+
+    print(String(data: blendDensityData, encoding: .utf8) ?? "none")
+    #expect(try checkJSON(blendAlphaData, ["type": "minecraft:blend_alpha"]))
+    #expect(try checkJSON(blendOffsetData, ["type": "minecraft:blend_offset"]))
+    #expect(try checkJSON(blendDensityData, [
+        "type": "minecraft:blend_density",
+        "argument": 2.0
+    ]))
+    #expect(try checkJSON(beardifierData, ["type": "minecraft:beardifier"]))
+    #expect(try checkJSON(endIslandsData, ["type": "minecraft:end_islands"]))
 }
 
 // ----- DESERIALIZATION (DECODING) TESTS -----
@@ -435,6 +511,23 @@ private enum TestingError: Error {
     #expect(shift.testingAttributes.noise.key.name == "minecraft:example_noise")
 }
 
+@Test func testDecodingForNoise() async throws {
+    let data = """
+    {
+        "type": "minecraft:noise",
+        "xz_scale": 0.25,
+        "y_scale": 0.5,
+        "noise": "minecraft:noise_example"
+    }
+    """.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
+    let noise = df as! NoiseDensityFunction
+    #expect(noise.testingAttributes.scaleXZ == 0.25)
+    #expect(noise.testingAttributes.scaleY == 0.5)
+    #expect(noise.testingAttributes.noise.key.name == "minecraft:noise_example")
+}
+
 @Test func testDecodingForShiftedNoise() async throws {
     let data = """
     {
@@ -457,6 +550,100 @@ private enum TestingError: Error {
     #expect(sn.testingAttributes.scaleY == 0.5)
     // noise is an UnbakedNoise created with the registry key string
     #expect(sn.testingAttributes.noise.key.name == "minecraft:shifted_noise_example")
+}
+
+@Test func testDecodingForCaches() async throws {
+    let interpolatedData = """
+    {
+        "type": "minecraft:interpolated",
+        "argument": 0.5
+    }
+    """.data(using: .utf8)!
+    let flatCacheData = """
+    {
+        "type": "minecraft:flat_cache",
+        "argument": 0.5
+    }
+    """.data(using: .utf8)!
+    let cache2DData = """
+    {
+        "type": "minecraft:cache_2d",
+        "argument": 0.5
+    }
+    """.data(using: .utf8)!
+    let cacheOnceData = """
+    {
+        "type": "minecraft:cache_once",
+        "argument": 0.5
+    }
+    """.data(using: .utf8)!
+    let cacheAllInCellData = """
+    {
+        "type": "minecraft:cache_all_in_cell",
+        "argument": 0.5
+    }
+    """.data(using: .utf8)!
+
+    let decoder = JSONDecoder()
+    let interpolated = try decoder.decode(DensityFunctionInitializer.self, from: interpolatedData).value
+    let flatCache = try decoder.decode(DensityFunctionInitializer.self, from: flatCacheData).value
+    let cache2D = try decoder.decode(DensityFunctionInitializer.self, from: cache2DData).value
+    let cacheOnce = try decoder.decode(DensityFunctionInitializer.self, from: cacheOnceData).value
+    let cacheAllInCell = try decoder.decode(DensityFunctionInitializer.self, from: cacheAllInCellData).value
+
+    #expect(interpolated is CacheMarker)
+    #expect(flatCache is CacheMarker)
+    #expect(cache2D is CacheMarker)
+    #expect(cacheOnce is CacheMarker)
+    #expect(cacheAllInCell is CacheMarker)
+
+    #expect((interpolated as! CacheMarker).type == .interpolated)
+    #expect((flatCache as! CacheMarker).type == .flatCache)
+    #expect((cache2D as! CacheMarker).type == .cache2D)
+    #expect((cacheOnce as! CacheMarker).type == .cacheOnce)
+    #expect((cacheAllInCell as! CacheMarker).type == .cacheAllInCell)
+
+    #expect((interpolated as! CacheMarker).argument is ConstantDensityFunction)
+    #expect(((interpolated as! CacheMarker).argument as! ConstantDensityFunction).testingAttributes.value == 0.5)
+}
+
+// "Zero states" are the density functions that don't have anything in their JSON format other than their type.
+// `blend_density` is also in here just because.
+@Test func testDecodingForZeroStates() async throws {
+    let blendAlphaData = """
+    {"type": "minecraft:blend_alpha"}
+    """.data(using: .utf8)!
+    let blendOffsetData = """
+    {"type": "minecraft:blend_offset"}
+    """.data(using: .utf8)!
+    let blendDensityData = """
+    {
+        "type": "minecraft:blend_density",
+        "argument": 2.0
+    }
+    """.data(using: .utf8)!
+    let beardifierData = """
+    {"type": "minecraft:beardifier"}
+    """.data(using: .utf8)!
+    let endIslandsData = """
+    {"type": "minecraft:end_islands"}
+    """.data(using: .utf8)!
+
+    let decoder = JSONDecoder()
+    let blendAlpha = try decoder.decode(DensityFunctionInitializer.self, from: blendAlphaData).value
+    let blendOffset = try decoder.decode(DensityFunctionInitializer.self, from: blendOffsetData).value
+    let blendDensity = try decoder.decode(DensityFunctionInitializer.self, from: blendDensityData).value
+    let beardifier = try decoder.decode(DensityFunctionInitializer.self, from: beardifierData).value
+    let endIslands = try decoder.decode(DensityFunctionInitializer.self, from: endIslandsData).value
+
+    #expect(blendAlpha is BlendAlpha)
+    #expect(blendOffset is BlendOffset)
+    #expect(blendDensity is BlendDensity)
+    #expect(beardifier is BeardifierMarker)
+    #expect(endIslands is EndIslandsDensityFunction)
+
+    // Only type-checking here because I'm lazy.
+    #expect((blendDensity as! BlendDensity).argument is ConstantDensityFunction)
 }
 
 // ----- OUTPUT TESTS -----
@@ -596,6 +783,18 @@ fileprivate struct TestNoise: DensityFunctionNoise {
     #expect(shiftZX.sample(at: pos) == 4.0)
 }
 
+@Test func testOutputForNoise() async throws {
+    let noise = TestNoise()
+    let noiseDF = NoiseDensityFunction(noise: noise, scaleXZ: 0.75, scaleY: 2.5)
+
+    // x' = pos.x * 0.75 = 10 * 0.75 = 7.5
+    // y' = pos.y * 2.5 = 20 * 2.5 = 50
+    // z' = pos.z * 0.75 = 30 * 0.75 = 22.5
+    // x' + y' + z' = 80
+    let pos = PosInt3D(x: 10, y: 20, z: 30)
+    #expect(noiseDF.sample(at: pos) == 80)
+}
+
 @Test func testOutputForShiftedNoise() async throws {
     let noise = TestNoise()
     let sx = ConstantDensityFunction(value: 1.0)
@@ -611,3 +810,6 @@ fileprivate struct TestNoise: DensityFunctionNoise {
     let pos = PosInt3D(x: 10, y: 20, z: 30)
     #expect(shifted.sample(at: pos) == 26.0)
 }
+
+/// TODO: this test should be based on real numbers because the end islands algorithm is weird
+@Test func testOutputForEndIslands() async throws {}

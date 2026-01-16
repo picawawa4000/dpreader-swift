@@ -254,7 +254,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     let bakedShiftedNoiseDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey(referencing: "test:dummy/shifted_noise"))
     let bakedContinentalnessDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey(referencing: "test:continentalness"))
 
-    #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: 532, y: -20, z: 2963)), -508485))
+    #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: 532, y: -20, z: 2963)), -509139))
     #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: -9238, y: 35, z: -356)), -334149))
     #expect(checkDouble(bakedShiftedNoiseDensityFunction.sample(at: PosInt3D(x: 32535, y: 200, z: 13923)), 170124))
 

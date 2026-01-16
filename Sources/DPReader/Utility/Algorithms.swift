@@ -104,7 +104,7 @@ public struct CheckedRandomSplitter: RandomSplitter {
     }
 
     public func split(usingString string: String) -> ReturnedRandom {
-        fatalError("CheckedRandomSplitter(usingString:) is currently unsupported (because I don't think it's ever used)!")
+        fatalError("CheckedRandomSplitter.split(usingString:) is currently unsupported (because I don't think it's ever used)!")
         #warning("Unimplemented function CheckedRandomSplitter.split(usingString:)!")
     }
 
@@ -524,7 +524,6 @@ public class DoublePerlinNoise {
     }
 }
 
-/// TODO: add `DensityFunction` conformance
 public class InterpolatedNoise {
     private let xzScale: Double, yScale: Double
     private let scaledXZScale: Double, scaledYScale: Double
@@ -557,10 +556,10 @@ public class InterpolatedNoise {
     }
 
     /// Because `InterpolatedNoise` is a density function, it uses ints instead of doubles.
-    public func sample(x: Int, y: Int, z: Int) -> Double {
-        let scaledX = Double(x) * self.scaledXZScale
-        let scaledY = Double(y) * self.scaledYScale
-        let scaledZ = Double(z) * self.scaledXZScale
+    public func sample(at pos: PosInt3D) -> Double {
+        let scaledX = Double(pos.x) * self.scaledXZScale
+        let scaledY = Double(pos.y) * self.scaledYScale
+        let scaledZ = Double(pos.z) * self.scaledXZScale
         let factoredX = scaledX / self.xzFactor
         let factoredY = scaledY / self.yFactor
         let factoredZ = scaledZ / self.xzFactor

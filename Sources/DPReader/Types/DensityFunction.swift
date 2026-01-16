@@ -19,6 +19,12 @@ public protocol DensityFunctionBaker {
     func bake(noise: DensityFunctionNoise) throws -> BakedNoise
     /// "Bakes" a reference; that is, converts it to a non-reference density function.
     func bake(referenceDensityFunction: ReferenceDensityFunction) throws -> DensityFunction
+    /// "Bakes" a cache marker; that is, converts it to an actual cache.
+    func bake(cacheMarker: CacheMarker) throws -> DensityFunction
+    /// "Bakes" a beardifier; that is, converts it to an actual beardifier.
+    func bake(beardifier: BeardifierMarker) throws -> DensityFunction
+    /// "Bakes" a simplex noise sampler; that is, initialises it with the world seed.
+    func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise
 }
 
 /// Represents a noise within a density function.
@@ -71,6 +77,31 @@ public final class BakedNoise: DensityFunctionNoise {
 
     public func sample(x: Double, y: Double, z: Double) -> Double {
         return self.sampler.sample(x: x, y: y, z: z)
+    }
+}
+
+/// Represents a simplex noise within a density function.
+/// Only relevant for `EndIslandsDensityFunction`.
+public struct DensityFunctionSimplexNoise {
+    var noise: SimplexNoise
+    // For debugging.
+    var isBaked: Bool
+
+    init() {
+        // This is one of those weird cases where this is vanilla behaviour, although it's highly unexpected.
+        var tempRandom = CheckedRandom(seed: 0)
+        self.noise = SimplexNoise(random: &tempRandom)
+        self.isBaked = false
+    }
+
+    init(withRandom random: inout any Random) {
+        self.noise = SimplexNoise(random: &random)
+        self.isBaked = true
+    }
+
+    func sample(x: Double, y: Double) -> Double {
+        if (!self.isBaked) { print("WARNING: Unbaked DensityFunctionSimplexNoise sampled!") }
+        return self.noise.sample(x: x, y: y)
     }
 }
 
@@ -468,6 +499,60 @@ public final class BakedNoise: DensityFunctionNoise {
     }
 }
 
+/// Samples a noise at a scaled position.
+/// Simpler version of `ShiftedNoise`.
+@TestVisible(property: "testingAttributes") public final class NoiseDensityFunction: DensityFunction {
+    private let scaleXZ: Double
+    private let scaleY: Double
+    private let noise: DensityFunctionNoise
+
+    public init(noiseKey: String, scaleXZ: Double, scaleY: Double) {
+        self.scaleXZ = scaleXZ
+        self.scaleY = scaleY
+        self.noise = UnbakedNoise(fromKey: RegistryKey(referencing: noiseKey))
+    }
+
+    public init(noise: DensityFunctionNoise, scaleXZ: Double, scaleY: Double) {
+        self.scaleXZ = scaleXZ
+        self.scaleY = scaleY
+        self.noise = noise
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.scaleXZ = try container.decode(Double.self, forKey: .scaleXZ)
+        self.scaleY = try container.decode(Double.self, forKey: .scaleY)
+        self.noise = try UnbakedNoise(fromKey: RegistryKey(referencing: container.decode(String.self, forKey: .noiseKey)))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:noise", forKey: .type)
+        try container.encode(self.scaleXZ, forKey: .scaleXZ)
+        try container.encode(self.scaleY, forKey: .scaleY)
+        try container.encode(self.noise.key.name, forKey: .noiseKey)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        return self.noise.sample(x: Double(pos.x) * self.scaleXZ, y: Double(pos.y) * self.scaleY, z: Double(pos.z) * self.scaleXZ)
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return NoiseDensityFunction(
+            noise: try baker.bake(noise: self.noise),
+            scaleXZ: self.scaleXZ,
+            scaleY: self.scaleY
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scaleXZ = "xz_scale"
+        case scaleY = "y_scale"
+        case noiseKey = "noise"
+        case type = "type"
+    }
+}
+
 /// Samples a noise at a scaled and offset position.
 /// Completely different from `Shift`.
 @TestVisible(property: "testingAttributes") public final class ShiftedNoise: DensityFunction {
@@ -508,7 +593,7 @@ public final class BakedNoise: DensityFunctionNoise {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode("minecraft:shifted_noise", forKey: .noiseKey)
+        try container.encode("minecraft:shifted_noise", forKey: .type)
         try container.encode(self.shiftX, forKey: .shiftX)
         try container.encode(self.shiftY, forKey: .shiftY)
         try container.encode(self.shiftZ, forKey: .shiftZ)
@@ -546,6 +631,238 @@ public final class BakedNoise: DensityFunctionNoise {
     }
 }
 
+/// Marks a cache. Does nothing by itself.
+@TestVisible(property: "testingAttributes") public final class CacheMarker: DensityFunction {
+    public let type: CacheType
+    public let argument: DensityFunction
+
+    public init(type: CacheType, wrapping: DensityFunction) {
+        self.type = type
+        self.argument = wrapping
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.type = try container.decode(CacheType.self, forKey: .type)
+        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+
+        if self.type == .cacheAllInCell {
+            print("WARNING: A density function of type minecraft:cache_all_in_cell was decoded. It should not be referenced from data packs.")
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.type.rawValue, forKey: .type)
+        try container.encode(self.argument, forKey: .argument)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        print("WARNING: Cache marker sampled. Performace can be dramatically improved by baking the marker first.")
+        return self.argument.sample(at: pos)
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return try baker.bake(cacheMarker: self)
+    }
+
+    public enum CacheType: String, Decodable {
+        case interpolated = "minecraft:interpolated"
+        case cache2D = "minecraft:cache_2d"
+        case flatCache = "minecraft:flat_cache"
+        case cacheAllInCell = "minecraft:cache_all_in_cell"
+        case cacheOnce = "minecraft:cache_once"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case argument = "argument"
+    }
+}
+
+/// Part of the blending algorithm that we don't care about.
+@TestVisible(property: "testingAttributes") public final class BlendAlpha: DensityFunction {
+    public init() {}
+
+    public init(from: Decoder) {}
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:blend_alpha", forKey: .type)
+    }
+
+    public func sample(at: PosInt3D) -> Double {
+        return 1.0
+    }
+
+    public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+    }
+}
+
+/// Part of the blending algorithm that we don't care about.
+@TestVisible(property: "testingAttributes") public final class BlendOffset: DensityFunction {
+    public init() {}
+
+    public init(from: Decoder) {}
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:blend_offset", forKey: .type)
+    }
+
+    public func sample(at: PosInt3D) -> Double {
+        return 0.0
+    }
+
+    public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+    }
+}
+
+/// Part of the blending algorithm that we don't care about.
+@TestVisible(property: "testingAttributes") public final class BlendDensity: DensityFunction {
+    let argument: DensityFunction
+
+    public init(wrapping argument: DensityFunction) {
+        self.argument = argument
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:blend_density", forKey: .type)
+        try container.encode(self.argument, forKey: .argument)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        return self.argument.sample(at: pos)
+    }
+
+    public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case argument = "argument"
+    }
+}
+
+/// Bearding (structure terrain modification). Should not be referenced in data packs.
+@TestVisible(property: "testingAttributes") public final class BeardifierMarker: DensityFunction {
+    public init() {}
+
+    public init(from: Decoder) {
+        print("WARNING: A density function of type minecraft:beardifier was decoded. It should not be referenced from data packs.")
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:beardifier", forKey: .type)
+    }
+
+    public func sample(at: PosInt3D) -> Double {
+        return 0.0
+    }
+
+    public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+    }
+}
+
+/// Samples a specialised algorithm used for end islands.
+@TestVisible(property: "testingAttributes") public final class EndIslandsDensityFunction: DensityFunction {
+    private let sampler: DensityFunctionSimplexNoise
+
+    public init() {
+        self.sampler = DensityFunctionSimplexNoise()
+    }
+
+    public init(withSampler sampler: DensityFunctionSimplexNoise) {
+        self.sampler = sampler
+    }
+
+    convenience public init(from: Decoder) {
+        self.init()
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:end_islands", forKey: .type)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        return (Double(self.sample(x: pos.x / 8, z: pos.z / 8)) - 8.0) / 128.0
+    }
+
+    private func sample(x: Int32, z: Int32) -> Float {
+        let chunkX = x / 2
+        let chunkZ = z / 2
+        let localX = x % 2
+        let localZ = z % 2
+        let dist = sqrt(Float(x * x + z * z))
+        var ret = clamp(value: 100.0 - dist * 8.0, lowerBound: -100, upperBound: 80)
+
+        for offsetX in -12...12 {
+            for offsetZ in -12...12 {
+                let trialChunkX = UInt64(chunkX + Int32(offsetX))
+                let trialChunkZ = UInt64(chunkZ + Int32(offsetZ))
+                if (trialChunkX * trialChunkX + trialChunkZ * trialChunkZ > 4096 && sampler.sample(x: Double(trialChunkX), y: Double(trialChunkZ)) < -0.9) {
+                    let scaledChunkX = abs(Float(trialChunkX)) * 3439.0
+                    let scaledChunkZ = abs(Float(trialChunkZ)) * 147.0
+                    let scale = (scaledChunkX + scaledChunkZ).truncatingRemainder(dividingBy: 13.0) + 9.0
+                    let offsetLocalX = localX - Int32(offsetX) * 2
+                    let offsetLocalZ = localZ - Int32(offsetZ) * 2
+                    let localDist = sqrt(Float(offsetLocalX * offsetLocalX + offsetLocalZ * offsetLocalZ))
+                    let newRet = clamp(value: 100.0 - localDist * scale, lowerBound: -100.0, upperBound: 80.0)
+                    ret = max(ret, newRet)
+                }
+            }
+        }
+
+        return ret
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return EndIslandsDensityFunction(withSampler: try baker.bake(simplexNoise: self.sampler))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+    }
+}
+
+/*
+/// According to the input value, scales some regions of the input noise. Only returns the absolute value.
+@TestVisible(property: "testingAttributes") public final class WeirdScaledSampler: DensityFunction {}
+
+/// Samples an interpolated noise. See `InterpolatedNoise` for more details.
+@TestVisible(property: "testingAttributes") public final class InterpolatedNoiseDensityFunction: DensityFunction {}
+
+/// Samples a spline.
+@TestVisible(property: "testingAttributes") public final class SplineDensityFunction: DensityFunction {}
+
+/// Finds the top surface of its input (that is, the Y-coordinate at which the input exceeds 0.0).
+@TestVisible(property: "testingAttributes") public final class FindTopSurface: DensityFunction {}
+*/
+
 /// Decodes (deserializes) a density function from a decoder.
 /// - Parameter from: The decoder to decode from.
 /// - Returns: The density function represented by the decoder.
@@ -580,8 +897,23 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             return try RangeChoice(from: decoder)
         case "minecraft:shift", "minecraft:shift_a", "minecraft:shift_b":
             return try ShiftDensityFunction(from: decoder)
+        case "minecraft:noise":
+            return try NoiseDensityFunction(from: decoder)
         case "minecraft:shifted_noise":
             return try ShiftedNoise(from: decoder)
+        case "minecraft:interpolated", "minecraft:flat_cache", "minecraft:cache_2d", "minecraft:cache_once", "minecraft:cache_all_in_cell":
+            return try CacheMarker(from: decoder)
+        case "minecraft:blend_alpha":
+            return BlendAlpha()
+        case "minecraft:blend_offset":
+            return BlendOffset()
+        case "minecraft:blend_density":
+            return try BlendDensity(from: decoder)
+        case "minecraft:beardifier":
+            // using this initialiser to print the warning
+            return BeardifierMarker(from: decoder)
+        case "minecraft:end_islands":
+            return EndIslandsDensityFunction(from: decoder)
         default:
             break
         }

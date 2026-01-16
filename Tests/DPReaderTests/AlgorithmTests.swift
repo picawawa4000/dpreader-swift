@@ -94,7 +94,8 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 @Test func testInterpolatedNoise() async throws {
     var rng = XoroshiroRandom(seedLo: 15722969251820966311, seedHi: 6104536322537472173)
     let noise = InterpolatedNoise(random: &rng, xzScale: 0.25, yScale: 0.125, xzFactor: 80.0, yFactor: 160.0, smearScaleMultiplier: 8.0)
-    #expect(checkDouble(noise.sample(x: 67, y: 41, z: 32), -126696))
-    #expect(checkDouble(noise.sample(x: -67, y: -41, z: 32), -043314))
-    #expect(checkDouble(noise.sample(x: 84, y: 96, z: -3), -234940))
+    #expect(checkDouble(noise.sample(at: PosInt3D(x: 67, y: 41, z: 32)), -126696))
+    #expect(checkDouble(noise.sample(at: PosInt3D(x: -67, y: -41, z: 32)), -043314))
+    #expect(checkDouble(noise.sample(at: PosInt3D(x: 84, y: 96, z: -3)), -234940))
+    // TODO: add test for extreme coordinates
 }

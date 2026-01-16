@@ -9,9 +9,11 @@ final class WorldGenerationRegistries {
 /// A density function baker that does all baking steps.
 final class FullDensityFunctionBaker: DensityFunctionBaker {
     fileprivate let registries: WorldGenerationRegistries
+    private let seed: WorldSeed
     private var initialisedFunctionIds = Set<RegistryKey<DensityFunction>>()
 
-    init(registries: WorldGenerationRegistries) {
+    init(withSeed seed: WorldSeed, registries: WorldGenerationRegistries) {
+        self.seed = seed
         self.registries = registries
     }
 
@@ -36,6 +38,24 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
         return bakedDensityFunction
     }
 
+    func bake(cacheMarker: CacheMarker) throws -> any DensityFunction {
+        // TODO: implementation
+        #warning("Unimplemented function FullDensityFunctionBaker.bake(cacheMarker:)!")
+        return cacheMarker
+    }
+
+    func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
+        // TODO: implementation
+        #warning("Unimplemented function FullDensityFunctionBaker.bake(beardifier:)!")
+        return beardifier
+    }
+
+    func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise {
+        var random: any Random = CheckedRandom(seed: self.seed)
+        random.skip(calls: 17292)
+        return DensityFunctionSimplexNoise(withRandom: &random)
+    }
+
     /// If this function key has already been baked, return true. Otherwise, mark it as baked and return false.
     /// - Parameter key: The key to test at.
     /// - Returns: Whether the function at the key had been baked prior to the call to this function.
@@ -47,7 +67,7 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
 }
 
 /// The thing that actually generates worlds.
-@TestVisible(property: "testingAttributes") public final class WorldGenerator {
+public final class WorldGenerator {
     private let worldSeed: WorldSeed
     private var registries = WorldGenerationRegistries()
 
@@ -93,11 +113,20 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
         // in the baker object, which can be queried to ensure that each density function only gets baked once.
 
         // Note: this solution is not concurrency-safe and is not a very good one in general.
-        let baker = FullDensityFunctionBaker(registries: self.registries)
+        let baker = FullDensityFunctionBaker(withSeed: self.worldSeed, registries: self.registries)
         try self.registries.densityFunctionRegistry.forEach { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
             if baker.hasBeenBaked(atKey: key) { return }
             baker.registries.densityFunctionRegistry.register(try value.bake(withBaker: baker), forKey: key)
         }
+    }
+
+    /// Generate the chunk at this position and store it in the passed-in chunk.
+    /// - Parameters:
+    ///   - chunk: The chunk to generate into.
+    ///   - chunkPos: The position to generate the chunk at.
+    public func generateInto<C: Chunk>(_ chunk: inout C, at chunkPos: PosInt2D) {
+        fatalError("Unimplemented function WorldGenerator.generateInto(_:at:)!")
+        #warning("Unimplemented function WorldGenerator.generateInto(_:at:)!")
     }
 
     // Currently visible for testing only.
