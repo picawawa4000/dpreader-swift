@@ -811,5 +811,7 @@ fileprivate struct TestNoise: DensityFunctionNoise {
     #expect(shifted.sample(at: pos) == 26.0)
 }
 
+// We assume that cache markers & blending functions work because they're not complicated.
+
 /// TODO: this test should be based on real numbers because the end islands algorithm is weird
 @Test func testOutputForEndIslands() async throws {}

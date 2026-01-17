@@ -27,9 +27,12 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - ShiftedNoise
 // - Clamp
 // - YClampedGradient
+// - CacheMarker
+// - BlendAlpha / BlendOffset / BlendDensity / Beardifier
+// - EndIslands
 @Test func testLoadingForMonotypeDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/monotype")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noNoises])
 
     guard let continentalness = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:continentalness")) else {
         throw Errors.densityFunctionNotFound("test:continentalness")
@@ -76,6 +79,58 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(yClampedGradient.testingAttributes.toY == 50)
     #expect(yClampedGradient.testingAttributes.fromValue == -0.5)
     #expect(yClampedGradient.testingAttributes.toValue == 0.75)
+
+    // flat_cache -> interpolated -> cache_2d -> cache_all_in_cell -> cache_once
+    guard let iCached = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:dummy/cached")) else {
+        throw Errors.densityFunctionNotFound("test:cached")
+    }
+    guard let flatCache = iCached as? CacheMarker else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[0] -> CacheMarker")
+    }
+    #expect(flatCache.type == .flatCache)
+    guard let interpolated = flatCache.argument as? CacheMarker else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[1] -> CacheMarker")
+    }
+    #expect(interpolated.type == .interpolated)
+    guard let cache2D = interpolated.argument as? CacheMarker else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[2] -> CacheMarker")
+    }
+    #expect(cache2D.type == .cache2D)
+    guard let cacheAllInCell = cache2D.argument as? CacheMarker else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[3] -> CacheMarker")
+    }
+    #expect(cacheAllInCell.type == .cacheAllInCell)
+    guard let cacheOnce = cacheAllInCell.argument as? CacheMarker else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[4] -> CacheMarker")
+    }
+    #expect(cacheOnce.type == .cacheOnce)
+
+    // blend_density -> add -> blend_alpha + add -> blend_offset + beardifier
+    guard let blendDensity = cacheOnce.argument as? BlendDensity else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[5] -> BlendDensity")
+    }
+    guard let add1 = blendDensity.argument as? BinaryDensityFunction else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[6] -> BinaryDensityFunction")
+    }
+    guard add1.testingAttributes.first is BlendAlpha else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[7] -> BlendAlpha")
+    }
+    guard let add2 = add1.testingAttributes.second as? BinaryDensityFunction else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[8] -> BinaryDensityFunction")
+    }
+    guard add2.testingAttributes.first is BlendOffset else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[9] -> BlendOffset")
+    }
+    guard add2.testingAttributes.second is BeardifierMarker else {
+        throw Errors.densityFunctionWrongType("test:cached.argument[10] -> BeardifierMarker")
+    }
+
+    guard let iEndIslands = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:dummy/end_islands")) else {
+        throw Errors.densityFunctionNotFound("test:end_islands")
+    }
+    guard iEndIslands is EndIslandsDensityFunction else {
+        throw Errors.densityFunctionWrongType("test:end_islands -> EndIslandsDensityFunction")
+    }
 }
 
 // Testing loading for:
