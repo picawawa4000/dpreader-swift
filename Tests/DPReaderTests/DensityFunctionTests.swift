@@ -813,5 +813,44 @@ fileprivate struct TestNoise: DensityFunctionNoise {
 
 // We assume that cache markers & blending functions work because they're not complicated.
 
-/// TODO: this test should be based on real numbers because the end islands algorithm is weird
-@Test func testOutputForEndIslands() async throws {}
+fileprivate struct SimplexBaker: DensityFunctionBaker {
+    func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
+        throw Errors.stubCalled
+    }
+
+    func bake(referenceDensityFunction: ReferenceDensityFunction) throws -> any DensityFunction {
+        throw Errors.stubCalled
+    }
+
+    func bake(cacheMarker: CacheMarker) throws -> any DensityFunction {
+        throw Errors.stubCalled
+    }
+
+    func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
+        throw Errors.stubCalled
+    }
+
+    func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise {
+        var random: any Random = CheckedRandom(seed: 3259802309)
+        return DensityFunctionSimplexNoise(withRandom: &random)
+    }
+
+    private enum Errors: Error {
+        case stubCalled
+    }
+}
+
+@Test func testOutputForEndIslands() async throws {
+    let baker = SimplexBaker()
+    let endIslands = try EndIslandsDensityFunction().bake(withBaker: baker)
+    // Calculated from xpple's fork of Cubiomes.
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: 1523, y: 0, z: -231)), 122129))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -53210, y: 0, z: 5302781)), -508434))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: 0, y: 0, z: 0)), 562500))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: 532810, y: 0, z: 53892)), -222000))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -39258, y: 0, z: -5320183)), -782084))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: 25382932, y: 0, z: -23512349)), 3533))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -5329015, y: 0, z: 123592)), -451483))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: 5335825, y: 0, z: 12395823)), -23438))
+    #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -329591853, y: 0, z: -2052560996)), 562500))
+}

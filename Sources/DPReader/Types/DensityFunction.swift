@@ -95,6 +95,7 @@ public struct DensityFunctionSimplexNoise {
     }
 
     init(withRandom random: inout any Random) {
+        random.skip(calls: 17292)
         self.noise = SimplexNoise(random: &random)
         self.isBaked = true
     }
@@ -817,27 +818,35 @@ public struct DensityFunctionSimplexNoise {
         let chunkZ = z / 2
         let localX = x % 2
         let localZ = z % 2
-        let dist = sqrt(Float(x * x + z * z))
-        var ret = clamp(value: 100.0 - dist * 8.0, lowerBound: -100, upperBound: 80)
+        var distSquared = 64 * (UInt64(abs(x)) * UInt64(abs(x)) + UInt64(abs(z)) * UInt64(abs(z)))
+        //var ret = clamp(value: 100.0 - dist * 8.0, lowerBound: -100, upperBound: 80)
 
         for offsetX in -12...12 {
             for offsetZ in -12...12 {
-                let trialChunkX = UInt64(chunkX + Int32(offsetX))
-                let trialChunkZ = UInt64(chunkZ + Int32(offsetZ))
-                if (trialChunkX * trialChunkX + trialChunkZ * trialChunkZ > 4096 && sampler.sample(x: Double(trialChunkX), y: Double(trialChunkZ)) < -0.9) {
+                let trialChunkX = Int64(chunkX + Int32(offsetX))
+                let trialChunkZ = Int64(chunkZ + Int32(offsetZ))
+                let radiusSquared = trialChunkX * trialChunkX + trialChunkZ * trialChunkZ
+                let spx = self.sampler.sample(x: Double(trialChunkX), y: Double(trialChunkZ))
+                if (radiusSquared > 4096 && spx < -0.9) {
                     let scaledChunkX = abs(Float(trialChunkX)) * 3439.0
                     let scaledChunkZ = abs(Float(trialChunkZ)) * 147.0
-                    let scale = (scaledChunkX + scaledChunkZ).truncatingRemainder(dividingBy: 13.0) + 9.0
+                    let sum = scaledChunkX + scaledChunkZ
+                    // This is a Swift implementation of the C float-to-unsigned cast,
+                    // which may differ from Java's implementation.
+                    let intSum = sum > Float(UInt32.max) ? UInt32.max : UInt32(sum)
+                    let scale = UInt64(intSum % 13) + 9
                     let offsetLocalX = localX - Int32(offsetX) * 2
                     let offsetLocalZ = localZ - Int32(offsetZ) * 2
-                    let localDist = sqrt(Float(offsetLocalX * offsetLocalX + offsetLocalZ * offsetLocalZ))
-                    let newRet = clamp(value: 100.0 - localDist * scale, lowerBound: -100.0, upperBound: 80.0)
-                    ret = max(ret, newRet)
+                    let ax = UInt64(abs(offsetLocalX))
+                    let az = UInt64(abs(offsetLocalZ))
+                    let localDistSquared = ax * ax + az * az
+                    let scaledLocalDist = localDistSquared * scale * scale
+                    distSquared = min(distSquared, scaledLocalDist)
                 }
             }
         }
 
-        return ret
+        return clamp(value: 100.0 - sqrt(Float(distSquared)), lowerBound: -100, upperBound: 80)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {

@@ -11,7 +11,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 
 @Test func testLoadingForNoises() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noNoises])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
 
     guard let noise = dataPack.noiseRegistry.get(RegistryKey(referencing: "test:example")) else {
         throw Errors.noiseNotFound("test:example")
@@ -137,7 +137,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Unary
 @Test func testLoadingForUnaryDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/unary")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
 
     guard let iAbs = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:abs")) else {
         throw Errors.densityFunctionNotFound("test:abs")
@@ -207,7 +207,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Binary
 @Test func testLoadingForBinaryDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/binary")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
 
     guard let iAdd = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:add")) else {
         throw Errors.densityFunctionNotFound("test:add")
@@ -254,7 +254,7 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Shift
 @Test func testLoadingForShiftDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/shift")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions])
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
 
     guard let iShiftA = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:shift_a")) else {
         throw Errors.densityFunctionNotFound("test:shift_a")
