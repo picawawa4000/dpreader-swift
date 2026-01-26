@@ -134,6 +134,14 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 }
 
 // Testing loading for:
+// - WeirdScaledSampler
+// - Spline
+// - FindTopSurface
+@Test func testLoadingForMonotypeDensityFunctions2() async throws {
+    throw TestingErrors.testNotImplemented("testLoadingForMonotypeDensityFunctions2")
+}
+
+// Testing loading for:
 // - Unary
 @Test func testLoadingForUnaryDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/unary")

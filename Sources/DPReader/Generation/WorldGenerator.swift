@@ -56,6 +56,11 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
         return DensityFunctionSimplexNoise(withRandom: &random)
     }
 
+    func bake(interpolatedNoise noise: InterpolatedNoise) throws -> InterpolatedNoise {
+        var random: any Random = CheckedRandom(seed: self.seed)
+        return noise.copy(withRandom: &random)
+    }
+
     /// If this function key has already been baked, return true. Otherwise, mark it as baked and return false.
     /// - Parameter key: The key to test at.
     /// - Returns: Whether the function at the key had been baked prior to the call to this function.

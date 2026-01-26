@@ -9,4 +9,7 @@ These are generally small issues throughout the code. More specific issues will 
 
 ## Tests
 
-- Output tests for the caches (especially `minecraft:interpolated`), `BlendAlpha`, `BlendOffset`, `BlendDensity`, `Beardifier`, and especially `EndIslandsDensityFunction`.
+- Output tests for the caches (especially `minecraft:interpolated`) and `Beardifier`.
+- Loading & output tests for `WeirdScaledSampler`.
+- Loading tests for `InterpolatedNoise`.
+- Loading & output tests for `SplineDensityFunction`.

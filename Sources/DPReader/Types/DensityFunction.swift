@@ -25,6 +25,8 @@ public protocol DensityFunctionBaker {
     func bake(beardifier: BeardifierMarker) throws -> DensityFunction
     /// "Bakes" a simplex noise sampler; that is, initialises it with the world seed.
     func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise
+    /// "Bakes" an interpolated noise sampler; that is, initialises it with the world seed.
+    func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise
 }
 
 /// Represents a noise within a density function.
@@ -168,9 +170,6 @@ public struct DensityFunctionSimplexNoise {
         return self
     }
 }
-
-/// BlendAlpha and BlendOffset are to be implemented as constants of 1.0 and 0.0, respectively.
-/// BlendDensity should just unwrap its inner function.
 
 /// A density function that performs one of multiple numerical operations
 /// on the output of another density function.
@@ -858,19 +857,179 @@ public struct DensityFunctionSimplexNoise {
     }
 }
 
-/*
 /// According to the input value, scales some regions of the input noise. Only returns the absolute value.
-@TestVisible(property: "testingAttributes") public final class WeirdScaledSampler: DensityFunction {}
+@TestVisible(property: "testingAttributes") public final class WeirdScaledSampler: DensityFunction {
+    private let input: any DensityFunction
+    private let type: ScalingType
+    private let noise: any DensityFunctionNoise
 
-/// Samples an interpolated noise. See `InterpolatedNoise` for more details.
-@TestVisible(property: "testingAttributes") public final class InterpolatedNoiseDensityFunction: DensityFunction {}
+    public init(type: ScalingType, withInput input: any DensityFunction, withNoiseFromKey noiseKey: RegistryKey<NoiseDefinition>) {
+        self.type = type
+        self.input = input
+        self.noise = UnbakedNoise(fromKey: noiseKey)
+    }
 
-/// Samples a spline.
-@TestVisible(property: "testingAttributes") public final class SplineDensityFunction: DensityFunction {}
+    public init(type: ScalingType, withInput input: any DensityFunction, withNoise noise: any DensityFunctionNoise) {
+        self.type = type
+        self.input = input
+        self.noise = noise
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.type = try container.decode(ScalingType.self, forKey: .type)
+        self.input = try container.decode(DensityFunctionInitializer.self, forKey: .input).value
+        self.noise = try UnbakedNoise(fromKey: RegistryKey(referencing: container.decode(String.self, forKey: .noiseKey)))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:weird_scaled_sampler", forKey: .type)
+        try container.encode(self.input, forKey: .input)
+        try container.encode(self.noise.key.name, forKey: .noiseKey)
+        try container.encode(self.type, forKey: .type)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        let density = self.input.sample(at: pos)
+        let scaledValue = self.scale(density)
+        return scaledValue * abs(self.noise.sample(x: Double(pos.x) / scaledValue, y: Double(pos.y) / scaledValue, z: Double(pos.z) / scaledValue))
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return WeirdScaledSampler(
+            type: self.type,
+            withInput: try self.input.bake(withBaker: baker),
+            withNoise: try baker.bake(noise: self.noise)
+        )
+    }
+
+    private func scale(_ input: Double) -> Double {
+        switch self.type {
+            case .scaleTunnels:
+                if input < -0.5 { return 0.75 }
+                if input < 0.0 { return 1.0 }
+                if input < 0.5 { return 1.5 }
+                return 2.0
+            case .scaleCaves:
+                if input < -0.75 { return 0.5 }
+                if input < -0.5 { return 0.75 }
+                if input < 0.5 { return 1.0 }
+                if input < 0.75 { return 2.0 }
+                return 3.0
+        }
+    }
+
+    public enum ScalingType: String, Codable {
+        case scaleTunnels = "type_1"
+        case scaleCaves = "type_2"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case rarityValueMapper = "rarity_value_mapper"
+        case noiseKey = "noise"
+        case input = "input"
+    }
+}
+
+/// Samples a cubic spline.
+@TestVisible(property: "testingAttributes") public final class SplineDensityFunction: DensityFunction {
+    private let spline: SplineSegment
+
+    internal init(withSpline spline: SplineSegment) {
+        self.spline = spline
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.spline = try container.decode(SplineSegment.self, forKey: .spline)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:spline", forKey: .type)
+        try container.encode(self.spline, forKey: .spline)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        return Double(self.spline.sample(at: pos))
+    }
+
+    public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return SplineDensityFunction(withSpline: self.spline)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case spline = "spline"
+    }
+}
 
 /// Finds the top surface of its input (that is, the Y-coordinate at which the input exceeds 0.0).
-@TestVisible(property: "testingAttributes") public final class FindTopSurface: DensityFunction {}
-*/
+@TestVisible(property: "testingAttributes") public final class FindTopSurface: DensityFunction {
+    private let density: any DensityFunction
+    private let upperBound: any DensityFunction
+    private let lowerBound: Int
+    private let cellHeight: Int
+
+    public init(density: any DensityFunction, upperBound: any DensityFunction, lowerBound: Int, cellHeight: Int) {
+        self.density = density
+        self.upperBound = upperBound
+        self.lowerBound = lowerBound
+        self.cellHeight = cellHeight
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.density = try container.decode(DensityFunctionInitializer.self, forKey: .density).value
+        self.upperBound = try container.decode(DensityFunctionInitializer.self, forKey: .upperBound).value
+        self.lowerBound = try container.decode(Int.self, forKey: .lowerBound)
+        self.cellHeight = try container.decode(Int.self, forKey: .cellHeight)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:find_top_surface", forKey: .type)
+        try container.encode(self.density, forKey: .density)
+        try container.encode(self.upperBound, forKey: .upperBound)
+        try container.encode(self.lowerBound, forKey: .lowerBound)
+        try container.encode(self.cellHeight, forKey: .cellHeight)
+    }
+
+    public func sample(at pos: PosInt3D) -> Double {
+        let startingY = Int(floor(self.upperBound.sample(at: pos) / Double(self.cellHeight))) * self.cellHeight
+        if (startingY <= self.lowerBound) {
+            return Double(self.lowerBound)
+        }
+
+        for y in stride(from: startingY, through: self.lowerBound, by: -self.cellHeight) {
+            let samplePos = PosInt3D(x: pos.x, y: Int32(y), z: pos.z)
+            if self.density.sample(at: samplePos) > 0.0 {
+                return Double(y)
+            }
+        }
+
+        return Double(self.lowerBound)
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return FindTopSurface(
+            density: try self.density.bake(withBaker: baker),
+            upperBound: try self.upperBound.bake(withBaker: baker),
+            lowerBound: self.lowerBound,
+            cellHeight: self.cellHeight
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case density = "density"
+        case upperBound = "upper_bound"
+        case lowerBound = "lower_bound"
+        case cellHeight = "cell_height"
+    }
+}
 
 /// Decodes (deserializes) a density function from a decoder.
 /// - Parameter from: The decoder to decode from.
@@ -923,6 +1082,10 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             return BeardifierMarker(from: decoder)
         case "minecraft:end_islands":
             return EndIslandsDensityFunction(from: decoder)
+        case "minecraft:weird_scaled_sampler":
+            return try WeirdScaledSampler(from: decoder)
+        case "minecraft:spline":
+            return try SplineDensityFunction(from: decoder)
         default:
             break
         }

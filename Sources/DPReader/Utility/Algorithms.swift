@@ -392,7 +392,9 @@ public class PerlinNoise {
         let localYOffset: Double
         if (yScale != 0.0) {
             let r = yMax >= 0.0 && yMax < localY ? yMax : localY
-            localYOffset = (r / yScale + 1.0E-7).rounded(FloatingPointRoundingRule.down) * yScale
+            // Minecraft adds 1.0e-7 to (r / yScale), but Cubiomes does not.
+            // I'm going with Cubiomes here (for now) because getting numbers from Minecraft is hard.
+            localYOffset = (r / yScale).rounded(FloatingPointRoundingRule.down) * yScale
         } else {
             localYOffset = 0.0
         }
@@ -524,7 +526,7 @@ public class DoublePerlinNoise {
     }
 }
 
-public class InterpolatedNoise {
+public class InterpolatedNoise: DensityFunction {
     private let xzScale: Double, yScale: Double
     private let scaledXZScale: Double, scaledYScale: Double
     private let xzFactor: Double, yFactor: Double
@@ -553,6 +555,44 @@ public class InterpolatedNoise {
         self.lowerInterpolatedOctaves = InterpolatedNoise.initOctaves(random: &rng, count: 16)
         self.upperInterpolatedOctaves = InterpolatedNoise.initOctaves(random: &rng, count: 16)
         self.interpolationOctaves = InterpolatedNoise.initOctaves(random: &rng, count: 8)
+    }
+
+    required public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.xzScale = try container.decode(Double.self, forKey: .xzScale)
+        self.xzFactor = try container.decode(Double.self, forKey: .xzFactor)
+        self.yScale = try container.decode(Double.self, forKey: .yScale)
+        self.yFactor = try container.decode(Double.self, forKey: .yFactor)
+        self.smearScaleMultiplier = try container.decode(Double.self, forKey: .smearScaleMultiplier)
+
+        self.scaledXZScale = xzScale * 684.412
+        self.scaledYScale = yScale * 684.412
+
+        var rng: any Random = CheckedRandom(seed: 0)
+        self.lowerInterpolatedOctaves = InterpolatedNoise.initOctaves(random: &rng, count: 16)
+        self.upperInterpolatedOctaves = InterpolatedNoise.initOctaves(random: &rng, count: 16)
+        self.interpolationOctaves = InterpolatedNoise.initOctaves(random: &rng, count: 8)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:old_blended_noise", forKey: .type)
+        try container.encode(self.xzScale, forKey: .xzScale)
+        try container.encode(self.xzFactor, forKey: .xzFactor)
+        try container.encode(self.yScale, forKey: .yScale)
+        try container.encode(self.yFactor, forKey: .yFactor)
+        try container.encode(self.smearScaleMultiplier, forKey: .smearScaleMultiplier)
+    }
+
+    public func copy(withRandom rng: inout any Random) -> InterpolatedNoise {
+        return InterpolatedNoise(
+            random: &rng,
+            xzScale: self.xzScale,
+            yScale: self.yScale,
+            xzFactor: self.xzFactor,
+            yFactor: self.yFactor,
+            smearScaleMultiplier: self.smearScaleMultiplier
+        )
     }
 
     /// Because `InterpolatedNoise` is a density function, it uses ints instead of doubles.
@@ -596,5 +636,18 @@ public class InterpolatedNoise {
         // These are equivalent expressions, but only having to do one division is better than having to do three
         //return clampedLerp(delta: rescaledInterpolationTotal, start: lowerTotal / 512.0, end: upperTotal / 512.0) / 128.0
         return clampedLerp(delta: rescaledInterpolationTotal, start: lowerTotal, end: upperTotal) / 65536.0
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return try baker.bake(interpolatedNoise: self)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case xzScale = "xz_scale"
+        case yScale = "y_scale"
+        case xzFactor = "xz_factor"
+        case yFactor = "y_factor"
+        case smearScaleMultiplier = "smear_scale_multiplier"
     }
 }

@@ -15,6 +15,10 @@ func lerp(delta: Double, start: Double, end: Double) -> Double {
     return start + delta * (end - start)
 }
 
+func lerp(delta: Float, start: Float, end: Float) -> Float {
+    return start + delta * (end - start)
+}
+
 func lerp2(deltaX: Double, deltaY: Double, x0y0: Double, x1y0: Double, x0y1: Double, x1y1: Double) -> Double {
     return lerp(delta: deltaY, start: lerp(delta: deltaX, start: x0y0, end: x1y0), end: lerp(delta: deltaX, start: x0y1, end: x1y1))
 }

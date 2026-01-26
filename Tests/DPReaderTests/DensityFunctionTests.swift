@@ -339,6 +339,18 @@ private enum TestingError: Error {
     #expect(try checkJSON(endIslandsData, ["type": "minecraft:end_islands"]))
 }
 
+@Test func testEncodingForWeirdScaledSampler() async throws {
+    throw TestingErrors.testNotImplemented("testEncodingForWeirdScaledSampler()")
+}
+
+@Test func testEncodingForSpline() async throws {
+    throw TestingErrors.testNotImplemented("testEncodingForSpline()")
+}
+
+@Test func testEncodingForFindTopSurface() async throws {
+    throw TestingErrors.testNotImplemented("testEncodingForFindTopSurface()")
+}
+
 // ----- DESERIALIZATION (DECODING) TESTS -----
 
 @Test func testDecodingForReference() async throws {
@@ -646,6 +658,18 @@ private enum TestingError: Error {
     #expect((blendDensity as! BlendDensity).argument is ConstantDensityFunction)
 }
 
+@Test func testDecodingForWeirdScaledSampler() async throws {
+    throw TestingErrors.testNotImplemented("testDecodingForWeirdScaledSampler")
+}
+
+@Test func testDecodingForSpline() async throws {
+    throw TestingErrors.testNotImplemented("testDecodingForSpline")
+}
+
+@Test func testDecodingForFindTopSurface() async throws {
+    throw TestingErrors.testNotImplemented("testDecodingForFindTopSurface")
+}
+
 // ----- OUTPUT TESTS -----
 
 private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> Bool {
@@ -814,6 +838,10 @@ fileprivate struct TestNoise: DensityFunctionNoise {
 // We assume that cache markers & blending functions work because they're not complicated.
 
 fileprivate struct SimplexBaker: DensityFunctionBaker {
+    func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise {
+        throw Errors.stubCalled
+    }
+
     func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
         throw Errors.stubCalled
     }
@@ -853,4 +881,16 @@ fileprivate struct SimplexBaker: DensityFunctionBaker {
     #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -5329015, y: 0, z: 123592)), -451483))
     #expect(checkDouble(endIslands.sample(at: PosInt3D(x: 5335825, y: 0, z: 12395823)), -23438))
     #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -329591853, y: 0, z: -2052560996)), 562500))
+}
+
+@Test func testOutputForWeirdScaledSampler() async throws {
+    throw TestingErrors.testNotImplemented("testOutputForWeirdScaledSampler()")
+}
+
+@Test func testOutputForSpline() async throws {
+    throw TestingErrors.testNotImplemented("testOutputForSpline()")
+}
+
+@Test func testOutputForFindTopSurface() async throws {
+    throw TestingErrors.testNotImplemented("testOutputForFindTopSurface()")
 }
