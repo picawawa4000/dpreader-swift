@@ -1,0 +1,6 @@
+{
+    "type": "weird_scaled_sampler",
+    "input": 0.5,
+    "noise": "test:continents",
+    "rarity_value_mapper": "type_1"
+}

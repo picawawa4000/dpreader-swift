@@ -863,10 +863,10 @@ public struct DensityFunctionSimplexNoise {
     private let type: ScalingType
     private let noise: any DensityFunctionNoise
 
-    public init(type: ScalingType, withInput input: any DensityFunction, withNoiseFromKey noiseKey: RegistryKey<NoiseDefinition>) {
+    public init(type: ScalingType, withInput input: any DensityFunction, withNoiseFromKey noiseKey: String) {
         self.type = type
         self.input = input
-        self.noise = UnbakedNoise(fromKey: noiseKey)
+        self.noise = UnbakedNoise(fromKey: RegistryKey(referencing: noiseKey))
     }
 
     public init(type: ScalingType, withInput input: any DensityFunction, withNoise noise: any DensityFunctionNoise) {
@@ -877,7 +877,7 @@ public struct DensityFunctionSimplexNoise {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.type = try container.decode(ScalingType.self, forKey: .type)
+        self.type = try container.decode(ScalingType.self, forKey: .rarityValueMapper)
         self.input = try container.decode(DensityFunctionInitializer.self, forKey: .input).value
         self.noise = try UnbakedNoise(fromKey: RegistryKey(referencing: container.decode(String.self, forKey: .noiseKey)))
     }
@@ -887,7 +887,7 @@ public struct DensityFunctionSimplexNoise {
         try container.encode("minecraft:weird_scaled_sampler", forKey: .type)
         try container.encode(self.input, forKey: .input)
         try container.encode(self.noise.key.name, forKey: .noiseKey)
-        try container.encode(self.type, forKey: .type)
+        try container.encode(self.type, forKey: .rarityValueMapper)
     }
 
     public func sample(at pos: PosInt3D) -> Double {
@@ -1049,7 +1049,7 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
 
     // Otherwise try a keyed container and inspect the "type" field for known variants.
     if let container = try? decoder.container(keyedBy: GenericCodingKeys.self),
-        let typeKey = try? container.decode(String.self, forKey: GenericCodingKeys(stringValue: "type")!) {
+        let typeKey = try? addDefaultNamespace(container.decode(String.self, forKey: GenericCodingKeys(stringValue: "type")!)) {
         switch typeKey {
         case "minecraft:constant":
             return try ConstantDensityFunction(from: decoder)
@@ -1086,6 +1086,8 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             return try WeirdScaledSampler(from: decoder)
         case "minecraft:spline":
             return try SplineDensityFunction(from: decoder)
+        case "minecraft:find_top_surface":
+            return try FindTopSurface(from: decoder)
         default:
             break
         }

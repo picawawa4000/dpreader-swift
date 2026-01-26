@@ -1,7 +1,9 @@
+import TestVisible
+
 // Utilities for the implementation of `SplineDensityFunction`.
 // These are all internal for a reason.
 
-internal final class SplineObject: Codable {
+@TestVisible(property: "testingAttributes") internal final class SplineObject: Codable {
     private let input: any DensityFunction
     private let locations: [Float]
     private let values: [SplineSegment]
@@ -115,6 +117,26 @@ internal final class SplineObject: Codable {
 internal enum SplineSegment: Codable {
     case object(SplineObject)
     case number(Float)
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let numberValue = try? container.decode(Float.self) {
+            self = .number(numberValue)
+        } else {
+            let objectValue = try container.decode(SplineObject.self)
+            self = .object(objectValue)
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+            case .number(let x):
+                try container.encode(x)
+            case .object(let obj):
+                try container.encode(obj)
+        }
+    }
 
     func sample(at pos: PosInt3D) -> Float {
         switch self {

@@ -138,7 +138,65 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
 // - Spline
 // - FindTopSurface
 @Test func testLoadingForMonotypeDensityFunctions2() async throws {
-    throw TestingErrors.testNotImplemented("testLoadingForMonotypeDensityFunctions2")
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/monotype")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noNoises])
+
+    guard let iWeirdScaledSampler = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:dummy/weird_scaled_sampler")) else {
+        throw Errors.densityFunctionNotFound("test:weird_scaled_sampler")
+    }
+    guard let weirdScaledSampler = iWeirdScaledSampler as? WeirdScaledSampler else {
+        throw Errors.densityFunctionWrongType("test:weird_scaled_sampler -> WeirdScaledSampler")
+    }
+    #expect((weirdScaledSampler.testingAttributes.input as! ConstantDensityFunction).testingAttributes.value == 0.5)
+    #expect(weirdScaledSampler.testingAttributes.noise.key.name == "test:continents")
+    #expect(weirdScaledSampler.testingAttributes.type == .scaleTunnels)
+
+    guard let iSpline = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:dummy/spline")) else {
+        throw Errors.densityFunctionNotFound("test:spline")
+    }
+    guard let splineFunc = iSpline as? SplineDensityFunction else {
+        throw Errors.densityFunctionWrongType("test:spline -> SplineDensityFunction")
+    }
+    let spline = splineFunc.testingAttributes.spline
+    guard case .object(let splineObject) = spline else {
+        throw Errors.splineNotAnObjectError
+    }
+    #expect((splineObject.testingAttributes.input as! ConstantDensityFunction).testingAttributes.value == 1.5)
+    let locations = splineObject.testingAttributes.locations
+    #expect(locations.count == 3)
+    let values = splineObject.testingAttributes.values
+    #expect(values.count == 3)
+    let derivatives = splineObject.testingAttributes.derivatives
+    #expect(derivatives.count == 3)
+    #expect(locations[0] == 0.0)
+    guard case .number(let firstValue) = values[0] else {
+        throw Errors.splineValueNotNumberError
+    }
+    #expect(firstValue == 1.0)
+    #expect(derivatives[0] == 1.0)
+    #expect(locations[1] == 1.0)
+    guard case .number(let secondValue) = values[1] else {
+        throw Errors.splineValueNotNumberError
+    }
+    #expect(secondValue == -1.0)
+    #expect(derivatives[1] == 1.0)
+    #expect(locations[2] == 2.0)
+    guard case .number(let thirdValue) = values[2] else {
+        throw Errors.splineValueNotNumberError
+    }
+    #expect(thirdValue == 2.0)
+    #expect(derivatives[2] == -1.0)
+
+    guard let iFindTopSurface = dataPack.densityFunctionRegistry.get(RegistryKey(referencing: "test:dummy/find_top_surface")) else {
+        throw Errors.densityFunctionNotFound("test:find_top_surface")
+    }
+    guard let findTopSurface = iFindTopSurface as? FindTopSurface else {
+        throw Errors.densityFunctionWrongType("test:find_top_surface -> FindTopSurface")
+    }
+    #expect((findTopSurface.testingAttributes.density as! ConstantDensityFunction).testingAttributes.value == 0.5)
+    #expect((findTopSurface.testingAttributes.upperBound as! ConstantDensityFunction).testingAttributes.value == 1.0)
+    #expect(findTopSurface.testingAttributes.cellHeight == 3)
+    #expect(findTopSurface.testingAttributes.lowerBound == 0)
 }
 
 // Testing loading for:
@@ -331,4 +389,7 @@ private enum Errors: Error {
     case densityFunctionWrongType(String)
 
     case noiseNotFound(String)
+
+    case splineNotAnObjectError
+    case splineValueNotNumberError
 }

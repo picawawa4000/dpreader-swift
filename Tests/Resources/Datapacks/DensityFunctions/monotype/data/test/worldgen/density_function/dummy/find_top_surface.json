@@ -1,0 +1,7 @@
+{
+    "type": "find_top_surface",
+    "cell_height": 3,
+    "density": 0.5,
+    "upper_bound": 1.0,
+    "lower_bound": 0
+}

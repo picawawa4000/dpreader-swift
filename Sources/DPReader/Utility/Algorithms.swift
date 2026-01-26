@@ -393,8 +393,8 @@ public class PerlinNoise {
         if (yScale != 0.0) {
             let r = yMax >= 0.0 && yMax < localY ? yMax : localY
             // Minecraft adds 1.0e-7 to (r / yScale), but Cubiomes does not.
-            // I'm going with Cubiomes here (for now) because getting numbers from Minecraft is hard.
-            localYOffset = (r / yScale).rounded(FloatingPointRoundingRule.down) * yScale
+            // After speaking to some people in Minecraft@Home, I've decided to add it here.
+            localYOffset = (r / yScale + 1.0e-7).rounded(FloatingPointRoundingRule.down) * yScale
         } else {
             localYOffset = 0.0
         }

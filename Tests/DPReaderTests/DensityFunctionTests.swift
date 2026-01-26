@@ -80,6 +80,9 @@ private func checkJSON(_ actual: Data, _ expected: Any) throws -> Bool {
 
 private enum TestingError: Error {
     case jsonNotAnObjectError
+
+    case splineNotAnObjectError
+    case splineValueNotNumberError
 }
 
 // ----- SERIALIZATION (ENCODING) TESTS -----
@@ -340,15 +343,88 @@ private enum TestingError: Error {
 }
 
 @Test func testEncodingForWeirdScaledSampler() async throws {
-    throw TestingErrors.testNotImplemented("testEncodingForWeirdScaledSampler()")
+    let input = ConstantDensityFunction(value: 1.0)
+    let samplerScaleTunnels = WeirdScaledSampler(type: .scaleTunnels, withInput: input, withNoiseFromKey: "minecraft:noise")
+    let samplerScaleCaves = WeirdScaledSampler(type: .scaleCaves, withInput: input, withNoiseFromKey: "minecraft:noise")
+    let encoder = JSONEncoder()
+    let dataTunnels = try encoder.encode(samplerScaleTunnels)
+    let dataCaves = try encoder.encode(samplerScaleCaves)
+    #expect(try checkJSON(dataTunnels, [
+        "type": "minecraft:weird_scaled_sampler",
+        "rarity_value_mapper": "type_1",
+        "input": 1.0,
+        "noise": "minecraft:noise"
+    ]))
+    #expect(try checkJSON(dataCaves, [
+        "type": "minecraft:weird_scaled_sampler",
+        "rarity_value_mapper": "type_2",
+        "input": 1.0,
+        "noise": "minecraft:noise"
+    ]))
+}
+
+fileprivate func createTestSpline(sampledAt value: Double) -> SplineSegment {
+    let input = ConstantDensityFunction(value: value)
+    let locations: [Float] = [0.0, 1.0, 2.0]
+    let values: [SplineSegment] = [
+        .number(1.0),
+        .number(-1.0),
+        .number(2.0)
+    ]
+    let derivatives: [Float] = [1.0, 1.0, -1.0]
+    return .object(SplineObject(withInput: input, locations: locations, values: values, derivatives: derivatives))
 }
 
 @Test func testEncodingForSpline() async throws {
-    throw TestingErrors.testNotImplemented("testEncodingForSpline()")
+    let spline = createTestSpline(sampledAt: 1.5)
+    let splineFunc = SplineDensityFunction(withSpline: spline)
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(splineFunc)
+    #expect(try checkJSON(data, [
+        "type": "minecraft:spline",
+        "spline": [
+            "coordinate": 1.5,
+            "points": [
+                [
+                    "location": 0.0,
+                    "value": 1.0,
+                    "derivative": 1.0
+                ],
+                [
+                    "location": 1.0,
+                    "value": -1.0,
+                    "derivative": 1.0
+                ],
+                [
+                    "location": 2.0,
+                    "value": 2.0,
+                    "derivative": -1.0
+                ]
+            ]
+        ]
+    ]))
 }
 
 @Test func testEncodingForFindTopSurface() async throws {
-    throw TestingErrors.testNotImplemented("testEncodingForFindTopSurface()")
+    let sampledDensityFunction = YClampedGradient(fromY: 0, toY: 256, fromValue: -10.0, toValue: 10.0)
+    let upperBoundDensityFunction = ConstantDensityFunction(value: 256.0)
+    let findTopSurface = FindTopSurface(density: sampledDensityFunction, upperBound: upperBoundDensityFunction, lowerBound: 0, cellHeight: 8)
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(findTopSurface)
+    print(String(data: data, encoding: .utf8) ?? "nil")
+    #expect(try checkJSON(data, [
+        "type": "minecraft:find_top_surface",
+        "density": [
+            "type": "minecraft:y_clamped_gradient",
+            "from_y": 0,
+            "to_y": 256,
+            "from_value": -10.0,
+            "to_value": 10.0
+        ],
+        "upper_bound": 256.0,
+        "lower_bound": 0,
+        "cell_height": 8
+    ]))
 }
 
 // ----- DESERIALIZATION (DECODING) TESTS -----
@@ -659,15 +735,123 @@ private enum TestingError: Error {
 }
 
 @Test func testDecodingForWeirdScaledSampler() async throws {
-    throw TestingErrors.testNotImplemented("testDecodingForWeirdScaledSampler")
+    let type1Data = """
+    {
+        "type": "minecraft:weird_scaled_sampler",
+        "rarity_value_mapper": "type_1",
+        "input": 1.0,
+        "noise": "minecraft:noise"
+    }
+    """.data(using: .utf8)!
+    let type2Data = """
+    {
+        "type": "minecraft:weird_scaled_sampler",
+        "rarity_value_mapper": "type_2",
+        "input": 1.0,
+        "noise": "minecraft:noise"
+    }
+    """.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    let samplerType1 = try decoder.decode(DensityFunctionInitializer.self, from: type1Data).value
+    let samplerType2 = try decoder.decode(DensityFunctionInitializer.self, from: type2Data).value
+    let ws1 = samplerType1 as! WeirdScaledSampler
+    let ws2 = samplerType2 as! WeirdScaledSampler
+    #expect(ws1.testingAttributes.type == .scaleTunnels)
+    #expect(ws2.testingAttributes.type == .scaleCaves)
+    #expect((ws1.testingAttributes.input as! ConstantDensityFunction).testingAttributes.value == 1.0)
+    #expect((ws2.testingAttributes.input as! ConstantDensityFunction).testingAttributes.value == 1.0)
+    #expect(ws1.testingAttributes.noise.key.name == "minecraft:noise")
+    #expect(ws2.testingAttributes.noise.key.name == "minecraft:noise")
 }
 
 @Test func testDecodingForSpline() async throws {
-    throw TestingErrors.testNotImplemented("testDecodingForSpline")
+    let splineData = """
+    {
+        "type": "minecraft:spline",
+        "spline": {
+            "coordinate": 1.5,
+            "points": [
+                {
+                    "location": 0.0,
+                    "value": 1.0,
+                    "derivative": 1.0
+                },
+                {
+                    "location": 1.0,
+                    "value": -1.0,
+                    "derivative": 1.0
+                },
+                {
+                    "location": 2.0,
+                    "value": 2.0,
+                    "derivative": -1.0
+                }
+            ]
+        }
+    }
+    """.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    let df = try decoder.decode(DensityFunctionInitializer.self, from: splineData).value
+    let splineFunc = df as! SplineDensityFunction
+    let spline = splineFunc.testingAttributes.spline
+    guard case .object(let splineObject) = spline else {
+        throw TestingError.splineNotAnObjectError
+    }
+    #expect((splineObject.testingAttributes.input as! ConstantDensityFunction).testingAttributes.value == 1.5)
+    let locations = splineObject.testingAttributes.locations
+    #expect(locations.count == 3)
+    let values = splineObject.testingAttributes.values
+    #expect(values.count == 3)
+    let derivatives = splineObject.testingAttributes.derivatives
+    #expect(derivatives.count == 3)
+    #expect(locations[0] == 0.0)
+    guard case .number(let firstValue) = values[0] else {
+        throw TestingError.splineValueNotNumberError
+    }
+    #expect(firstValue == 1.0)
+    #expect(derivatives[0] == 1.0)
+    #expect(locations[1] == 1.0)
+    guard case .number(let secondValue) = values[1] else {
+        throw TestingError.splineValueNotNumberError
+    }
+    #expect(secondValue == -1.0)
+    #expect(derivatives[1] == 1.0)
+    #expect(locations[2] == 2.0)
+    guard case .number(let thirdValue) = values[2] else {
+        throw TestingError.splineValueNotNumberError
+    }
+    #expect(thirdValue == 2.0)
+    #expect(derivatives[2] == -1.0)
 }
 
 @Test func testDecodingForFindTopSurface() async throws {
-    throw TestingErrors.testNotImplemented("testDecodingForFindTopSurface")
+    let data = """
+    {
+        "type": "minecraft:find_top_surface",
+        "density": {
+            "type": "minecraft:y_clamped_gradient",
+            "from_y": 0,
+            "to_y": 256,
+            "from_value": -10.0,
+            "to_value": 10.0
+        },
+        "upper_bound": 256.0,
+        "lower_bound": 0,
+        "cell_height": 8
+    }
+    """.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
+    let fts = df as! FindTopSurface
+    let density = fts.testingAttributes.density as! YClampedGradient
+    #expect(density.testingAttributes.fromY == 0)
+    #expect(density.testingAttributes.toY == 256)
+    #expect(density.testingAttributes.fromValue == -10.0)
+    #expect(density.testingAttributes.toValue == 10.0)
+    let upperBound = fts.testingAttributes.upperBound as! ConstantDensityFunction
+    #expect(upperBound.testingAttributes.value == 256.0)
+    #expect(fts.testingAttributes.lowerBound == 0)
+    #expect(fts.testingAttributes.cellHeight == 8)
 }
 
 // ----- OUTPUT TESTS -----
@@ -883,14 +1067,87 @@ fileprivate struct SimplexBaker: DensityFunctionBaker {
     #expect(checkDouble(endIslands.sample(at: PosInt3D(x: -329591853, y: 0, z: -2052560996)), 562500))
 }
 
-@Test func testOutputForWeirdScaledSampler() async throws {
-    throw TestingErrors.testNotImplemented("testOutputForWeirdScaledSampler()")
+fileprivate struct MultiplicativeTestNoise: DensityFunctionNoise {
+    let key: RegistryKey<NoiseDefinition>
+    init(name: String = "test:dummy") {
+        self.key = RegistryKey<NoiseDefinition>(referencing: name)
+    }
+    func sample(x: Double, y: Double, z: Double) -> Double {
+        return x * y * z
+    }
 }
 
+@Test func testOutputForWeirdScaledSampler() async throws {
+    // We use multiplication instead of addition here so that the effects of scaling are visible.
+    let noise = MultiplicativeTestNoise()
+
+    let firstTunnelBranchConstant = ConstantDensityFunction(value: -1.0) // 0.75
+    let secondTunnelBranchConstant = ConstantDensityFunction(value: -0.25) // 1.0
+    let thirdTunnelBranchConstant = ConstantDensityFunction(value: 0.25) // 1.5
+    let fourthTunnelBranchConstant = ConstantDensityFunction(value: 1.0) // 2.0
+    
+    let firstCaveBranchConstant = ConstantDensityFunction(value: -1.0) // 0.5
+    let secondCaveBranchConstant = ConstantDensityFunction(value: -0.6) // 0.75
+    let thirdCaveBranchConstant = ConstantDensityFunction(value: 0.0) // 1.0
+    let fourthCaveBranchConstant = ConstantDensityFunction(value: 0.6) // 2.0
+    let fifthCaveBranchConstant = ConstantDensityFunction(value: 1.0) // 3.0
+
+    let firstTunnelBranchSampler = WeirdScaledSampler(type: .scaleTunnels, withInput: firstTunnelBranchConstant, withNoise: noise)
+    let secondTunnelBranchSampler = WeirdScaledSampler(type: .scaleTunnels, withInput: secondTunnelBranchConstant, withNoise: noise)
+    let thirdTunnelBranchSampler = WeirdScaledSampler(type: .scaleTunnels, withInput: thirdTunnelBranchConstant, withNoise: noise)
+    let fourthTunnelBranchSampler = WeirdScaledSampler(type: .scaleTunnels, withInput: fourthTunnelBranchConstant, withNoise: noise)
+
+    let firstCaveBranchSampler = WeirdScaledSampler(type: .scaleCaves, withInput: firstCaveBranchConstant, withNoise: noise)
+    let secondCaveBranchSampler = WeirdScaledSampler(type: .scaleCaves, withInput: secondCaveBranchConstant, withNoise: noise)
+    let thirdCaveBranchSampler = WeirdScaledSampler(type: .scaleCaves, withInput: thirdCaveBranchConstant, withNoise: noise)
+    let fourthCaveBranchSampler = WeirdScaledSampler(type: .scaleCaves, withInput: fourthCaveBranchConstant, withNoise: noise)
+    let fifthCaveBranchSampler = WeirdScaledSampler(type: .scaleCaves, withInput: fifthCaveBranchConstant, withNoise: noise)
+
+    // noise.sample(samplingPos) = 16 * 32 * 48 = 24576
+    let samplingPos = PosInt3D(x: 16, y: 32, z: 48)
+
+    #expect(firstTunnelBranchSampler.sample(at: samplingPos) == 0.75 * 24576 / 0.75 / 0.75 / 0.75)
+    #expect(secondTunnelBranchSampler.sample(at: samplingPos) == 24576)
+    #expect(thirdTunnelBranchSampler.sample(at: samplingPos) == 1.5 * 24576 / 1.5 / 1.5 / 1.5)
+    #expect(fourthTunnelBranchSampler.sample(at: samplingPos) == 2.0 * 24576 / 2.0 / 2.0 / 2.0)
+
+    #expect(firstCaveBranchSampler.sample(at: samplingPos) == 0.5 * 24576 / 0.5 / 0.5 / 0.5)
+    #expect(secondCaveBranchSampler.sample(at: samplingPos) == 0.75 * 24576 / 0.75 / 0.75 / 0.75)
+    #expect(thirdCaveBranchSampler.sample(at: samplingPos) == 24576)
+    #expect(fourthCaveBranchSampler.sample(at: samplingPos) == 2.0 * 24576 / 2.0 / 2.0 / 2.0)
+    #expect(fifthCaveBranchSampler.sample(at: samplingPos) == 3.0 * 24576 / 3.0 / 3.0 / 3.0)
+}
+
+// I'm kind of just assuming that this one works.
 @Test func testOutputForSpline() async throws {
-    throw TestingErrors.testNotImplemented("testOutputForSpline()")
+    let spline = createTestSpline(sampledAt: 1.5)
+    let splineFunc = SplineDensityFunction(withSpline: spline)
+    let samplingPos = PosInt3D(x: 0, y: 0, z: 0)
+    #expect(splineFunc.sample(at: samplingPos) == 2.5)
+}
+
+fileprivate struct YInvertedTestNoise: DensityFunctionNoise {
+    let key: RegistryKey<NoiseDefinition>
+    init(name: String = "test:dummy") {
+        self.key = RegistryKey<NoiseDefinition>(referencing: name)
+    }
+    func sample(x: Double, y: Double, z: Double) -> Double {
+        return x - y + z
+    }
 }
 
 @Test func testOutputForFindTopSurface() async throws {
-    throw TestingErrors.testNotImplemented("testOutputForFindTopSurface()")
+    let sampledDensityFunction = NoiseDensityFunction(noise: YInvertedTestNoise(), scaleXZ: 1.0, scaleY: 1.0)
+    let upperBoundDensityFunction = ConstantDensityFunction(value: 256.0)
+    let findTopSurface = FindTopSurface(density: sampledDensityFunction, upperBound: upperBoundDensityFunction, lowerBound: 0, cellHeight: 8)
+
+    // We use InvertedYTestNoise, which is just an additive sampler with negative Y,
+    // so that its output increases the further down you go.
+    // The highest y where noise.sample(x,y,z) >= 0 is y = -(x + z)
+    
+    // This one's 24 and not 30 because the cell height is 8.
+    #expect(findTopSurface.sample(at: PosInt3D(x: 10, y: 0, z: 20)) == 24)
+    // This one would be -25, but it goes below the boundary.
+    #expect(findTopSurface.sample(at: PosInt3D(x: -50, y: 0, z: 25)) == 0)
+    #expect(findTopSurface.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == 0)
 }
