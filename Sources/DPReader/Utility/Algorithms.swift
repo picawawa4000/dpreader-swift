@@ -13,6 +13,7 @@ public protocol Random {
 
     mutating func next(bound: UInt32) -> UInt32
     mutating func nextLong() -> UInt64
+    mutating func nextFloat() -> Float
     mutating func nextDouble() -> Double
     mutating func nextSplitter() -> Splitter
     mutating func skip(calls: UInt)
@@ -64,6 +65,10 @@ public struct CheckedRandom: Random {
 
     public mutating func nextLong() -> UInt64 {
         return UInt64(self.next(bits: 32)) << 32 + UInt64(self.next(bits: 32))
+    }
+
+    public mutating func nextFloat() -> Float {
+        return Float(self.next(bits: 24)) * 5.9604645e-8
     }
 
     public mutating func nextDouble() -> Double {
@@ -170,6 +175,10 @@ public struct XoroshiroRandom: Random {
         }
 
         return UInt32(m >> 32);
+    }
+
+    public mutating func nextFloat() -> Float {
+        return Float(self.nextLong() >> (64 - 24)) * 5.9604645e-8
     }
 
     public mutating func nextDouble() -> Double {

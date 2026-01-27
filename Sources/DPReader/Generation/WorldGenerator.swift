@@ -71,6 +71,29 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
+/*
+/// A chunk implementation for world generation.
+public final class ProtoChunk: Chunk {
+
+}
+
+final class ProtoChunkFlatCache: DensityFunction {
+    private let parent: ProtoChunk
+
+    init(withParent parent: ProtoChunk) {
+        self.parent = parent
+    }
+
+    func sample(at: PosInt3D) -> Double {
+        
+    }
+
+    func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
+        
+    }
+}
+*/
+
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
