@@ -122,6 +122,20 @@ public class SingletonLootEntry: LootEntry {
         self.weight = weight
         self.quality = quality
     }
+
+    public required init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if (container.contains(.weight)) {
+            self.weight = try container.decode(Int.self, forKey: .weight)
+        } else {
+            self.weight = 1
+        }
+        if (container.contains(.quality)) {
+            self.quality = try container.decode(Int.self, forKey: .quality)
+        } else {
+            self.quality = 0
+        }
+    }
 }
 
 public final class ItemEntry: SingletonLootEntry {
@@ -313,6 +327,7 @@ public class CompositeLootEntry: LootEntry {
 
     func encode(to encoder: any Encoder, type: String) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
         var arr = c.nestedUnkeyedContainer(forKey: .children)
         for child in children {
             try arr.encode(LootEntryInitializer(child))

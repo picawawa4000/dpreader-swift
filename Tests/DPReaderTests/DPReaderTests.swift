@@ -75,7 +75,11 @@ func checkJSON(_ actual: Data, _ expected: Any) throws -> Bool {
         normalizedExpected = normalizeJSON(expected)
     }
 
-    return compare(normalizedActual, normalizedExpected)
+    let ret = compare(normalizedActual, normalizedExpected)
+    if !ret {
+        print("JSON didn't match! Expected:", expected, "but found:", String(data: actual, encoding: .utf8)!)
+    }
+    return ret
 }
 
 enum TestingErrors: Error {
