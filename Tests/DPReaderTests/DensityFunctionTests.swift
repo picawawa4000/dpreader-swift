@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import DPReader
 
-private enum TestingError: Error {
+fileprivate enum TestingError: Error {
     case jsonNotAnObjectError
 
     case splineNotAnObjectError

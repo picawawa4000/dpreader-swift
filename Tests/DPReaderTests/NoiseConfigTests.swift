@@ -93,13 +93,30 @@ import Testing
         weirdness: ConstantDensityFunction(value: 15.0)
     )
 
+    let surfaceRule = SurfaceRuleSequence(sequence: [
+        SurfaceRuleConditionRule(
+            ifTrue: SurfaceRuleBiomeCondition(biomeIs: ["minecraft:plains", "minecraft:forest"]),
+            thenRun: SurfaceRuleBlock(
+                resultState: BlockStateDefinition(
+                    name: "minecraft:stone",
+                    properties: ["axis": "y"]
+                )
+            )
+        ),
+        SurfaceRuleConditionRule(
+            ifTrue: SurfaceRuleYAboveCondition(anchor: .aboveBottom(5), surfaceDepthMultiplier: 2, addStoneDepth: true),
+            thenRun: SurfaceRuleBandlands()
+        )
+    ])
+
     let noiseSettings = NoiseSettings(
         legacyRandomSource: true,
         minY: -64,
         height: 384,
         sizeHorizontal: 1,
         sizeVertical: 2,
-        noiseRouter: noiseRouter
+        noiseRouter: noiseRouter,
+        surfaceRule: surfaceRule
     )
 
     let encoder = JSONEncoder()
@@ -128,6 +145,41 @@ import Testing
             "erosion": 13.0,
             "depth": 14.0,
             "ridges": 15.0
+        ],
+        "surface_rule": [
+            "type": "minecraft:sequence",
+            "sequence": [
+                [
+                    "type": "minecraft:condition",
+                    "if_true": [
+                        "type": "minecraft:biome",
+                        "biome_is": ["minecraft:plains", "minecraft:forest"]
+                    ],
+                    "then_run": [
+                        "type": "minecraft:block",
+                        "result_state": [
+                            "Name": "minecraft:stone",
+                            "Properties": [
+                                "axis": "y"
+                            ]
+                        ]
+                    ]
+                ],
+                [
+                    "type": "minecraft:condition",
+                    "if_true": [
+                        "type": "minecraft:y_above",
+                        "anchor": [
+                            "above_bottom": 5
+                        ],
+                        "surface_depth_multiplier": 2,
+                        "add_stone_depth": true
+                    ],
+                    "then_run": [
+                        "type": "minecraft:bandlands"
+                    ]
+                ]
+            ]
         ]
     ]))
 }
@@ -158,6 +210,40 @@ import Testing
             "erosion": 3.25,
             "depth": 3.5,
             "ridges": 3.75
+        },
+        "surface_rule": {
+            "type": "minecraft:condition",
+            "if_true": {
+                "type": "minecraft:vertical_gradient",
+                "random_name": "test:gravel",
+                "true_at_and_below": { "absolute": 0 },
+                "false_at_and_above": { "above_bottom": 5 }
+            },
+            "then_run": {
+                "type": "minecraft:sequence",
+                "sequence": [
+                    {
+                        "type": "minecraft:block",
+                        "result_state": { "Name": "minecraft:stone" }
+                    },
+                    {
+                        "type": "minecraft:condition",
+                        "if_true": {
+                            "type": "minecraft:y_above",
+                            "anchor": { "below_top": 2 },
+                            "surface_depth_multiplier": 1,
+                            "add_stone_depth": false
+                        },
+                        "then_run": {
+                            "type": "minecraft:block",
+                            "result_state": {
+                                "Name": "minecraft:dirt",
+                                "Properties": { "snowy": "false" }
+                            }
+                        }
+                    }
+                ]
+            }
         }
     }
     """.data(using: .utf8)!
@@ -171,4 +257,144 @@ import Testing
     #expect(noiseSettings.sizeVertical == 4)
     let humidity = noiseSettings.noiseRouter.humidity as! ConstantDensityFunction
     #expect(humidity.testingAttributes.value == 2.75)
+}
+
+@Test func testEncodingForSurfaceRules() async throws {
+    let surfaceRule = SurfaceRuleSequence(sequence: [
+        SurfaceRuleConditionRule(
+            ifTrue: SurfaceRuleBiomeCondition(biomeIs: ["minecraft:plains", "minecraft:forest"]),
+            thenRun: SurfaceRuleBlock(
+                resultState: BlockStateDefinition(
+                    name: "minecraft:stone",
+                    properties: ["axis": "y"]
+                )
+            )
+        ),
+        SurfaceRuleConditionRule(
+            ifTrue: SurfaceRuleYAboveCondition(anchor: .aboveBottom(5), surfaceDepthMultiplier: 2, addStoneDepth: true),
+            thenRun: SurfaceRuleBandlands()
+        )
+    ])
+
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(surfaceRule)
+    #expect(try checkJSON(data, [
+        "type": "minecraft:sequence",
+        "sequence": [
+            [
+                "type": "minecraft:condition",
+                "if_true": [
+                    "type": "minecraft:biome",
+                    "biome_is": ["minecraft:plains", "minecraft:forest"]
+                ],
+                "then_run": [
+                    "type": "minecraft:block",
+                    "result_state": [
+                        "Name": "minecraft:stone",
+                        "Properties": [
+                            "axis": "y"
+                        ]
+                    ]
+                ]
+            ],
+            [
+                "type": "minecraft:condition",
+                "if_true": [
+                    "type": "minecraft:y_above",
+                    "anchor": [
+                        "above_bottom": 5
+                    ],
+                    "surface_depth_multiplier": 2,
+                    "add_stone_depth": true
+                ],
+                "then_run": [
+                    "type": "minecraft:bandlands"
+                ]
+            ]
+        ]
+    ]))
+}
+
+@Test func testDecodingForSurfaceRules() async throws {
+    let data = """
+    {
+        "type": "minecraft:condition",
+        "if_true": {
+            "type": "minecraft:vertical_gradient",
+            "random_name": "test:gravel",
+            "true_at_and_below": { "absolute": 0 },
+            "false_at_and_above": { "above_bottom": 5 }
+        },
+        "then_run": {
+            "type": "minecraft:sequence",
+            "sequence": [
+                {
+                    "type": "minecraft:block",
+                    "result_state": { "Name": "minecraft:stone" }
+                },
+                {
+                    "type": "minecraft:condition",
+                    "if_true": {
+                        "type": "minecraft:y_above",
+                        "anchor": { "below_top": 2 },
+                        "surface_depth_multiplier": 1,
+                        "add_stone_depth": false
+                    },
+                    "then_run": {
+                        "type": "minecraft:block",
+                        "result_state": {
+                            "Name": "minecraft:dirt",
+                            "Properties": { "snowy": "false" }
+                        }
+                    }
+                }
+            ]
+        }
+    }
+    """.data(using: .utf8)!
+
+    let decoder = JSONDecoder()
+    let iSurfaceRule = try decoder.decode(SurfaceRuleInitializer.self, from: data).value
+    guard let surfaceRule = iSurfaceRule as? SurfaceRuleConditionRule else {
+        throw Errors.surfaceRuleWrongType("surface_rule did not decode as SurfaceRuleConditionRule")
+    }
+
+    guard let verticalGradient = surfaceRule.ifTrue as? SurfaceRuleVerticalGradientCondition else {
+        throw Errors.surfaceRuleWrongType("surface_rule.if_true did not decode as SurfaceRuleVerticalGradientCondition")
+    }
+    #expect(verticalGradient.randomName == "test:gravel")
+    #expect(verticalGradient.trueAtAndBelow == .absolute(0))
+    #expect(verticalGradient.falseAtAndAbove == .aboveBottom(5))
+
+    guard let sequence = surfaceRule.thenRun as? SurfaceRuleSequence else {
+        throw Errors.surfaceRuleWrongType("surface_rule.then_run did not decode as SurfaceRuleSequence")
+    }
+    #expect(sequence.sequence.count == 2)
+
+    guard let firstBlock = sequence.sequence[0] as? SurfaceRuleBlock else {
+        throw Errors.surfaceRuleWrongType("surface_rule.sequence[0] did not decode as SurfaceRuleBlock")
+    }
+    #expect(firstBlock.resultState.name == "minecraft:stone")
+    #expect(firstBlock.resultState.properties == nil)
+
+    guard let secondCondition = sequence.sequence[1] as? SurfaceRuleConditionRule else {
+        throw Errors.surfaceRuleWrongType("surface_rule.sequence[1] did not decode as SurfaceRuleConditionRule")
+    }
+    guard let yAbove = secondCondition.ifTrue as? SurfaceRuleYAboveCondition else {
+        throw Errors.surfaceRuleWrongType("surface_rule.sequence[1].if_true did not decode as SurfaceRuleYAboveCondition")
+    }
+    #expect(yAbove.anchor == .belowTop(2))
+    #expect(yAbove.surfaceDepthMultiplier == 1)
+    #expect(yAbove.addStoneDepth == false)
+
+    guard let secondBlock = secondCondition.thenRun as? SurfaceRuleBlock else {
+        throw Errors.surfaceRuleWrongType("surface_rule.sequence[1].then_run did not decode as SurfaceRuleBlock")
+    }
+    #expect(secondBlock.resultState.name == "minecraft:dirt")
+    #expect(secondBlock.resultState.properties == ["snowy": "false"])
+}
+
+fileprivate enum Errors: Error {
+    case surfaceRuleWrongType(String)
+    case densityFunctionNotFound(String)
 }

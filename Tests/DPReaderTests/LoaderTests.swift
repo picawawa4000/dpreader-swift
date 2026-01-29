@@ -416,7 +416,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(bakedContinentalnessDensityFunction.sample(at: PosInt3D(x: 32535, y: 200, z: 13923)) == 0.5)
 }
 
-private enum Errors: Error {
+fileprivate enum Errors: Error {
     case densityFunctionNotFound(String)
     case densityFunctionWrongType(String)
 
