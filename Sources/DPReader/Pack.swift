@@ -23,12 +23,14 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
 
     public static let noDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
     public static let noNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
+    public static let noNoiseSettings = DataPackRegistryLoadingOptions(rawValue: 1 << 2)
 }
 
 /// Represents a data pack.
 public final class DataPack {
     public let densityFunctionRegistry = Registry<DensityFunction>()
     public let noiseRegistry = Registry<NoiseDefinition>()
+    public let noiseSettingsRegistry = Registry<NoiseSettings>()
 
     /// Loads a data pack from the given path. All loading options are turned off by default.
     /// - Parameter rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
@@ -51,6 +53,7 @@ public final class DataPack {
 
             if !options.contains(.noDensityFunctions) { try self.loadDensityFunctions(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noNoiseSettings) { try self.loadNoiseSettings(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
     }
 
@@ -87,6 +90,22 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("noise")
+        }
+    }
+
+    private func loadNoiseSettings(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "noise_settings")
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if filepath.isDirectory { continue }
+                let data = try Data(contentsOf: filepath)
+                let noiseSettings = try decoder.decode(NoiseSettings.self, from: data)
+                let id = RegistryKey<NoiseSettings>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                self.noiseSettingsRegistry.register(noiseSettings, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("noise_settings")
         }
     }
 

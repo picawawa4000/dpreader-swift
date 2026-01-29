@@ -20,6 +20,38 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(noise.testingAttributes.amplitudes == [1.0, 0.25, 0.0, 0.5])
 }
 
+@Test func testLoadingForNoiseSettings() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/NoiseSettings/noise_settings")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises])
+
+    guard let noiseSettings = dataPack.noiseSettingsRegistry.get(RegistryKey(referencing: "test:example")) else {
+        throw Errors.noiseSettingsNotFound("test:example")
+    }
+
+    #expect(noiseSettings.legacyRandomSource == false)
+    #expect(noiseSettings.minY == -64)
+    #expect(noiseSettings.height == 384)
+    #expect(noiseSettings.sizeHorizontal == 4)
+    #expect(noiseSettings.sizeVertical == 4)
+
+    let router = noiseSettings.noiseRouter
+    #expect(testConstant(densityFunction: router.barrier, expectedValue: 1.0))
+    #expect(testConstant(densityFunction: router.continents, expectedValue: 2.0))
+    #expect(testConstant(densityFunction: router.depth, expectedValue: 3.0))
+    #expect(testConstant(densityFunction: router.erosion, expectedValue: 4.0))
+    #expect(testConstant(densityFunction: router.finalDensity, expectedValue: 5.0))
+    #expect(testConstant(densityFunction: router.fluidLevelFloodedness, expectedValue: 6.0))
+    #expect(testConstant(densityFunction: router.fluidLevelSpread, expectedValue: 7.0))
+    #expect(testConstant(densityFunction: router.lava, expectedValue: 8.0))
+    #expect(testConstant(densityFunction: router.preliminarySurfaceLevel, expectedValue: 9.0))
+    #expect(testConstant(densityFunction: router.weirdness, expectedValue: 10.0))
+    #expect(testConstant(densityFunction: router.temperature, expectedValue: 11.0))
+    #expect(testConstant(densityFunction: router.humidity, expectedValue: 12.0))
+    #expect(testConstant(densityFunction: router.veinGap, expectedValue: 13.0))
+    #expect(testConstant(densityFunction: router.veinRidged, expectedValue: 14.0))
+    #expect(testConstant(densityFunction: router.veinToggle, expectedValue: 15.0))
+}
+
 // Testing loading for:
 // - Reference
 // - Constant
@@ -389,6 +421,7 @@ private enum Errors: Error {
     case densityFunctionWrongType(String)
 
     case noiseNotFound(String)
+    case noiseSettingsNotFound(String)
 
     case splineNotAnObjectError
     case splineValueNotNumberError
