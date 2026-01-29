@@ -54,6 +54,18 @@ public final class NoiseSettings: Codable {
         try noiseContainer.encode(self.sizeVertical, forKey: .sizeVertical)
     }
 
+    public func with(noiseRouter: NoiseRouter) -> NoiseSettings {
+        return NoiseSettings(
+            legacyRandomSource: self.legacyRandomSource,
+            minY: self.minY,
+            height: self.height,
+            sizeHorizontal: self.sizeHorizontal,
+            sizeVertical: self.sizeVertical,
+            noiseRouter: noiseRouter,
+            surfaceRule: self.surfaceRule
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case noise = "noise"
         case legacyRandomSource = "legacy_random_source"
@@ -184,6 +196,26 @@ public final class NoiseRouter: Codable {
         try container.encode(DensityFunctionEncoder(value: erosion), forKey: .erosion)
         try container.encode(DensityFunctionEncoder(value: depth), forKey: .depth)
         try container.encode(DensityFunctionEncoder(value: weirdness), forKey: .weirdness)
+    }
+
+    public func bakeAll(withBaker baker: any DensityFunctionBaker) throws -> NoiseRouter {
+        return NoiseRouter(
+            preliminarySurfaceLevel: try self.preliminarySurfaceLevel.bake(withBaker: baker),
+            finalDensity: try self.finalDensity.bake(withBaker: baker),
+            barrier: try self.barrier.bake(withBaker: baker),
+            fluidLevelFloodedness: try self.fluidLevelFloodedness.bake(withBaker: baker),
+            fluidLevelSpread: try self.fluidLevelSpread.bake(withBaker: baker),
+            lava: try self.lava.bake(withBaker: baker),
+            veinToggle: try self.veinToggle.bake(withBaker: baker),
+            veinRidged: try self.veinRidged.bake(withBaker: baker),
+            veinGap: try self.veinGap.bake(withBaker: baker),
+            temperature: try self.temperature.bake(withBaker: baker),
+            humidity: try self.humidity.bake(withBaker: baker),
+            continents: try self.continents.bake(withBaker: baker),
+            erosion: try self.erosion.bake(withBaker: baker),
+            depth: try self.depth.bake(withBaker: baker),
+            weirdness: try self.weirdness.bake(withBaker: baker)
+        )
     }
 
     private enum CodingKeys: String, CodingKey {

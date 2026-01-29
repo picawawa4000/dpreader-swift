@@ -663,7 +663,7 @@ public struct DensityFunctionSimplexNoise {
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
-        return try baker.bake(cacheMarker: self)
+        return try baker.bake(cacheMarker: CacheMarker(type: self.type, wrapping: self.argument.bake(withBaker: baker)))
     }
 
     public enum CacheType: String, Decodable {
@@ -956,8 +956,8 @@ public struct DensityFunctionSimplexNoise {
         return Double(self.spline.sample(at: pos))
     }
 
-    public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
-        return SplineDensityFunction(withSpline: self.spline)
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return SplineDensityFunction(withSpline: try self.spline.bake(withBaker: baker))
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1088,6 +1088,8 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             return try SplineDensityFunction(from: decoder)
         case "minecraft:find_top_surface":
             return try FindTopSurface(from: decoder)
+        case "minecraft:old_blended_noise":
+            return try InterpolatedNoise(from: decoder)
         default:
             break
         }

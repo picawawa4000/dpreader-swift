@@ -520,8 +520,10 @@ public class DoublePerlinNoise {
         self.secondSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
 
         // remove amplitudes of zero from front and back
-        var octaves = amplitudes.count
-        while octaves < amplitudes.count && amplitudes[octaves] == 0.0 { octaves -= 1 }
+        var octaves = amplitudes.count - 1
+        while amplitudes[octaves] == 0.0 { octaves -= 1 }
+        // correct for removing the earlier octave
+        octaves = octaves + 1
         var i = 0
         while amplitudes[i] == 0.0 { octaves -= 1; i += 1 }
         self.amplitude = (5.0 / 3.0) * Double(octaves) / Double(octaves + 1)

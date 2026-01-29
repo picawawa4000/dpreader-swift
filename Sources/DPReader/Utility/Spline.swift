@@ -53,21 +53,17 @@ import TestVisible
     }
 
     private static func findGreatestLocation(in locations: [Float], lowerThan value: Float) -> Int {
-        var rangeHighEnd = locations.count
-        var rangeLowEnd = 0
-
-        while (rangeHighEnd > 0) {
-            let rangeMiddleOffset = rangeHighEnd / 2
-            let rangeMiddle = rangeMiddleOffset + rangeLowEnd
-            if (locations[rangeMiddle] < value) {
-                rangeHighEnd = rangeMiddle
+        var low = 0
+        var high = locations.count
+        while low < high {
+            let mid = (low + high) / 2
+            if locations[mid] < value {
+                low = mid + 1
             } else {
-                rangeLowEnd = rangeMiddle + 1
-                rangeHighEnd -= rangeMiddleOffset + 1
+                high = mid
             }
         }
-
-        return rangeLowEnd
+        return low - 1
     }
 
     // Minecraft's splines use floats. I have no clue why.
@@ -79,7 +75,7 @@ import TestVisible
             return SplineObject.sampleOutsideRange(point: value, locations: self.locations, value: self.values[0].sample(at: pos), derivatives: self.derivatives, location: 0)
         }
         if lowerBound == lastLocation {
-            return SplineObject.sampleOutsideRange(point: value, locations: self.locations, value: self.values[0].sample(at: pos), derivatives: self.derivatives, location: lastLocation)
+            return SplineObject.sampleOutsideRange(point: value, locations: self.locations, value: self.values[lastLocation].sample(at: pos), derivatives: self.derivatives, location: lastLocation)
         }
         let locationBeforeValue = self.locations[lowerBound]
         let locationAfterValue = self.locations[lowerBound + 1]
@@ -97,7 +93,7 @@ import TestVisible
         return SplineObject(
             withInput: try self.input.bake(withBaker: baker),
             locations: self.locations,
-            values: self.values,
+            values: try self.values.map { try $0.bake(withBaker: baker) },
             derivatives: self.derivatives
         )
     }

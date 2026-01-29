@@ -7,3 +7,6 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 Package.resolved
+# Vanilla datapacks (used for testing) not shipped with DPReader.
+# Use Scripts/extract_vanilla_datapack.py to get these for yourself.
+vanilla/

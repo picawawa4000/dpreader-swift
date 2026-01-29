@@ -97,6 +97,7 @@ final class ProtoChunkFlatCache: DensityFunction {
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
+    private var config: NoiseSettings
     private var registries = WorldGenerationRegistries()
 
     /// Initialise this world generator.
@@ -105,12 +106,27 @@ public final class WorldGenerator {
     /// - Parameters:
     ///   - seed: The seed of the world to generate.
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
+    ///   - config: A registry key pointing to the noise settings to use for generation.
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
-    public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack]) throws {
+    public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>) throws {
         self.worldSeed = seed
         var random = XoroshiroRandom(seed: seed)
         let low = random.nextLong()
         let high = random.nextLong()
+
+        var selectedConfig: NoiseSettings? = nil
+        // Search backwards-to-forwards so that later datapacks override earlier ones.
+        for datapack in datapacks.reversed() {
+            guard let config = datapack.noiseSettingsRegistry.get(configKey) else {
+                continue
+            }
+            selectedConfig = config
+            break
+        }
+        guard let config = selectedConfig else {
+            throw WorldGenerationErrors.noiseSettingsNotPresent("Requested noise settings \(configKey.name) not found in any datapack!")
+        }
+        self.config = config
 
         for datapack in datapacks {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
@@ -146,6 +162,19 @@ public final class WorldGenerator {
             if baker.hasBeenBaked(atKey: key) { return }
             baker.registries.densityFunctionRegistry.register(try value.bake(withBaker: baker), forKey: key)
         }
+
+        self.config = self.config.with(noiseRouter: try self.config.noiseRouter.bakeAll(withBaker: baker))
+    }
+
+    public func sampleNoisePoint(at pos: PosInt3D) -> NoisePoint {
+        return NoisePoint(
+            temperature: self.config.noiseRouter.temperature.sample(at: pos),
+            humidity: self.config.noiseRouter.humidity.sample(at: pos),
+            continentalness: self.config.noiseRouter.continents.sample(at: pos),
+            erosion: self.config.noiseRouter.erosion.sample(at: pos),
+            weirdness: self.config.noiseRouter.weirdness.sample(at: pos),
+            depth: self.config.noiseRouter.depth.sample(at: pos)
+        )
     }
 
     /// Generate the chunk at this position and store it in the passed-in chunk.
@@ -174,7 +203,17 @@ public final class WorldGenerator {
     }
 }
 
+public struct NoisePoint {
+    let temperature: Double
+    let humidity: Double
+    let continentalness: Double
+    let erosion: Double
+    let weirdness: Double
+    let depth: Double
+}
+
 enum WorldGenerationErrors: Error {
     case densityFunctionNotPresent(String)
     case noiseNotPresent(String)
+    case noiseSettingsNotPresent(String)
 }
