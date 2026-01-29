@@ -4,6 +4,8 @@ import TestVisible
 final class WorldGenerationRegistries {
     var densityFunctionRegistry = Registry<DensityFunction>()
     var bakedNoiseRegistry = Registry<DoublePerlinNoise>()
+    var biomeRegistry = Registry<Biome>()
+    var dimensionRegistry = Registry<Dimension>()
 }
 
 /// A density function baker that does all baking steps.
@@ -97,8 +99,9 @@ final class ProtoChunkFlatCache: DensityFunction {
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
-    private var config: NoiseSettings
+    private var config: NoiseSettings?
     private var registries = WorldGenerationRegistries()
+    private var searchTrees = [RegistryKey<Dimension>: BiomeSearchTree]()
 
     /// Initialise this world generator.
     /// This function bakes all datapacks supplied to it, which is why it is impossible to add datapacks to an
@@ -106,31 +109,61 @@ public final class WorldGenerator {
     /// - Parameters:
     ///   - seed: The seed of the world to generate.
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
-    ///   - config: A registry key pointing to the noise settings to use for generation.
+    ///   - config: A registry key pointing to the noise settings to use for generation. While this can be omitted, it should not be except for debugging purposes.
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
-    public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>) throws {
+    public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>? = nil) throws {
         self.worldSeed = seed
         var random = XoroshiroRandom(seed: seed)
         let low = random.nextLong()
         let high = random.nextLong()
 
-        var selectedConfig: NoiseSettings? = nil
-        // Search backwards-to-forwards so that later datapacks override earlier ones.
-        for datapack in datapacks.reversed() {
-            guard let config = datapack.noiseSettingsRegistry.get(configKey) else {
-                continue
+        if configKey != nil {
+            var selectedConfig: NoiseSettings? = nil
+            // Search backwards-to-forwards so that later datapacks override earlier ones.
+            for datapack in datapacks.reversed() {
+                guard let config = datapack.noiseSettingsRegistry.get(configKey!) else {
+                    continue
+                }
+                selectedConfig = config
+                break
             }
-            selectedConfig = config
-            break
+            guard let config = selectedConfig else {
+                throw WorldGenerationErrors.noiseSettingsNotPresent("Requested noise settings \(configKey!.name) not found in any datapack!")
+            }
+            self.config = config
         }
-        guard let config = selectedConfig else {
-            throw WorldGenerationErrors.noiseSettingsNotPresent("Requested noise settings \(configKey.name) not found in any datapack!")
-        }
-        self.config = config
 
         for datapack in datapacks {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
+            self.registries.biomeRegistry.mergeDown(with: datapack.biomeRegistry)
+            self.registries.dimensionRegistry.mergeDown(with: datapack.dimensionsRegistry)
+        }
 
+        self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
+            if (value.generator is NoiseDimensionGenerator) && ((value.generator as! NoiseDimensionGenerator).biomeSource is MultiNoiseBiomeSource) {
+                let biomeSource = (value.generator as! NoiseDimensionGenerator).biomeSource as! MultiNoiseBiomeSource
+                if let preset = biomeSource.preset {
+                    // Load preset
+                    guard let presetTree = PredefinedBiomeSearchTrees.presets[preset] else {
+                        print("WARNING: Could not find predefined biome search tree preset \(preset)!")
+                        return
+                    }
+                    self.searchTrees[key] = presetTree
+                } else if let biomes = biomeSource.biomes {
+                    // Build search tree from biomes
+                    do {
+                        let tree = try buildBiomeSearchTree(from: self.registries.biomeRegistry, entries: biomes)
+                        self.searchTrees[key] = tree
+                    } catch {
+                        print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
+                    }
+                } else {
+                    print("WARNING: MultiNoiseBiomeSource in dimension \(key.name) has neither a preset nor biome list!")
+                }
+            }
+        }
+
+        for datapack in datapacks {
             // Bake noises.
             datapack.noiseRegistry.forEach() { (key, value) in
                 let noise = value.instantiate(seedLo: low, seedHi: high)
@@ -163,17 +196,23 @@ public final class WorldGenerator {
             baker.registries.densityFunctionRegistry.register(try value.bake(withBaker: baker), forKey: key)
         }
 
-        self.config = self.config.with(noiseRouter: try self.config.noiseRouter.bakeAll(withBaker: baker))
+        if self.config != nil {
+            self.config = self.config!.with(noiseRouter: try self.config!.noiseRouter.bakeAll(withBaker: baker))
+        }
     }
 
     public func sampleNoisePoint(at pos: PosInt3D) -> NoisePoint {
+        if self.config == nil {
+            print("WARNING: WorldGenerator.sampleNoisePoint(at:) called with no noise settings!")
+            return NoisePoint(temperature: 0, humidity: 0, continentalness: 0, erosion: 0, weirdness: 0, depth: 0)
+        }
         return NoisePoint(
-            temperature: self.config.noiseRouter.temperature.sample(at: pos),
-            humidity: self.config.noiseRouter.humidity.sample(at: pos),
-            continentalness: self.config.noiseRouter.continents.sample(at: pos),
-            erosion: self.config.noiseRouter.erosion.sample(at: pos),
-            weirdness: self.config.noiseRouter.weirdness.sample(at: pos),
-            depth: self.config.noiseRouter.depth.sample(at: pos)
+            temperature: self.config!.noiseRouter.temperature.sample(at: pos),
+            humidity: self.config!.noiseRouter.humidity.sample(at: pos),
+            continentalness: self.config!.noiseRouter.continents.sample(at: pos),
+            erosion: self.config!.noiseRouter.erosion.sample(at: pos),
+            weirdness: self.config!.noiseRouter.weirdness.sample(at: pos),
+            depth: self.config!.noiseRouter.depth.sample(at: pos)
         )
     }
 

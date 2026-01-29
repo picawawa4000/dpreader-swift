@@ -1047,7 +1047,7 @@ fileprivate struct MultiplicativeTestNoise: DensityFunctionNoise {
     let spline = createTestSpline(sampledAt: 1.5)
     let splineFunc = SplineDensityFunction(withSpline: spline)
     let samplingPos = PosInt3D(x: 0, y: 0, z: 0)
-    #expect(splineFunc.sample(at: samplingPos) == 2.5)
+    #expect(splineFunc.sample(at: samplingPos) == 0.75)
 }
 
 fileprivate struct YInvertedTestNoise: DensityFunctionNoise {

@@ -52,6 +52,40 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(testConstant(densityFunction: router.veinToggle, expectedValue: 15.0))
 }
 
+@Test func testLoadingForBiomes() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/Biomes/biomes")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions])
+
+    guard let biome = dataPack.biomeRegistry.get(RegistryKey(referencing: "test:example")) else {
+        throw Errors.biomeNotFound("test:example")
+    }
+    #expect(biome.hasPrecipitation == true)
+    #expect(biome.temperature == 0.8)
+    #expect(biome.downfall == 0.4)
+    #expect(biome.carvers == ["minecraft:cave", "minecraft:canyon"])
+    #expect(biome.features.count == 2)
+    #expect(biome.spawners["creature"]?.first?.type == "minecraft:sheep")
+    #expect(biome.spawnCosts["minecraft:sheep"]?.energyBudget == 1.0)
+}
+
+@Test func testLoadingForDimensions() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/Dimensions/dimensions")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noBiomes])
+
+    guard let dimension = dataPack.dimensionsRegistry.get(RegistryKey(referencing: "test:example")) else {
+        throw Errors.dimensionNotFound("test:example")
+    }
+    #expect(dimension.type == "minecraft:overworld")
+    guard let generator = dimension.generator as? NoiseDimensionGenerator else {
+        throw Errors.dimensionWrongType("NoiseDimensionGenerator")
+    }
+    #expect(generator.settings == "minecraft:overworld")
+    guard let biomeSource = generator.biomeSource as? MultiNoiseBiomeSource else {
+        throw Errors.dimensionWrongType("MultiNoiseBiomeSource")
+    }
+    #expect(biomeSource.preset == "minecraft:overworld")
+}
+
 // Testing loading for:
 // - Reference
 // - Constant
@@ -393,8 +427,8 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 
 @Test func testBakingForNoises() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
-    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoiseSettings])
-    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: RegistryKey(referencing: "test:example"))
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoiseSettings, .noBiomes, .noDimensions])
+    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: nil)
     let bakedNoise: DoublePerlinNoise = try worldGenerator.getBakedNoiseOrThrow(at: RegistryKey<DoublePerlinNoise>(referencing: "test:example"))
 
     #expect(checkDouble(bakedNoise.sample(x: -65, y: 48, z: 36), -329271))
@@ -403,7 +437,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 @Test func testBakingForDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/monotype")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
-    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: RegistryKey(referencing: "test:example"))
+    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: nil)
     let bakedShiftedNoiseDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey<DensityFunction>(referencing: "test:dummy/shifted_noise"))
     let bakedContinentalnessDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey<DensityFunction>(referencing: "test:continentalness"))
 
@@ -422,6 +456,10 @@ fileprivate enum Errors: Error {
 
     case noiseNotFound(String)
     case noiseSettingsNotFound(String)
+
+    case biomeNotFound(String)
+    case dimensionNotFound(String)
+    case dimensionWrongType(String)
 
     case splineNotAnObjectError
     case splineValueNotNumberError

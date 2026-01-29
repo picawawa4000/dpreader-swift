@@ -24,6 +24,8 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
     public static let noDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
     public static let noNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
     public static let noNoiseSettings = DataPackRegistryLoadingOptions(rawValue: 1 << 2)
+    public static let noDimensions = DataPackRegistryLoadingOptions(rawValue: 1 << 3)
+    public static let noBiomes = DataPackRegistryLoadingOptions(rawValue: 1 << 4)
 }
 
 /// Represents a data pack.
@@ -31,6 +33,8 @@ public final class DataPack {
     public let densityFunctionRegistry = Registry<DensityFunction>()
     public let noiseRegistry = Registry<NoiseDefinition>()
     public let noiseSettingsRegistry = Registry<NoiseSettings>()
+    public let dimensionsRegistry = Registry<Dimension>()
+    public let biomeRegistry = Registry<Biome>()
 
     /// Loads a data pack from the given path. All loading options are turned off by default.
     /// - Parameter rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
@@ -49,11 +53,15 @@ public final class DataPack {
         let namespacesPath = rootPath.appendingDirectory(path: "data")
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
             let namespace = namespaceURL.lastPathComponent
+
+            if !options.contains(.noDimensions) { try self.loadDimensions(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
+
             let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
 
             if !options.contains(.noDensityFunctions) { try self.loadDensityFunctions(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoiseSettings) { try self.loadNoiseSettings(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noBiomes) { try self.loadBiomes(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
     }
 
@@ -106,6 +114,38 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("noise_settings")
+        }
+    }
+
+    private func loadDimensions(fromNamespaceURL namespaceURL: URL, withNamespace namespace: String) throws {
+        let root = namespaceURL.appendingDirectory(path: "dimension")
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if filepath.isDirectory { continue }
+                let data = try Data(contentsOf: filepath)
+                let dimension = try decoder.decode(Dimension.self, from: data)
+                let id = RegistryKey<Dimension>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                self.dimensionsRegistry.register(dimension, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("dimension")
+        }
+    }
+
+    private func loadBiomes(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "biome")
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if filepath.isDirectory { continue }
+                let data = try Data(contentsOf: filepath)
+                let biome = try decoder.decode(Biome.self, from: data)
+                let id = RegistryKey<Biome>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                self.biomeRegistry.register(biome, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("biome")
         }
     }
 

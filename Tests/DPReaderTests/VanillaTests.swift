@@ -58,6 +58,8 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     #expect(checkDoubleCubiomes(noisePos.erosion, -2158))
     #expect(checkDoubleCubiomes(noisePos.depth, 5912))
     #expect(checkDoubleCubiomes(noisePos.weirdness, 1340))
+    
+    
 }
 
 fileprivate enum Errors: Error {

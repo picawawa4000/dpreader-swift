@@ -1,0 +1,38 @@
+{
+    "has_precipitation": true,
+    "temperature": 0.8,
+    "temperature_modifier": "none",
+    "downfall": 0.4,
+    "carvers": [
+        "minecraft:cave",
+        "minecraft:canyon"
+    ],
+    "features": [
+        ["minecraft:lake_lava_surface"],
+        ["minecraft:forest_rock"]
+    ],
+    "creature_spawn_probability": 0.07,
+    "spawners": {
+        "creature": [
+            {
+                "type": "minecraft:sheep",
+                "weight": 12,
+                "minCount": 2,
+                "maxCount": 4
+            }
+        ]
+    },
+    "spawn_costs": {
+        "minecraft:sheep": {
+            "energy_budget": 1.0,
+            "charge": 0.2
+        }
+    },
+    "effects": {
+        "water_color": 0,
+        "dry_foliage_color": 0,
+        "foliage_color": 0,
+        "grass_color": 0,
+        "grass_color_modifier": "none"
+    }
+}
