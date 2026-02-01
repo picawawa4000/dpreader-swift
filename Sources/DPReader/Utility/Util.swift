@@ -78,16 +78,33 @@ enum Identifiers: Codable, Equatable {
 /// A 3D position, represented by ints. Usually used for blocks.
 public struct PosInt3D {
     let x, y, z: Int32
+
+    public init(x: Int32, y: Int32, z: Int32) {
+        self.x = x
+        self.y = y
+        self.z = z
+    }
 }
 
 /// A 3D position, represented by doubles.
 public struct PosDouble3D {
     let x, y, z: Double
+
+    public init(x: Double, y: Double, z: Double) {
+        self.x = x
+        self.y = y
+        self.z = z
+    }
 }
 
 /// A 2D position, represented by ints. Usually used for chunks.
 public struct PosInt2D {
     let x, z: Int32
+
+    public init(x: Int32, z: Int32) {
+        self.x = x
+        self.z = z
+    }
 }
 
 /// Adds the vanilla namespace `minecraft:` to an ID if it does not have a namespace.
