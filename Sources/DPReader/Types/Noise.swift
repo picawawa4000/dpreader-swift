@@ -71,10 +71,8 @@ import TestVisible
         if (self.hashLow == nil) || (self.hashHigh == nil) {
             print("WARNING: Uninitialised hashes in NoiseDefinition. Treating them as 0.")
         }
-        print("hashLow", self.hashLow ?? "nil", ", hashHigh", self.hashHigh ?? "nil")
         let lo = seedLo ^ (self.hashLow ?? 0)
         let hi = seedHi ^ (self.hashHigh ?? 0)
-        print("lo", lo, ", hi", hi)
         var random = XoroshiroRandom(seedLo: lo, seedHi: hi)
         return DoublePerlinNoise(random: &random, firstOctave: self.firstOctave, amplitudes: self.amplitudes, useModernInitialization: true)
     }

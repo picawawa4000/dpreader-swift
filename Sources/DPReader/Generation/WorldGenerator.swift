@@ -101,7 +101,7 @@ public final class WorldGenerator {
     private let worldSeed: WorldSeed
     private var config: NoiseSettings?
     private var registries = WorldGenerationRegistries()
-    private var searchTrees = [RegistryKey<Dimension>: BiomeSearchTree]()
+    private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
 
     /// Initialise this world generator.
     /// This function bakes all datapacks supplied to it, which is why it is impossible to add datapacks to an
@@ -139,16 +139,21 @@ public final class WorldGenerator {
             self.registries.dimensionRegistry.mergeDown(with: datapack.dimensionsRegistry)
         }
 
-        self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
+        self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] = try buildBiomeSearchTree(
+            from: self.registries.biomeRegistry,
+            entries: getPredefinedBiomeSearchTreeData(for: "overworld")!
+        )
+
+        try self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
             if (value.generator is NoiseDimensionGenerator) && ((value.generator as! NoiseDimensionGenerator).biomeSource is MultiNoiseBiomeSource) {
                 let biomeSource = (value.generator as! NoiseDimensionGenerator).biomeSource as! MultiNoiseBiomeSource
                 if let preset = biomeSource.preset {
-                    // Load preset
-                    guard let presetTree = PredefinedBiomeSearchTrees.presets[preset] else {
-                        print("WARNING: Could not find predefined biome search tree preset \(preset)!")
-                        return
+                    if preset == "overworld" {
+                        self.searchTrees[key] = self.searchTrees[RegistryKey(referencing: "minecraft:overworld")]
+                    } else {
+                        /// TODO: add the nether
+                        throw WorldGenerationErrors.invalidMultiNoiseBiomeSourceParameterList(preset)
                     }
-                    self.searchTrees[key] = presetTree
                 } else if let biomes = biomeSource.biomes {
                     // Build search tree from biomes
                     do {
@@ -158,7 +163,7 @@ public final class WorldGenerator {
                         print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
                     }
                 } else {
-                    print("WARNING: MultiNoiseBiomeSource in dimension \(key.name) has neither a preset nor biome list!")
+                    throw WorldGenerationErrors.noBiomesOrPresetsInMultiNoiseBiomeSource(key.name)
                 }
             }
         }
@@ -216,6 +221,15 @@ public final class WorldGenerator {
         )
     }
 
+    public func sampleBiome(at pos: PosInt3D, in dim: RegistryKey<Dimension>) throws -> RegistryKey<Biome>? {
+        let point = self.sampleNoisePoint(at: pos)
+        guard let searchTree = self.searchTrees[dim] else {
+            print("WARNING: No search tree for requested biome \(dim.name)!")
+            return nil
+        }
+        return try searchTree.get(point)
+    }
+
     /// Generate the chunk at this position and store it in the passed-in chunk.
     /// - Parameters:
     ///   - chunk: The chunk to generate into.
@@ -255,4 +269,6 @@ enum WorldGenerationErrors: Error {
     case densityFunctionNotPresent(String)
     case noiseNotPresent(String)
     case noiseSettingsNotPresent(String)
+    case noBiomesOrPresetsInMultiNoiseBiomeSource(String)
+    case invalidMultiNoiseBiomeSourceParameterList(String)
 }

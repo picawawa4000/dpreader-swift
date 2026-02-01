@@ -58,8 +58,9 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     #expect(checkDoubleCubiomes(noisePos.erosion, -2158))
     #expect(checkDoubleCubiomes(noisePos.depth, 5912))
     #expect(checkDoubleCubiomes(noisePos.weirdness, 1340))
-    
-    
+
+    let biome = try worldGenerator.sampleBiome(at: PosInt3D(x: 0, y: 0, z: 0), in: RegistryKey(referencing: "minecraft:overworld"))
+    #expect(biome == RegistryKey<Biome>(referencing: "minecraft:sparse_jungle"))
 }
 
 fileprivate enum Errors: Error {

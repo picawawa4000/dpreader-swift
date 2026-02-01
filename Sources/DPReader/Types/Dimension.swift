@@ -408,7 +408,7 @@ public struct TheEndBiomeSource: BiomeSource {
     }
 }
 
-public struct MultiNoiseBiomeSourceBiome: Codable {
+public struct MultiNoiseBiomeSourceBiome: Codable, Sendable {
     let biome: String
     let parameters: MultiNoiseBiomeSourceParameters
 
@@ -435,7 +435,7 @@ public struct MultiNoiseBiomeSourceBiome: Codable {
     }
 }
 
-public struct MultiNoiseBiomeSourceParameters: Codable {
+public struct MultiNoiseBiomeSourceParameters: Codable, Sendable {
     let temperature: BiomeParameterRange
     let humidity: BiomeParameterRange
     let continentalness: BiomeParameterRange
@@ -473,7 +473,7 @@ public struct MultiNoiseBiomeSourceParameters: Codable {
     }
 }
 
-public struct BiomeParameterRange: Codable {
+public struct BiomeParameterRange: Codable, Sendable {
     let min: Double
     let max: Double
 

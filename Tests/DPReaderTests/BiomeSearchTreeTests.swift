@@ -21,8 +21,10 @@ import Testing
         spawners: [:],
         spawnCosts: [:]
     )
-    registry.register(biomeA, forKey: RegistryKey(referencing: "test:a"))
-    registry.register(biomeB, forKey: RegistryKey(referencing: "test:b"))
+    let keyA = RegistryKey<Biome>(referencing: "test:a")
+    let keyB = RegistryKey<Biome>(referencing: "test:b")
+    registry.register(biomeA, forKey: keyA)
+    registry.register(biomeB, forKey: keyB)
 
     let paramsA = MultiNoiseBiomeSourceParameters(
         temperature: BiomeParameterRange(min: 0.0, max: 0.2),
@@ -57,9 +59,9 @@ import Testing
     let resultB = try tree.get(pointB)
     let resultC = try tree.get(pointC)
 
-    #expect(resultA === biomeA)
-    #expect(resultB === biomeB)
-    #expect(resultC === biomeA)
+    #expect(resultA == keyA)
+    #expect(resultB == keyB)
+    #expect(resultC == keyA)
 }
 
 @Test func testBiomeSearchTreeMissingBiomeThrows() async {
