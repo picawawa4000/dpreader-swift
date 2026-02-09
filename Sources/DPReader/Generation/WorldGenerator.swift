@@ -42,6 +42,7 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
 
     func bake(cacheMarker: CacheMarker) throws -> any DensityFunction {
         // TODO: implementation
+        // this will store the cache markers somewhere so that they can be quickly baked
         #warning("Unimplemented function FullDensityFunctionBaker.bake(cacheMarker:)!")
         return cacheMarker
     }
@@ -59,6 +60,7 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 
     func bake(interpolatedNoise noise: InterpolatedNoise) throws -> InterpolatedNoise {
+        /// TODO: this is not correct unless using legacy random (see NoiseConfig)
         var random: any Random = CheckedRandom(seed: self.seed)
         return noise.copy(withRandom: &random)
     }
@@ -73,12 +75,20 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
-/*
 /// A chunk implementation for world generation.
-public final class ProtoChunk: Chunk {
+public final class ProtoChunk {
+    private let storage = PalettedChunkBlockStorage(filledWith: BlockState(type: Blocks.AIR))
+    
+    public func setBlock(_ state: BlockState, at pos: PosInt3D) {
+        self.storage.setBlock(state, at: pos)
+    }
 
+    public func getBlock(at pos: PosInt3D) -> BlockState {
+        return self.storage.getBlock(at: pos)
+    }
 }
 
+/*
 final class ProtoChunkFlatCache: DensityFunction {
     private let parent: ProtoChunk
 
@@ -111,7 +121,7 @@ public final class WorldGenerator {
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
     ///   - config: A registry key pointing to the noise settings to use for generation. While this can be omitted, it should not be except for debugging purposes.
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
-    public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>? = nil) throws {
+    public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>? = nil, buildSearchTrees: Bool = true) throws {
         self.worldSeed = seed
         var random = XoroshiroRandom(seed: seed)
         let low = random.nextLong()
@@ -139,31 +149,33 @@ public final class WorldGenerator {
             self.registries.dimensionRegistry.mergeDown(with: datapack.dimensionsRegistry)
         }
 
-        self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] = try buildBiomeSearchTree(
-            from: self.registries.biomeRegistry,
-            entries: getPredefinedBiomeSearchTreeData(for: "overworld")!
-        )
+        if buildSearchTrees {
+            self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] = try buildBiomeSearchTree(
+                from: self.registries.biomeRegistry,
+                entries: getPredefinedBiomeSearchTreeData(for: "overworld")!
+            )
 
-        try self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
-            if (value.generator is NoiseDimensionGenerator) && ((value.generator as! NoiseDimensionGenerator).biomeSource is MultiNoiseBiomeSource) {
-                let biomeSource = (value.generator as! NoiseDimensionGenerator).biomeSource as! MultiNoiseBiomeSource
-                if let preset = biomeSource.preset {
-                    if preset == "overworld" {
-                        self.searchTrees[key] = self.searchTrees[RegistryKey(referencing: "minecraft:overworld")]
+            try self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
+                if (value.generator is NoiseDimensionGenerator) && ((value.generator as! NoiseDimensionGenerator).biomeSource is MultiNoiseBiomeSource) {
+                    let biomeSource = (value.generator as! NoiseDimensionGenerator).biomeSource as! MultiNoiseBiomeSource
+                    if let preset = biomeSource.preset {
+                        if preset == "overworld" {
+                            self.searchTrees[key] = self.searchTrees[RegistryKey(referencing: "minecraft:overworld")]
+                        } else {
+                            /// TODO: add the nether
+                            throw WorldGenerationErrors.invalidMultiNoiseBiomeSourceParameterList(preset)
+                        }
+                    } else if let biomes = biomeSource.biomes {
+                        // Build search tree from biomes
+                        do {
+                            let tree = try buildBiomeSearchTree(from: self.registries.biomeRegistry, entries: biomes)
+                            self.searchTrees[key] = tree
+                        } catch {
+                            print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
+                        }
                     } else {
-                        /// TODO: add the nether
-                        throw WorldGenerationErrors.invalidMultiNoiseBiomeSourceParameterList(preset)
+                        throw WorldGenerationErrors.noBiomesOrPresetsInMultiNoiseBiomeSource(key.name)
                     }
-                } else if let biomes = biomeSource.biomes {
-                    // Build search tree from biomes
-                    do {
-                        let tree = try buildBiomeSearchTree(from: self.registries.biomeRegistry, entries: biomes)
-                        self.searchTrees[key] = tree
-                    } catch {
-                        print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
-                    }
-                } else {
-                    throw WorldGenerationErrors.noBiomesOrPresetsInMultiNoiseBiomeSource(key.name)
                 }
             }
         }
@@ -230,6 +242,27 @@ public final class WorldGenerator {
         return try searchTree.get(point)
     }
 
+    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>) throws -> [RegistryKey<Biome>]? {
+        if fromPos.x > toPos.x || fromPos.z > toPos.z {
+            throw WorldGenerationErrors.fromPosGreaterThanToPos
+        }
+        if fromPos == toPos {
+            let biome = try self.sampleBiome(at: PosInt3D(x: fromPos.x, y: y, z: fromPos.z), in: dim)
+            guard biome != nil else {
+                return nil
+            }
+            return [biome!]
+        }
+
+        // if the generation area is small, don't bake the functions
+        // if it's large, use a custom cache baker to speed up the process
+        fatalError("Unimplemented function WorldGenerator.generateBiomesInSquare(from:to:atY:in:)!")
+        return nil
+    }
+
+    /*
+    Currently shelved along with the chunk protocol.
+
     /// Generate the chunk at this position and store it in the passed-in chunk.
     /// - Parameters:
     ///   - chunk: The chunk to generate into.
@@ -238,6 +271,7 @@ public final class WorldGenerator {
         fatalError("Unimplemented function WorldGenerator.generateInto(_:at:)!")
         #warning("Unimplemented function WorldGenerator.generateInto(_:at:)!")
     }
+    */
 
     // Currently visible for testing only.
     func getBakedNoiseOrThrow(at key: RegistryKey<DoublePerlinNoise>) throws -> DoublePerlinNoise {
@@ -271,4 +305,5 @@ enum WorldGenerationErrors: Error {
     case noiseSettingsNotPresent(String)
     case noBiomesOrPresetsInMultiNoiseBiomeSource(String)
     case invalidMultiNoiseBiomeSourceParameterList(String)
+    case fromPosGreaterThanToPos
 }

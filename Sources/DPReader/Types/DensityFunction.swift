@@ -263,6 +263,7 @@ public struct DensityFunctionSimplexNoise {
 
     public func sample(at pos: PosInt3D) -> Double {
         return switch self.operation {
+            /// TODO: add short-circuiting with min/max value functions
             case .ADD: self.first.sample(at: pos) + self.second.sample(at: pos)
             case .MULTIPLY: self.first.sample(at: pos) * self.second.sample(at: pos)
             case .MAXIMUM: max(self.first.sample(at: pos), self.second.sample(at: pos))
@@ -658,7 +659,7 @@ public struct DensityFunctionSimplexNoise {
     }
 
     public func sample(at pos: PosInt3D) -> Double {
-        print("WARNING: Cache marker sampled. Performace can be dramatically improved by baking the marker first.")
+        //print("WARNING: Cache marker sampled. Performace can be dramatically improved by baking the marker first.")
         return self.argument.sample(at: pos)
     }
 

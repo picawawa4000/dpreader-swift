@@ -51,20 +51,20 @@ public struct CheckedRandom: Random {
     }
 
     public mutating func next(bound: UInt32) -> UInt32 {
-        if ((bound & (bound - 1)) == 0) {
+        if ((bound & (bound &- 1)) == 0) {
             return UInt32((UInt64(bound) * UInt64(self.next(bits: 31))) >> 31);
-        } else {
-            var j, k: UInt32
-            repeat {
-                j = self.next(bits: 31);
-                k = j % bound;
-            } while (j - k + (bound - 1) < 0);
-            return k;
         }
+
+        var j, k: Int32
+        repeat {
+            j = Int32(self.next(bits: 31));
+            k = j % Int32(bound);
+        } while j &- k &+ Int32(bound &- 1) < 0;
+        return UInt32(k);
     }
 
     public mutating func nextLong() -> UInt64 {
-        return UInt64(self.next(bits: 32)) << 32 + UInt64(self.next(bits: 32))
+        return (UInt64(self.next(bits: 32)) << 32) + UInt64(self.next(bits: 32))
     }
 
     public mutating func nextFloat() -> Float {
@@ -103,8 +103,8 @@ public struct CheckedRandomSplitter: RandomSplitter {
     }
 
     public func split(usingPos pos: PosInt3D) -> ReturnedRandom {
-        let l: UInt64 = UInt64(pos.x) * 3129871 ^ UInt64(pos.z) * 116129781 ^ UInt64(pos.y)
-        let m = l * l * 42317861 + l * 11
+        let l: UInt64 = UInt64(pos.x) &* 3129871 ^ UInt64(pos.z) &* 116129781 ^ UInt64(pos.y)
+        let m = l &* l &* 42317861 + l &* 11
         return CheckedRandom(seed: (m >> 16) ^ self.seed)
     }
 

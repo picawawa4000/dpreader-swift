@@ -105,6 +105,15 @@ public struct PosInt2D {
         self.x = x
         self.z = z
     }
+
+    /// Determines whether these two positions are equivalent.
+    /// - Parameters:
+    ///   - left: The first position.
+    ///   - right: The second position.
+    /// - Returns: Whether these two positions reference the same position.
+    public static func == (left: PosInt2D, right: PosInt2D) -> Bool {
+        return left.x == right.x && left.z == right.z
+    }
 }
 
 /// Adds the vanilla namespace `minecraft:` to an ID if it does not have a namespace.

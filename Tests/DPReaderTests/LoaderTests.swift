@@ -428,7 +428,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 @Test func testBakingForNoises() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoiseSettings, .noBiomes, .noDimensions])
-    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: nil)
+    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: nil, buildSearchTrees: false)
     let bakedNoise: DoublePerlinNoise = try worldGenerator.getBakedNoiseOrThrow(at: RegistryKey<DoublePerlinNoise>(referencing: "test:example"))
 
     #expect(checkDouble(bakedNoise.sample(x: -65, y: 48, z: 36), -329271))
@@ -437,7 +437,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 @Test func testBakingForDensityFunctions() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/monotype")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
-    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: nil)
+    let worldGenerator = try WorldGenerator(withWorldSeed: 3447, usingDataPacks: [dataPack], usingSettings: nil, buildSearchTrees: false)
     let bakedShiftedNoiseDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey<DensityFunction>(referencing: "test:dummy/shifted_noise"))
     let bakedContinentalnessDensityFunction = try worldGenerator.getDensityFunctionOrThrow(at: RegistryKey<DensityFunction>(referencing: "test:continentalness"))
 

@@ -80,6 +80,59 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(checkDouble(noise.sample(x: 14253532, y: -3512332, z: -25321807), -99810))
 }
 
+@Test func testDoublePerlinNoiseZeroOctaves() async throws {
+    let seed: UInt64 = 9274510295513
+
+    func makeNoise(amplitudes: [Double]) -> DoublePerlinNoise {
+        var xr = XoroshiroRandom(seed: seed)
+        return DoublePerlinNoise(random: &xr, firstOctave: -10, amplitudes: amplitudes, useModernInitialization: true)
+    }
+
+    let front = makeNoise(amplitudes: [1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
+    let middle = makeNoise(amplitudes: [0.0, 0.0, 1.0, 1.0, 1.0, 1.0])
+    let end = makeNoise(amplitudes: [1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+
+    let sampleA = PosInt3D(x: 67, y: 41, z: 32)
+    let sampleB = PosInt3D(x: -67, y: -41, z: -32)
+    let sampleC = PosInt3D(x: 14253532, y: -3512332, z: -25321807)
+
+    let frontA = front.sample(x: Double(sampleA.x), y: Double(sampleA.y), z: Double(sampleA.z))
+    let frontB = front.sample(x: Double(sampleB.x), y: Double(sampleB.y), z: Double(sampleB.z))
+    let frontC = front.sample(x: Double(sampleC.x), y: Double(sampleC.y), z: Double(sampleC.z))
+
+    let middleA = middle.sample(x: Double(sampleA.x), y: Double(sampleA.y), z: Double(sampleA.z))
+    let middleB = middle.sample(x: Double(sampleB.x), y: Double(sampleB.y), z: Double(sampleB.z))
+    let middleC = middle.sample(x: Double(sampleC.x), y: Double(sampleC.y), z: Double(sampleC.z))
+
+    let endA = end.sample(x: Double(sampleA.x), y: Double(sampleA.y), z: Double(sampleA.z))
+    let endB = end.sample(x: Double(sampleB.x), y: Double(sampleB.y), z: Double(sampleB.z))
+    let endC = end.sample(x: Double(sampleC.x), y: Double(sampleC.y), z: Double(sampleC.z))
+
+    // frontA: -0.0965829
+    // midA: 0.0342216
+    // endA: 0.0608413
+
+    // frontB: -0.315797
+    // midB: -0.0205154
+    // endB: -0.0970461
+
+    // frontC: 0.346731
+    // midC: 0.00590572
+    // endC: 0.219295
+
+    #expect(checkDouble(frontA, -96583))
+    #expect(checkDouble(middleA, 34222))
+    #expect(checkDouble(endA, 60841))
+
+    #expect(checkDouble(frontB, -315797))
+    #expect(checkDouble(middleB, -20515))
+    #expect(checkDouble(endB, -97046))
+
+    #expect(checkDouble(frontC, 346731))
+    #expect(checkDouble(middleC, 5906))
+    #expect(checkDouble(endC, 219295))
+}
+
 @Test func testSimplexNoise() async throws {
     let seed: UInt64 = 103582038203
     var xr = XoroshiroRandom(seed: seed)

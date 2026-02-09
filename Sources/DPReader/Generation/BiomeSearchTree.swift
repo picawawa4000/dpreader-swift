@@ -30,6 +30,23 @@ public final class BiomeSearchTree {
         self.lastResult = result
         return value
     }
+
+    /// Resets the tree's internal "alternative".
+    /// Useful for deterministic results, but will result in a massive performance hit.
+    public func resetAlternative() {
+        self.lastResult = BiomeTreeNode(parameters: [], value: nil, children: [])
+    }
+
+    // Internal helper for diagnostics.
+    func lastResultDistance(to point: NoisePoint) -> Int64? {
+        guard lastResult.value != nil else { return nil }
+        return squaredDistance(parameters: lastResult.parameters, point: point.toList())
+    }
+
+    // Internal helper for diagnostics and tests.
+    func nodes(with biome: RegistryKey<Biome>) -> [BiomeTreeNode] {
+        return self.root.nodes(with: biome)
+    }
 }
 
 public func buildBiomeSearchTree(from biomeRegistry: Registry<Biome>, entries: [MultiNoiseBiomeSourceBiome]) throws -> BiomeSearchTree {
@@ -140,6 +157,17 @@ final class BiomeTreeNode {
             ret = endNode
         }
         return ret
+    }
+
+    func nodes(with biome: RegistryKey<Biome>) -> [BiomeTreeNode] {
+        var matches: [BiomeTreeNode] = []
+        if self.value == biome {
+            matches.append(self)
+        }
+        for child in self.children {
+            matches.append(contentsOf: child.nodes(with: biome))
+        }
+        return matches
     }
 
     static func createNode(from children: [BiomeTreeNode]) throws -> BiomeTreeNode {
@@ -292,7 +320,7 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
         range(-1.0, -0.78),
         range(-0.78, -0.375),
         range(-0.375, -0.2225),
-        range(-0.2225, -0.05),
+        range(-0.2225, 0.05),
         range(0.05, 0.45),
         range(0.45, 0.55),
         range(0.55, 1.0)
@@ -343,7 +371,10 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
     let nearMountainBiomes = [
         ["minecraft:snowy_plains", "minecraft:snowy_plains", "minecraft:snowy_plains", "minecraft:snowy_taiga", "minecraft:snowy_taiga"],
         ["minecraft:meadow", "minecraft:meadow", "minecraft:forest", "minecraft:taiga", "minecraft:old_growth_spruce_taiga"],
-        ["minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:dark_forest"],
+        // About the pale_garden entry: Cubiomes has it in specialNearMountainBiomes, whereas modern versions of Minecraft
+        // have it as a normal near mountain biome to make it more common.
+        // We agree with modern Minecraft here.
+        ["minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:pale_garden"],
         ["minecraft:savanna_plateau", "minecraft:savanna_plateau", "minecraft:forest", "minecraft:forest", "minecraft:jungle"],
         ["minecraft:badlands", "minecraft:badlands", "minecraft:badlands", "minecraft:wooded_badlands", "minecraft:wooded_badlands"]
     ]
@@ -351,7 +382,7 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
     let specialNearMountainBiomes = [
         ["minecraft:ice_spikes", THE_VOID, THE_VOID, THE_VOID, THE_VOID],
         ["minecraft:cherry_grove", THE_VOID, "minecraft:meadow", "minecraft:meadow", "minecraft:old_growth_pine_taiga"],
-        ["minecraft:cherry_grove", "minecraft:cherry_grove", "minecraft:forest", "minecraft:birch_forest", "minecraft:pale_garden"],
+        ["minecraft:cherry_grove", "minecraft:cherry_grove", "minecraft:forest", "minecraft:birch_forest", THE_VOID],
         [THE_VOID, THE_VOID, THE_VOID, THE_VOID, THE_VOID],
         ["minecraft:eroded_badlands", "minecraft:eroded_badlands", THE_VOID, THE_VOID, THE_VOID]
     ]
@@ -455,8 +486,8 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
         enter([nonFrozenParameters, defaultRange, coastContinentalness, combine(erosionParameters[0], erosionParameters[1]), weirdness], 0, weirdness.max < 0 ? "minecraft:stony_shore" : "minecraft:river")
         enter([temperatureParameters[0], defaultRange, nearInlandContinentalness, combine(erosionParameters[0], erosionParameters[1]), weirdness], 0, "minecraft:frozen_river")
         enter([nonFrozenParameters, defaultRange, nearInlandContinentalness, combine(erosionParameters[0], erosionParameters[1]), weirdness], 0, "minecraft:river")
-        enter([temperatureParameters[0], defaultRange, combine(nearInlandContinentalness, farInlandContinentalness), combine(erosionParameters[2], erosionParameters[5]), weirdness], 0, "minecraft:frozen_river")
-        enter([nonFrozenParameters, defaultRange, combine(nearInlandContinentalness, farInlandContinentalness), combine(erosionParameters[2], erosionParameters[5]), weirdness], 0, "minecraft:river")
+        enter([temperatureParameters[0], defaultRange, combine(coastContinentalness, farInlandContinentalness), combine(erosionParameters[2], erosionParameters[5]), weirdness], 0, "minecraft:frozen_river")
+        enter([nonFrozenParameters, defaultRange, combine(coastContinentalness, farInlandContinentalness), combine(erosionParameters[2], erosionParameters[5]), weirdness], 0, "minecraft:river")
         enter([temperatureParameters[0], defaultRange, coastContinentalness, erosionParameters[6], weirdness], 0, "minecraft:frozen_river")
         enter([nonFrozenParameters, defaultRange, coastContinentalness, erosionParameters[6], weirdness], 0, "minecraft:river")
         enter([combine(temperatureParameters[1], temperatureParameters[2]), defaultRange, combine(riverContinentalness, farInlandContinentalness), erosionParameters[6], weirdness], 0, "minecraft:swamp")
@@ -473,9 +504,9 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
     }
 
     func enterLowBiomes(_ weirdness: BiomeParameterRange) {
-        enter([temperatureParameters[0], defaultRange, coastContinentalness, combine(erosionParameters[0], erosionParameters[2]), weirdness], 0, "minecraft:stony_shore")
-        enter([combine(temperatureParameters[3], temperatureParameters[4]), defaultRange, combine(nearInlandContinentalness, farInlandContinentalness), erosionParameters[6], weirdness], 0, "minecraft:swamp")
-        enter([combine(temperatureParameters[3], temperatureParameters[4]), defaultRange, combine(nearInlandContinentalness, farInlandContinentalness), erosionParameters[6], weirdness], 0, "minecraft:swamp")
+        enter([defaultRange, defaultRange, coastContinentalness, combine(erosionParameters[0], erosionParameters[2]), weirdness], 0, "minecraft:stony_shore")
+        enter([combine(temperatureParameters[1], temperatureParameters[2]), defaultRange, combine(nearInlandContinentalness, farInlandContinentalness), erosionParameters[6], weirdness], 0, "minecraft:swamp")
+        enter([combine(temperatureParameters[3], temperatureParameters[4]), defaultRange, combine(nearInlandContinentalness, farInlandContinentalness), erosionParameters[6], weirdness], 0, "minecraft:mangrove_swamp")
         for i in 0..<temperatureParameters.count {
             let temperature = temperatureParameters[i]
             for j in 0..<humidityParameters.count {
@@ -490,7 +521,7 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
                 enter([temperature, humidity, combine(midInlandContinentalness, farInlandContinentalness), combine(erosionParameters[0], erosionParameters[1]), weirdness], 0, mountainStart)
                 enter([temperature, humidity, nearInlandContinentalness, combine(erosionParameters[2], erosionParameters[3]), weirdness], 0, regular)
                 enter([temperature, humidity, combine(midInlandContinentalness, farInlandContinentalness), combine(erosionParameters[2], erosionParameters[3]), weirdness], 0, badlandsOrRegular)
-                enter([temperature, humidity, coastContinentalness, erosionParameters[4], weirdness], 0, shore)
+                enter([temperature, humidity, coastContinentalness, combine(erosionParameters[3], erosionParameters[4]), weirdness], 0, shore)
                 enter([temperature, humidity, combine(nearInlandContinentalness, farInlandContinentalness), erosionParameters[4], weirdness], 0, regular)
                 enter([temperature, humidity, coastContinentalness, erosionParameters[5], weirdness], 0, erodedShore)
                 enter([temperature, humidity, nearInlandContinentalness, erosionParameters[5], weirdness], 0, regularOrWindsweptSavanna)
