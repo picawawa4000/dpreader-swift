@@ -664,7 +664,7 @@ public struct DensityFunctionSimplexNoise {
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
-        return try baker.bake(cacheMarker: CacheMarker(type: self.type, wrapping: self.argument.bake(withBaker: baker)))
+        return try baker.bake(cacheMarker: self)
     }
 
     public enum CacheType: String, Decodable {

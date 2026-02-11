@@ -133,6 +133,13 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     //#expect(checkDoubleCubiomes(noisePoint.depth, -75135))
     #expect(checkDoubleCubiomes(noisePoint.weirdness, 2434))
 
+    let biomes = try worldGenerator.generateBiomesInSquare(from: PosInt2D(x: 0, z: 0), to: PosInt2D(x: 128, z: 128), atY: 256, in: RegistryKey(referencing: "minecraft:overworld"), usingFourScale: true)
+
+    for (expectedBiome, actualBiome) in zip(cubiomesData, biomes!) {
+        #expect(cubiomesNumberToKeyMap[expectedBiome] == actualBiome, "DPReader result \(actualBiome.name) diverges from Cubiomes result \(cubiomesNumberToKeyMap[expectedBiome]?.name ?? "none")!")
+    }
+
+    /*
     for x: Int32 in 0..<32 {
         for z: Int32 in 0..<32 {
             if x == 11 && z == 7 {
@@ -148,6 +155,37 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
             }
         }
     }
+    */
+}
+
+@Test func benchmarkVanillaBatchGeneration() async throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    print(vanillaDataPath.path)
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw Errors.noVanillaDataFound
+    }
+
+    let startTime = DispatchTime.now().uptimeNanoseconds
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 503815372,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let initTime = DispatchTime.now().uptimeNanoseconds
+    _ = try worldGenerator.generateBiomesInSquare(
+        from: PosInt2D(x: 0, z: 0),
+        to: PosInt2D(x: 1024, z: 1024),
+        atY: 256,
+        in: RegistryKey(referencing: "minecraft:overworld"),
+        forceNoBaking: false,
+        benchmark: true
+    )
+    let endTime = DispatchTime.now().uptimeNanoseconds
+    print("Initialisation took \(initTime - startTime)ns (\((initTime - startTime) / 1_000_000)ms); generation in 1024x1024 area took \(endTime - initTime)ns (\((endTime - initTime) / 1_000_000)ms)")
 }
 
 fileprivate enum Errors: Error {

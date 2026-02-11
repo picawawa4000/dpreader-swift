@@ -11,19 +11,19 @@ func clamp<T: Comparable>(value: T, lowerBound: T, upperBound: T) -> T {
     return value > upperBound ? upperBound : (value < lowerBound ? lowerBound : value)
 }
 
-func lerp(delta: Double, start: Double, end: Double) -> Double {
+@inline(__always) func lerp(delta: Double, start: Double, end: Double) -> Double {
     return start + delta * (end - start)
 }
 
-func lerp(delta: Float, start: Float, end: Float) -> Float {
+@inline(__always) func lerp(delta: Float, start: Float, end: Float) -> Float {
     return start + delta * (end - start)
 }
 
-func lerp2(deltaX: Double, deltaY: Double, x0y0: Double, x1y0: Double, x0y1: Double, x1y1: Double) -> Double {
+@inline(__always) func lerp2(deltaX: Double, deltaY: Double, x0y0: Double, x1y0: Double, x0y1: Double, x1y1: Double) -> Double {
     return lerp(delta: deltaY, start: lerp(delta: deltaX, start: x0y0, end: x1y0), end: lerp(delta: deltaX, start: x0y1, end: x1y1))
 }
 
-func lerp3(deltaX: Double, deltaY: Double, deltaZ: Double, x0y0z0: Double, x1y0z0: Double, x0y1z0: Double, x1y1z0: Double, x0y0z1: Double, x1y0z1: Double, x0y1z1: Double, x1y1z1: Double) -> Double {
+@inline(__always) func lerp3(deltaX: Double, deltaY: Double, deltaZ: Double, x0y0z0: Double, x1y0z0: Double, x0y1z0: Double, x1y1z0: Double, x0y0z1: Double, x1y0z1: Double, x0y1z1: Double, x1y1z1: Double) -> Double {
     return lerp(delta: deltaZ,
                 start: lerp2(deltaX: deltaX, deltaY: deltaY, x0y0: x0y0z0, x1y0: x1y0z0, x0y1: x0y1z0, x1y1: x1y1z0),
                 end: lerp2(deltaX: deltaX, deltaY: deltaY, x0y0: x0y0z1, x1y0: x1y0z1, x0y1: x0y1z1, x1y1: x1y1z1))

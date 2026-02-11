@@ -8,6 +8,7 @@ public enum BiomeSearchTreeError: Error {
 public final class BiomeSearchTree {
     private let root: BiomeTreeNode
     private var lastResult: BiomeTreeNode
+    private var scratchPoint: [Int64] = Array(repeating: 0, count: 7)
 
     public init(entries: [(NoiseHypercube, RegistryKey<Biome>)]) throws {
         guard !entries.isEmpty else {
@@ -23,7 +24,8 @@ public final class BiomeSearchTree {
     }
 
     public func get(_ point: NoisePoint) throws -> RegistryKey<Biome> {
-        let result = self.root.getResultingNode(point: point.toList(), alternative: self.lastResult)
+        self.updateScratchPoint(from: point)
+        let result = self.root.getResultingNode(point: self.scratchPoint, alternative: self.lastResult)
         guard let value = result.value else {
             throw BiomeSearchTreeError.emptyEntries
         }
@@ -40,7 +42,18 @@ public final class BiomeSearchTree {
     // Internal helper for diagnostics.
     func lastResultDistance(to point: NoisePoint) -> Int64? {
         guard lastResult.value != nil else { return nil }
-        return squaredDistance(parameters: lastResult.parameters, point: point.toList())
+        self.updateScratchPoint(from: point)
+        return squaredDistance(parameters: lastResult.parameters, point: self.scratchPoint)
+    }
+
+    private func updateScratchPoint(from point: NoisePoint) {
+        self.scratchPoint[0] = Int64(point.temperature * 10000.0)
+        self.scratchPoint[1] = Int64(point.humidity * 10000.0)
+        self.scratchPoint[2] = Int64(point.continentalness * 10000.0)
+        self.scratchPoint[3] = Int64(point.erosion * 10000.0)
+        self.scratchPoint[4] = Int64(point.depth * 10000.0)
+        self.scratchPoint[5] = Int64(point.weirdness * 10000.0)
+        self.scratchPoint[6] = 0
     }
 
     // Internal helper for diagnostics and tests.
@@ -124,8 +137,9 @@ public struct ParameterRange: Equatable {
     }
 
     func distance(to point: Int64) -> Int64 {
-        if point - self.max > 0 { return point - self.max }
-        return Swift.max(self.min - point, 0)
+        if point > self.max { return point - self.max }
+        if point < self.min { return self.min - point }
+        return 0
     }
 }
 
@@ -145,13 +159,15 @@ final class BiomeTreeNode {
         var ret = alternative
         var retDistance = alternative.value != nil ? squaredDistance(parameters: alternative.parameters, point: point) : Int64.max
         for child in self.children {
-            let distance = squaredDistance(parameters: child.parameters, point: point)
+            let distance = squaredDistanceBounded(parameters: child.parameters, point: point, maxDistance: retDistance)
             if retDistance < distance { continue }
             let endNode = child.getResultingNode(point: point, alternative: alternative)
             guard endNode.value != nil else {
                 continue
             }
-            let endDistance = sameBiome(endNode.value, child.value) ? distance : squaredDistance(parameters: endNode.parameters, point: point)
+            let endDistance = sameBiome(endNode.value, child.value)
+                ? distance
+                : squaredDistanceBounded(parameters: endNode.parameters, point: point, maxDistance: retDistance)
             if retDistance < endDistance { continue }
             retDistance = endDistance
             ret = endNode
@@ -216,11 +232,37 @@ private func sameBiome(_ a: RegistryKey<Biome>?, _ b: RegistryKey<Biome>?) -> Bo
 }
 
 private func squaredDistance(parameters: [ParameterRange], point: [Int64]) -> Int64 {
-    var out: Int64 = 0
-    for i in 0..<7 {
-        let n = parameters[i].distance(to: point[i])
-        out += n * n
-    }
+    let d0 = parameters[0].distance(to: point[0])
+    let d1 = parameters[1].distance(to: point[1])
+    let d2 = parameters[2].distance(to: point[2])
+    let d3 = parameters[3].distance(to: point[3])
+    let d4 = parameters[4].distance(to: point[4])
+    let d5 = parameters[5].distance(to: point[5])
+    let d6 = parameters[6].distance(to: point[6])
+    return d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3 + d4 * d4 + d5 * d5 + d6 * d6
+}
+
+private func squaredDistanceBounded(parameters: [ParameterRange], point: [Int64], maxDistance: Int64) -> Int64 {
+    let d0 = parameters[0].distance(to: point[0])
+    var out = d0 * d0
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d1 = parameters[1].distance(to: point[1])
+    out += d1 * d1
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d2 = parameters[2].distance(to: point[2])
+    out += d2 * d2
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d3 = parameters[3].distance(to: point[3])
+    out += d3 * d3
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d4 = parameters[4].distance(to: point[4])
+    out += d4 * d4
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d5 = parameters[5].distance(to: point[5])
+    out += d5 * d5
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d6 = parameters[6].distance(to: point[6])
+    out += d6 * d6
     return out
 }
 

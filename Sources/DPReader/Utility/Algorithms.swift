@@ -253,18 +253,23 @@ private let SQRT_3 = (3.0).squareRoot()
 private let SKEW_FACTOR_2D = 0.5 * (SQRT_3 - 1.0)
 private let UNSKEW_FACTOR_2D = (3.0 - SQRT_3) / 6.0
 
-private func dot(_ gradient: Array<Double>, _ x: Double, _ y: Double, _ z: Double) -> Double {
+@inline(__always) private func dot(_ gradient: Array<Double>, _ x: Double, _ y: Double, _ z: Double) -> Double {
     let gradX = gradient[0] * x
     let gradY = gradient[1] * y
     let gradZ = gradient[2] * z
     return gradX + gradY + gradZ
 }
 
-private func grad(hash: Int, x: Double, y: Double, z: Double) -> Double {
-    return dot(GRADIENTS[hash & 0xF], x, y, z)
+@inline(__always) private func grad(hash: Int, x: Double, y: Double, z: Double) -> Double {
+    let h = hash & 0xF
+    let u = h < 8 ? x : y
+    let v = h < 4 ? y : (h == 12 || h == 14 ? x : z)
+    let uVal = (h & 1) == 0 ? u : -u
+    let vVal = (h & 2) == 0 ? v : -v
+    return uVal + vVal
 }
 
-private func perlinFade(_ value: Double) -> Double {
+@inline(__always) private func perlinFade(_ value: Double) -> Double {
     return value * value * value * (value * (value * 6.0 - 15.0) + 10.0)
 }
 
@@ -340,6 +345,7 @@ public class SimplexNoise {
 
 public class PerlinNoise {
     private let permutation: [UInt8]
+    private let permutationInts: [Int]
     private let originX, originY, originZ: Double
 
     public init<R: Random>(random rng: inout R) {
@@ -353,6 +359,7 @@ public class PerlinNoise {
             permutation.swapAt(i, j)
         }
         self.permutation = permutation
+        self.permutationInts = permutation.map { Int($0) }
     }
 
     public init<R: Random>(immutableRandom irng: R) {
@@ -367,6 +374,7 @@ public class PerlinNoise {
             permutation.swapAt(i, j)
         }
         self.permutation = permutation
+        self.permutationInts = permutation.map { Int($0) }
     }
 
     public func sample(x: Double, y: Double, z: Double) -> Double {
@@ -374,9 +382,9 @@ public class PerlinNoise {
         let sampleY = y + self.originY
         let sampleZ = z + self.originZ
 
-        let sectionX = sampleX.rounded(FloatingPointRoundingRule.down)
-        let sectionY = sampleY.rounded(FloatingPointRoundingRule.down)
-        let sectionZ = sampleZ.rounded(FloatingPointRoundingRule.down)
+        let sectionX = floor(sampleX)
+        let sectionY = floor(sampleY)
+        let sectionZ = floor(sampleZ)
 
         let localX = sampleX - sectionX
         let localY = sampleY - sectionY
@@ -385,14 +393,14 @@ public class PerlinNoise {
         return self.sampleInternal(Int(sectionX), Int(sectionY), Int(sectionZ), localX, localY, localZ, localY)
     }
 
-    public func sample(x: Double, y: Double, z: Double, yScale: Double, yMax: Double) -> Double {
+    @inline(__always) public func sample(x: Double, y: Double, z: Double, yScale: Double, yMax: Double) -> Double {
         let sampleX = x + self.originX
         let sampleY = y + self.originY
         let sampleZ = z + self.originZ
 
-        let sectionX = sampleX.rounded(FloatingPointRoundingRule.down)
-        let sectionY = sampleY.rounded(FloatingPointRoundingRule.down)
-        let sectionZ = sampleZ.rounded(FloatingPointRoundingRule.down)
+        let sectionX = floor(sampleX)
+        let sectionY = floor(sampleY)
+        let sectionZ = floor(sampleZ)
 
         let localX = sampleX - sectionX
         let localY = sampleY - sectionY
@@ -411,11 +419,11 @@ public class PerlinNoise {
         return self.sampleInternal(Int(sectionX), Int(sectionY), Int(sectionZ), localX, localY - localYOffset, localZ, localY)
     }
 
-    private func map(_ input: Int) -> Int {
-        return Int(self.permutation[input & 0xFF])
+    @inline(__always) private func map(_ input: Int) -> Int {
+        return self.permutationInts[input & 0xFF]
     }
 
-    private func sampleInternal(_ sectionX: Int, _ sectionY: Int, _ sectionZ: Int, _ localX: Double, _ localY: Double, _ localZ: Double, _ fadeLocalY: Double) -> Double {
+    @inline(__always) private func sampleInternal(_ sectionX: Int, _ sectionY: Int, _ sectionZ: Int, _ localX: Double, _ localY: Double, _ localZ: Double, _ fadeLocalY: Double) -> Double {
         let x0 = self.map(sectionX)
         let x1 = self.map(sectionX + 1)
         let x0y0 = self.map(x0 + sectionY)
@@ -491,7 +499,7 @@ public class OctavePerlinNoise {
         self.octaves = octaves
     }
 
-    public func sample(x: Double, y: Double, z: Double) -> Double {
+    @inline(__always) public func sample(x: Double, y: Double, z: Double) -> Double {
         var out = 0.0
         for octave in self.octaves {
             out += octave.sample(x: x, y: y, z: z)
@@ -500,12 +508,12 @@ public class OctavePerlinNoise {
     }
 
     private struct Octave {
-        let noise: PerlinNoise?
+        let noise: PerlinNoise
         let amplitude: Double
         let lacunarity: Double
 
         func sample(x: Double, y: Double, z: Double) -> Double {
-            return self.amplitude * self.noise!.sample(x: self.lacunarity * x, y: self.lacunarity * y, z: self.lacunarity * z)
+            return self.amplitude * self.noise.sample(x: self.lacunarity * x, y: self.lacunarity * y, z: self.lacunarity * z)
         }
     }
 }
@@ -514,6 +522,7 @@ public class DoublePerlinNoise {
     internal let firstSampler: OctavePerlinNoise
     internal let secondSampler: OctavePerlinNoise
     private let amplitude: Double
+    private static let multiplier = 337.0 / 331.0
 
     public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
         self.firstSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
@@ -529,10 +538,13 @@ public class DoublePerlinNoise {
         self.amplitude = (5.0 / 3.0) * Double(octaves) / Double(octaves + 1)
     }
 
-    public func sample(x: Double, y: Double, z: Double) -> Double {
-        let multiplier = 337.0 / 331.0
+    @inline(__always) public func sample(x: Double, y: Double, z: Double) -> Double {
         let firstOutput = self.firstSampler.sample(x: x, y: y, z: z)
-        let secondOutput = self.secondSampler.sample(x: x * multiplier, y: y * multiplier, z: z * multiplier)
+        let secondOutput = self.secondSampler.sample(
+            x: x * DoublePerlinNoise.multiplier,
+            y: y * DoublePerlinNoise.multiplier,
+            z: z * DoublePerlinNoise.multiplier
+        )
         return self.amplitude * (firstOutput + secondOutput)
     }
 }

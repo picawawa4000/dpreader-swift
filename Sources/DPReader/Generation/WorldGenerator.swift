@@ -1,3 +1,5 @@
+// for DispatchTime
+import Foundation
 import TestVisible
 
 /// Stores all of the registries needed for world generation.
@@ -41,10 +43,8 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 
     func bake(cacheMarker: CacheMarker) throws -> any DensityFunction {
-        // TODO: implementation
-        // this will store the cache markers somewhere so that they can be quickly baked
-        #warning("Unimplemented function FullDensityFunctionBaker.bake(cacheMarker:)!")
-        return cacheMarker
+        let bakedArgument = try cacheMarker.argument.bake(withBaker: self)
+        return CacheMarker(type: cacheMarker.type, wrapping: bakedArgument)
     }
 
     func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
@@ -72,6 +72,163 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
         if self.initialisedFunctionIds.contains(key) { return true }
         self.initialisedFunctionIds.insert(key)
         return false
+    }
+}
+
+final class WorldScaleCache2D: DensityFunction {
+    private let argument: any DensityFunction
+    private var hasValue = false
+    private var lastX: Int32 = 0
+    private var lastZ: Int32 = 0
+    private var lastValue: Double = 0.0
+
+    init(wrapping argument: any DensityFunction) {
+        self.argument = argument
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        _ = try container.decode(String.self, forKey: .type)
+        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:cache_2d", forKey: .type)
+        try container.encode(self.argument, forKey: .argument)
+    }
+
+    @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        if self.hasValue && pos.x == self.lastX && pos.z == self.lastZ {
+            return self.lastValue
+        }
+        let value = self.argument.sample(at: pos)
+        self.hasValue = true
+        self.lastX = pos.x
+        self.lastZ = pos.z
+        self.lastValue = value
+        return value
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return WorldScaleCache2D(wrapping: try self.argument.bake(withBaker: baker))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case argument = "argument"
+    }
+}
+
+final class WorldScaleFlatCache: DensityFunction {
+    private let argument: any DensityFunction
+    private var hasValue = false
+    private var lastColumnX: Int32 = 0
+    private var lastColumnZ: Int32 = 0
+    private var lastValue: Double = 0.0
+
+    init(wrapping argument: any DensityFunction) {
+        self.argument = argument
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        _ = try container.decode(String.self, forKey: .type)
+        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:flat_cache", forKey: .type)
+        try container.encode(self.argument, forKey: .argument)
+    }
+
+    @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        let columnX = pos.x / 4
+        let columnZ = pos.z / 4
+        if self.hasValue && columnX == self.lastColumnX && columnZ == self.lastColumnZ {
+            return self.lastValue
+        }
+        let value = self.argument.sample(at: PosInt3D(x: columnX * 4, y: 0, z: columnZ * 4))
+        self.hasValue = true
+        self.lastColumnX = columnX
+        self.lastColumnZ = columnZ
+        self.lastValue = value
+        return value
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return WorldScaleFlatCache(wrapping: try self.argument.bake(withBaker: baker))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "type"
+        case argument = "argument"
+    }
+}
+
+final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
+    private var cacheMarkerMemo: [ObjectIdentifier: any DensityFunction] = [:]
+    private var memo: [ObjectIdentifier: any DensityFunction] = [:]
+    func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
+        guard let bakedNoise = noise as? BakedNoise else {
+            throw BakingErrors.noiseNotAlreadyBaked(noise.key.name)
+        }
+        return bakedNoise
+    }
+
+    func bake(referenceDensityFunction: ReferenceDensityFunction) throws -> any DensityFunction {
+        throw BakingErrors.referenceNotAlreadyBaked(referenceDensityFunction.targetKey.name)
+    }
+
+    func bake(cacheMarker: CacheMarker) throws -> any DensityFunction {
+        let key = ObjectIdentifier(cacheMarker)
+        if let cached = self.cacheMarkerMemo[key] { return cached }
+
+        let bakedArgument = try self.bakeDensityFunction(cacheMarker.argument)
+        let baked: any DensityFunction
+        switch cacheMarker.type {
+        case .flatCache:
+            baked = WorldScaleFlatCache(wrapping: bakedArgument)
+        case .cache2D:
+            baked = WorldScaleCache2D(wrapping: bakedArgument)
+        default:
+            baked = bakedArgument
+        }
+        self.cacheMarkerMemo[key] = baked
+        return baked
+    }
+
+    func bakeDensityFunction(_ function: any DensityFunction) throws -> any DensityFunction {
+        if type(of: function) is AnyObject.Type {
+            let obj = function as AnyObject
+            let key = ObjectIdentifier(obj)
+            if let cached = self.memo[key] { return cached }
+            let baked = try function.bake(withBaker: self)
+            self.memo[key] = baked
+            return baked
+        }
+        return try function.bake(withBaker: self)
+    }
+
+    func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
+        // nothing to do here
+        return beardifier
+    }
+
+    func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise {
+        // pre-baked
+        return simplexNoise
+    }
+
+    func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise {
+        // pre-baked
+        return interpolatedNoise
+    }
+
+    private enum BakingErrors: Error {
+        case noiseNotAlreadyBaked(String)
+        case referenceNotAlreadyBaked(String)
     }
 }
 
@@ -242,22 +399,289 @@ public final class WorldGenerator {
         return try searchTree.get(point)
     }
 
-    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>) throws -> [RegistryKey<Biome>]? {
-        if fromPos.x > toPos.x || fromPos.z > toPos.z {
+    /// Generates the biomes in a square.
+    /// - Parameters:
+    ///   - fromPos: The starting position; inclusive.
+    ///   - toPos: The ending position; exclusive.
+    ///   - y: The Y coordinate to sample at.
+    ///   - dim: The key of the dimension to sample in.
+    ///   - usingFourScale: Whether to apply a 1:4 scale. Should always be true (`false` gives bad results).
+    ///   - forceNoBaking: Whether to force the function to not bake the caches, irrespective of generation size.
+    ///     For debugging only (will usually lead to poorly-optimised results).
+    /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.
+    /// - Returns: An X-major array of biomes (indexed by [Z*(to.x-from.x)+X]).
+    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, usingFourScale: Bool = true, forceNoBaking: Bool = false, benchmark timingsEnabled: Bool = false) throws -> [RegistryKey<Biome>]? {
+        let startTime = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        var noiseSampleTime: UInt64 = 0
+        var treeSampleTime: UInt64 = 0
+        var temperatureTime: UInt64 = 0
+        var humidityTime: UInt64 = 0
+        var continentalnessTime: UInt64 = 0
+        var erosionTime: UInt64 = 0
+        var weirdnessTime: UInt64 = 0
+        var depthTime: UInt64 = 0
+        // TODO: make this not optional
+        if fromPos.x >= toPos.x || fromPos.z >= toPos.z {
             throw WorldGenerationErrors.fromPosGreaterThanToPos
-        }
-        if fromPos == toPos {
-            let biome = try self.sampleBiome(at: PosInt3D(x: fromPos.x, y: y, z: fromPos.z), in: dim)
-            guard biome != nil else {
-                return nil
-            }
-            return [biome!]
         }
 
         // if the generation area is small, don't bake the functions
         // if it's large, use a custom cache baker to speed up the process
-        fatalError("Unimplemented function WorldGenerator.generateBiomesInSquare(from:to:atY:in:)!")
-        return nil
+        guard let searchTree = self.searchTrees[dim] else {
+            print("WARNING: No search tree for requested biome \(dim.name)!")
+            return nil
+        }
+
+        let fromX = usingFourScale ? fromPos.x / 4 : fromPos.x
+        let fromZ = usingFourScale ? fromPos.z / 4 : fromPos.z
+        let toX = usingFourScale ? toPos.x / 4 : toPos.x
+        let toZ = usingFourScale ? toPos.z / 4 : toPos.z
+        let width = Int(toX - fromX)
+        let depth = Int(toZ - fromZ)
+        let area = width * depth
+        let smallAreaThreshold = 64 * 64
+
+        var biomes: [RegistryKey<Biome>] = []
+        biomes.reserveCapacity(area)
+
+        let timingNoiseRouter = timingsEnabled ? self.config?.noiseRouter : nil
+        func samplePointWithTimings(
+            at pos: PosInt3D,
+            temperature: any DensityFunction,
+            humidity: any DensityFunction,
+            continentalness: any DensityFunction,
+            erosion: any DensityFunction,
+            weirdness: any DensityFunction,
+            depth: any DensityFunction
+        ) -> NoisePoint {
+            let tTemp0 = DispatchTime.now().uptimeNanoseconds
+            let temperatureValue = temperature.sample(at: pos)
+            let tTemp1 = DispatchTime.now().uptimeNanoseconds
+            let tHum0 = DispatchTime.now().uptimeNanoseconds
+            let humidityValue = humidity.sample(at: pos)
+            let tHum1 = DispatchTime.now().uptimeNanoseconds
+            let tCon0 = DispatchTime.now().uptimeNanoseconds
+            let continentalnessValue = continentalness.sample(at: pos)
+            let tCon1 = DispatchTime.now().uptimeNanoseconds
+            let tEro0 = DispatchTime.now().uptimeNanoseconds
+            let erosionValue = erosion.sample(at: pos)
+            let tEro1 = DispatchTime.now().uptimeNanoseconds
+            let tWei0 = DispatchTime.now().uptimeNanoseconds
+            let weirdnessValue = weirdness.sample(at: pos)
+            let tWei1 = DispatchTime.now().uptimeNanoseconds
+            let tDep0 = DispatchTime.now().uptimeNanoseconds
+            let depthValue = depth.sample(at: pos)
+            let tDep1 = DispatchTime.now().uptimeNanoseconds
+            temperatureTime += tTemp1 - tTemp0
+            humidityTime += tHum1 - tHum0
+            continentalnessTime += tCon1 - tCon0
+            erosionTime += tEro1 - tEro0
+            weirdnessTime += tWei1 - tWei0
+            depthTime += tDep1 - tDep0
+            return NoisePoint(
+                temperature: temperatureValue,
+                humidity: humidityValue,
+                continentalness: continentalnessValue,
+                erosion: erosionValue,
+                weirdness: weirdnessValue,
+                depth: depthValue
+            )
+        }
+
+        if area <= smallAreaThreshold || self.config == nil || forceNoBaking {
+            if usingFourScale {
+                let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+                let startWorldX = fromX * 4
+                var worldZ = fromZ * 4
+                for _ in fromZ..<toZ {
+                    var worldX = startWorldX
+                    for _ in fromX..<toX {
+                        let pos = PosInt3D(x: worldX, y: y, z: worldZ)
+                        if timingsEnabled {
+                            let t0 = DispatchTime.now().uptimeNanoseconds
+                            let point: NoisePoint
+                            if let noiseRouter = timingNoiseRouter {
+                                point = samplePointWithTimings(
+                                    at: pos,
+                                    temperature: noiseRouter.temperature,
+                                    humidity: noiseRouter.humidity,
+                                    continentalness: noiseRouter.continents,
+                                    erosion: noiseRouter.erosion,
+                                    weirdness: noiseRouter.weirdness,
+                                    depth: noiseRouter.depth
+                                )
+                            } else {
+                                point = self.sampleNoisePoint(at: pos)
+                            }
+                            let t1 = DispatchTime.now().uptimeNanoseconds
+                            let biome = try searchTree.get(point)
+                            let t2 = DispatchTime.now().uptimeNanoseconds
+                            noiseSampleTime += t1 - t0
+                            treeSampleTime += t2 - t1
+                            biomes.append(biome)
+                        } else {
+                            let point = self.sampleNoisePoint(at: pos)
+                            let biome = try searchTree.get(point)
+                            biomes.append(biome)
+                        }
+                        worldX += 4
+                    }
+                    worldZ += 4
+                }
+                if timingsEnabled {
+                    let loopEnd = DispatchTime.now().uptimeNanoseconds
+                    let totalEnd = loopEnd
+                    print("generateBiomesInSquare: small(no-bake) fourScale loop \(loopEnd - loopStart)ns; noise \(noiseSampleTime)ns; tree \(treeSampleTime)ns; total \(totalEnd - startTime)ns; samples \(area)")
+                    print("  density functions: temperature \(temperatureTime)ns; humidity \(humidityTime)ns; continentalness \(continentalnessTime)ns; erosion \(erosionTime)ns; weirdness \(weirdnessTime)ns; depth \(depthTime)ns")
+                }
+                return biomes
+            } else {
+                let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+                for z in fromPos.z..<toPos.z {
+                    for x in fromPos.x..<toPos.x {
+                        if timingsEnabled {
+                            let t0 = DispatchTime.now().uptimeNanoseconds
+                            let point: NoisePoint
+                            if let noiseRouter = timingNoiseRouter {
+                                point = samplePointWithTimings(
+                                    at: PosInt3D(x: x, y: y, z: z),
+                                    temperature: noiseRouter.temperature,
+                                    humidity: noiseRouter.humidity,
+                                    continentalness: noiseRouter.continents,
+                                    erosion: noiseRouter.erosion,
+                                    weirdness: noiseRouter.weirdness,
+                                    depth: noiseRouter.depth
+                                )
+                            } else {
+                                point = self.sampleNoisePoint(at: PosInt3D(x: x, y: y, z: z))
+                            }
+                            let t1 = DispatchTime.now().uptimeNanoseconds
+                            let biome = try searchTree.get(point)
+                            let t2 = DispatchTime.now().uptimeNanoseconds
+                            noiseSampleTime += t1 - t0
+                            treeSampleTime += t2 - t1
+                            biomes.append(biome)
+                        } else {
+                            let point = self.sampleNoisePoint(at: PosInt3D(x: x, y: y, z: z))
+                            let biome = try searchTree.get(point)
+                            biomes.append(biome)
+                        }
+                    }
+                }
+                if timingsEnabled {
+                    let loopEnd = DispatchTime.now().uptimeNanoseconds
+                    let totalEnd = loopEnd
+                    print("generateBiomesInSquare: small(no-bake) fullScale loop \(loopEnd - loopStart)ns; noise \(noiseSampleTime)ns; tree \(treeSampleTime)ns; total \(totalEnd - startTime)ns; samples \(area)")
+                    print("  density functions: temperature \(temperatureTime)ns; humidity \(humidityTime)ns; continentalness \(continentalnessTime)ns; erosion \(erosionTime)ns; weirdness \(weirdnessTime)ns; depth \(depthTime)ns")
+                }
+                return biomes
+            }
+        }
+
+        let bakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let baker = WorldScaleDensityFunctionBaker()
+
+        let noiseRouter = self.config!.noiseRouter
+        let temperature = try baker.bakeDensityFunction(noiseRouter.temperature)
+        let humidity = try baker.bakeDensityFunction(noiseRouter.humidity)
+        let continentalness = try baker.bakeDensityFunction(noiseRouter.continents)
+        let erosion = try baker.bakeDensityFunction(noiseRouter.erosion)
+        let weirdness = try baker.bakeDensityFunction(noiseRouter.weirdness)
+        let depthFunc = try baker.bakeDensityFunction(noiseRouter.depth)
+        let bakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+
+        if usingFourScale {
+            let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let startWorldX = fromX * 4
+            var worldZ = fromZ * 4
+            for _ in fromZ..<toZ {
+                var worldX = startWorldX
+                for _ in fromX..<toX {
+                    let pos = PosInt3D(x: worldX, y: y, z: worldZ)
+                    if timingsEnabled {
+                        let t0 = DispatchTime.now().uptimeNanoseconds
+                        let point = samplePointWithTimings(
+                            at: pos,
+                            temperature: temperature,
+                            humidity: humidity,
+                            continentalness: continentalness,
+                            erosion: erosion,
+                            weirdness: weirdness,
+                            depth: depthFunc
+                        )
+                        let t1 = DispatchTime.now().uptimeNanoseconds
+                        let biome = try searchTree.get(point)
+                        let t2 = DispatchTime.now().uptimeNanoseconds
+                        noiseSampleTime += t1 - t0
+                        treeSampleTime += t2 - t1
+                        biomes.append(biome)
+                    } else {
+                        let point = NoisePoint(
+                            temperature: temperature.sample(at: pos),
+                            humidity: humidity.sample(at: pos),
+                            continentalness: continentalness.sample(at: pos),
+                            erosion: erosion.sample(at: pos),
+                            weirdness: weirdness.sample(at: pos),
+                            depth: depthFunc.sample(at: pos)
+                        )
+                        let biome = try searchTree.get(point)
+                        biomes.append(biome)
+                    }
+                    worldX += 4
+                }
+                worldZ += 4
+            }
+            if timingsEnabled {
+                let loopEnd = DispatchTime.now().uptimeNanoseconds
+                let totalEnd = loopEnd
+                print("generateBiomesInSquare: bake \(bakeEnd - bakeStart)ns (\((bakeEnd - bakeStart) / 1_000_000)ms); fourScale loop \(loopEnd - loopStart)ns (\((loopEnd - loopStart) / 1_000_000)ms); noise \(noiseSampleTime)ns (\(noiseSampleTime / 1_000_000)ms); tree \(treeSampleTime)ns (\(treeSampleTime / 1_000_000)ms); total \(totalEnd - startTime)ns (\((totalEnd - startTime) / 1_000_000)ms); samples \(area)")
+                print("  density functions: temperature \(temperatureTime)ns (\(temperatureTime / 1_000_000)ms); humidity \(humidityTime)ns (\(humidityTime / 1_000_000)ms); continentalness \(continentalnessTime)ns (\(continentalnessTime / 1_000_000)ms); erosion \(erosionTime)ns (\(erosionTime / 1_000_000)ms); weirdness \(weirdnessTime)ns (\(weirdnessTime / 1_000_000)ms); depth \(depthTime)ns (\(depthTime / 1_000_000)ms)")
+            }
+        } else {
+            let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            for z in fromPos.z..<toPos.z {
+                for x in fromPos.x..<toPos.x {
+                    let pos = PosInt3D(x: x, y: y, z: z)
+                    if timingsEnabled {
+                        let t0 = DispatchTime.now().uptimeNanoseconds
+                        let point = samplePointWithTimings(
+                            at: pos,
+                            temperature: temperature,
+                            humidity: humidity,
+                            continentalness: continentalness,
+                            erosion: erosion,
+                            weirdness: weirdness,
+                            depth: depthFunc
+                        )
+                        let t1 = DispatchTime.now().uptimeNanoseconds
+                        let biome = try searchTree.get(point)
+                        let t2 = DispatchTime.now().uptimeNanoseconds
+                        noiseSampleTime += t1 - t0
+                        treeSampleTime += t2 - t1
+                        biomes.append(biome)
+                    } else {
+                        let point = NoisePoint(
+                            temperature: temperature.sample(at: pos),
+                            humidity: humidity.sample(at: pos),
+                            continentalness: continentalness.sample(at: pos),
+                            erosion: erosion.sample(at: pos),
+                            weirdness: weirdness.sample(at: pos),
+                            depth: depthFunc.sample(at: pos)
+                        )
+                        let biome = try searchTree.get(point)
+                        biomes.append(biome)
+                    }
+                }
+            }
+            if timingsEnabled {
+                let loopEnd = DispatchTime.now().uptimeNanoseconds
+                let totalEnd = loopEnd
+                print("generateBiomesInSquare: bake \(bakeEnd - bakeStart)ns (\((bakeEnd - bakeStart) / 1_000_000)ms); fullScale loop \(loopEnd - loopStart)ns (\((loopEnd - loopStart) / 1_000_000)ms); noise \(noiseSampleTime)ns (\(noiseSampleTime / 1_000_000)ms); tree \(treeSampleTime)ns (\(treeSampleTime / 1_000_000)ms); total \(totalEnd - startTime)ns (\((totalEnd - startTime) / 1_000_000)ms); samples \(area)")
+                print("  density functions: temperature \(temperatureTime)ns; humidity \(humidityTime)ns; continentalness \(continentalnessTime)ns; erosion \(erosionTime)ns; weirdness \(weirdnessTime)ns; depth \(depthTime)ns")
+            }
+        }
+
+        return biomes
     }
 
     /*
