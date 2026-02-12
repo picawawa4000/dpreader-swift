@@ -133,7 +133,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     //#expect(checkDoubleCubiomes(noisePoint.depth, -75135))
     #expect(checkDoubleCubiomes(noisePoint.weirdness, 2434))
 
-    let biomes = try worldGenerator.generateBiomesInSquare(from: PosInt2D(x: 0, z: 0), to: PosInt2D(x: 128, z: 128), atY: 256, in: RegistryKey(referencing: "minecraft:overworld"), usingFourScale: true)
+    let biomes = try worldGenerator.generateBiomesInSquare(from: PosInt2D(x: 0, z: 0), to: PosInt2D(x: 128, z: 128), atY: 256, in: RegistryKey(referencing: "minecraft:overworld"), scale: 4)
 
     for (expectedBiome, actualBiome) in zip(cubiomesData, biomes!) {
         #expect(cubiomesNumberToKeyMap[expectedBiome] == actualBiome, "DPReader result \(actualBiome.name) diverges from Cubiomes result \(cubiomesNumberToKeyMap[expectedBiome]?.name ?? "none")!")

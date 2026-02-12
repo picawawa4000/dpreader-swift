@@ -405,12 +405,12 @@ public final class WorldGenerator {
     ///   - toPos: The ending position; exclusive.
     ///   - y: The Y coordinate to sample at.
     ///   - dim: The key of the dimension to sample in.
-    ///   - usingFourScale: Whether to apply a 1:4 scale. Should always be true (`false` gives bad results).
+    ///   - scale: Subsampling factor (e.g. 4 means 1:4 scale). Must be > 0.
     ///   - forceNoBaking: Whether to force the function to not bake the caches, irrespective of generation size.
     ///     For debugging only (will usually lead to poorly-optimised results).
     /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.
     /// - Returns: An X-major array of biomes (indexed by [Z*(to.x-from.x)+X]).
-    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, usingFourScale: Bool = true, forceNoBaking: Bool = false, benchmark timingsEnabled: Bool = false) throws -> [RegistryKey<Biome>]? {
+    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, scale: Int32 = 4, forceNoBaking: Bool = false, benchmark timingsEnabled: Bool = false) throws -> [RegistryKey<Biome>]? {
         let startTime = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         var noiseSampleTime: UInt64 = 0
         var treeSampleTime: UInt64 = 0
@@ -421,6 +421,9 @@ public final class WorldGenerator {
         var weirdnessTime: UInt64 = 0
         var depthTime: UInt64 = 0
         // TODO: make this not optional
+        if scale <= 0 {
+            throw WorldGenerationErrors.invalidScale
+        }
         if fromPos.x >= toPos.x || fromPos.z >= toPos.z {
             throw WorldGenerationErrors.fromPosGreaterThanToPos
         }
@@ -432,10 +435,11 @@ public final class WorldGenerator {
             return nil
         }
 
-        let fromX = usingFourScale ? fromPos.x / 4 : fromPos.x
-        let fromZ = usingFourScale ? fromPos.z / 4 : fromPos.z
-        let toX = usingFourScale ? toPos.x / 4 : toPos.x
-        let toZ = usingFourScale ? toPos.z / 4 : toPos.z
+        let useScale = scale > 1
+        let fromX = useScale ? fromPos.x / scale : fromPos.x
+        let fromZ = useScale ? fromPos.z / scale : fromPos.z
+        let toX = useScale ? toPos.x / scale : toPos.x
+        let toZ = useScale ? toPos.z / scale : toPos.z
         let width = Int(toX - fromX)
         let depth = Int(toZ - fromZ)
         let area = width * depth
@@ -489,10 +493,10 @@ public final class WorldGenerator {
         }
 
         if area <= smallAreaThreshold || self.config == nil || forceNoBaking {
-            if usingFourScale {
+            if useScale {
                 let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-                let startWorldX = fromX * 4
-                var worldZ = fromZ * 4
+                let startWorldX = fromX * scale
+                var worldZ = fromZ * scale
                 for _ in fromZ..<toZ {
                     var worldX = startWorldX
                     for _ in fromX..<toX {
@@ -524,9 +528,9 @@ public final class WorldGenerator {
                             let biome = try searchTree.get(point)
                             biomes.append(biome)
                         }
-                        worldX += 4
+                        worldX += scale
                     }
-                    worldZ += 4
+                    worldZ += scale
                 }
                 if timingsEnabled {
                     let loopEnd = DispatchTime.now().uptimeNanoseconds
@@ -590,10 +594,10 @@ public final class WorldGenerator {
         let depthFunc = try baker.bakeDensityFunction(noiseRouter.depth)
         let bakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
-        if usingFourScale {
+        if useScale {
             let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-            let startWorldX = fromX * 4
-            var worldZ = fromZ * 4
+            let startWorldX = fromX * scale
+            var worldZ = fromZ * scale
             for _ in fromZ..<toZ {
                 var worldX = startWorldX
                 for _ in fromX..<toX {
@@ -627,9 +631,9 @@ public final class WorldGenerator {
                         let biome = try searchTree.get(point)
                         biomes.append(biome)
                     }
-                    worldX += 4
+                    worldX += scale
                 }
-                worldZ += 4
+                worldZ += scale
             }
             if timingsEnabled {
                 let loopEnd = DispatchTime.now().uptimeNanoseconds
@@ -730,4 +734,5 @@ enum WorldGenerationErrors: Error {
     case noBiomesOrPresetsInMultiNoiseBiomeSource(String)
     case invalidMultiNoiseBiomeSourceParameterList(String)
     case fromPosGreaterThanToPos
+    case invalidScale
 }
