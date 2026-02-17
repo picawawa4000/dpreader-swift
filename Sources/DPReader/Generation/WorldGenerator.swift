@@ -449,6 +449,7 @@ public final class WorldGenerator {
         biomes.reserveCapacity(area)
 
         let timingNoiseRouter = timingsEnabled ? self.config?.noiseRouter : nil
+        let directNoiseRouter = self.config?.noiseRouter
         func samplePointWithTimings(
             at pos: PosInt3D,
             temperature: any DensityFunction,
@@ -518,14 +519,26 @@ public final class WorldGenerator {
                                 point = self.sampleNoisePoint(at: pos)
                             }
                             let t1 = DispatchTime.now().uptimeNanoseconds
-                            let biome = try searchTree.get(point)
+                            let biome = searchTree.getUnchecked(point)
                             let t2 = DispatchTime.now().uptimeNanoseconds
                             noiseSampleTime += t1 - t0
                             treeSampleTime += t2 - t1
                             biomes.append(biome)
                         } else {
-                            let point = self.sampleNoisePoint(at: pos)
-                            let biome = try searchTree.get(point)
+                            let biome: RegistryKey<Biome>
+                            if let noiseRouter = directNoiseRouter {
+                                biome = searchTree.getUnchecked(
+                                    temperature: noiseRouter.temperature.sample(at: pos),
+                                    humidity: noiseRouter.humidity.sample(at: pos),
+                                    continentalness: noiseRouter.continents.sample(at: pos),
+                                    erosion: noiseRouter.erosion.sample(at: pos),
+                                    weirdness: noiseRouter.weirdness.sample(at: pos),
+                                    depth: noiseRouter.depth.sample(at: pos)
+                                )
+                            } else {
+                                let point = self.sampleNoisePoint(at: pos)
+                                biome = searchTree.getUnchecked(point)
+                            }
                             biomes.append(biome)
                         }
                         worldX += scale
@@ -560,14 +573,27 @@ public final class WorldGenerator {
                                 point = self.sampleNoisePoint(at: PosInt3D(x: x, y: y, z: z))
                             }
                             let t1 = DispatchTime.now().uptimeNanoseconds
-                            let biome = try searchTree.get(point)
+                            let biome = searchTree.getUnchecked(point)
                             let t2 = DispatchTime.now().uptimeNanoseconds
                             noiseSampleTime += t1 - t0
                             treeSampleTime += t2 - t1
                             biomes.append(biome)
                         } else {
-                            let point = self.sampleNoisePoint(at: PosInt3D(x: x, y: y, z: z))
-                            let biome = try searchTree.get(point)
+                            let pos = PosInt3D(x: x, y: y, z: z)
+                            let biome: RegistryKey<Biome>
+                            if let noiseRouter = directNoiseRouter {
+                                biome = searchTree.getUnchecked(
+                                    temperature: noiseRouter.temperature.sample(at: pos),
+                                    humidity: noiseRouter.humidity.sample(at: pos),
+                                    continentalness: noiseRouter.continents.sample(at: pos),
+                                    erosion: noiseRouter.erosion.sample(at: pos),
+                                    weirdness: noiseRouter.weirdness.sample(at: pos),
+                                    depth: noiseRouter.depth.sample(at: pos)
+                                )
+                            } else {
+                                let point = self.sampleNoisePoint(at: pos)
+                                biome = searchTree.getUnchecked(point)
+                            }
                             biomes.append(biome)
                         }
                     }
@@ -614,13 +640,13 @@ public final class WorldGenerator {
                             depth: depthFunc
                         )
                         let t1 = DispatchTime.now().uptimeNanoseconds
-                        let biome = try searchTree.get(point)
+                        let biome = searchTree.getUnchecked(point)
                         let t2 = DispatchTime.now().uptimeNanoseconds
                         noiseSampleTime += t1 - t0
                         treeSampleTime += t2 - t1
                         biomes.append(biome)
                     } else {
-                        let point = NoisePoint(
+                        let biome = searchTree.getUnchecked(
                             temperature: temperature.sample(at: pos),
                             humidity: humidity.sample(at: pos),
                             continentalness: continentalness.sample(at: pos),
@@ -628,7 +654,6 @@ public final class WorldGenerator {
                             weirdness: weirdness.sample(at: pos),
                             depth: depthFunc.sample(at: pos)
                         )
-                        let biome = try searchTree.get(point)
                         biomes.append(biome)
                     }
                     worldX += scale
@@ -658,13 +683,13 @@ public final class WorldGenerator {
                             depth: depthFunc
                         )
                         let t1 = DispatchTime.now().uptimeNanoseconds
-                        let biome = try searchTree.get(point)
+                        let biome = searchTree.getUnchecked(point)
                         let t2 = DispatchTime.now().uptimeNanoseconds
                         noiseSampleTime += t1 - t0
                         treeSampleTime += t2 - t1
                         biomes.append(biome)
                     } else {
-                        let point = NoisePoint(
+                        let biome = searchTree.getUnchecked(
                             temperature: temperature.sample(at: pos),
                             humidity: humidity.sample(at: pos),
                             continentalness: continentalness.sample(at: pos),
@@ -672,7 +697,6 @@ public final class WorldGenerator {
                             weirdness: weirdness.sample(at: pos),
                             depth: depthFunc.sample(at: pos)
                         )
-                        let biome = try searchTree.get(point)
                         biomes.append(biome)
                     }
                 }

@@ -31,6 +31,43 @@ public final class BiomeSearchTree {
         return value
     }
 
+    @inline(__always)
+    func getUnchecked(_ point: NoisePoint) -> RegistryKey<Biome> {
+        let state = self.lookupStateForCurrentThread()
+        self.updateScratchPoint(from: point, into: &state.scratchPoint)
+        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
+        precondition(result.value != nil, "BiomeSearchTree returned an empty result node")
+        let value = result.value!
+        state.lastResult = result
+        return value
+    }
+
+    @inline(__always)
+    func getUnchecked(
+        temperature: Double,
+        humidity: Double,
+        continentalness: Double,
+        erosion: Double,
+        weirdness: Double,
+        depth: Double
+    ) -> RegistryKey<Biome> {
+        let state = self.lookupStateForCurrentThread()
+        self.updateScratchPoint(
+            temperature: temperature,
+            humidity: humidity,
+            continentalness: continentalness,
+            erosion: erosion,
+            weirdness: weirdness,
+            depth: depth,
+            into: &state.scratchPoint
+        )
+        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
+        precondition(result.value != nil, "BiomeSearchTree returned an empty result node")
+        let value = result.value!
+        state.lastResult = result
+        return value
+    }
+
     /// Resets the tree's internal "alternative".
     /// Useful for deterministic results, but will result in a massive performance hit.
     public func resetAlternative() {
@@ -46,12 +83,33 @@ public final class BiomeSearchTree {
     }
 
     private func updateScratchPoint(from point: NoisePoint, into scratchPoint: inout [Int64]) {
-        scratchPoint[0] = Int64(point.temperature * 10000.0)
-        scratchPoint[1] = Int64(point.humidity * 10000.0)
-        scratchPoint[2] = Int64(point.continentalness * 10000.0)
-        scratchPoint[3] = Int64(point.erosion * 10000.0)
-        scratchPoint[4] = Int64(point.depth * 10000.0)
-        scratchPoint[5] = Int64(point.weirdness * 10000.0)
+        self.updateScratchPoint(
+            temperature: point.temperature,
+            humidity: point.humidity,
+            continentalness: point.continentalness,
+            erosion: point.erosion,
+            weirdness: point.weirdness,
+            depth: point.depth,
+            into: &scratchPoint
+        )
+    }
+
+    @inline(__always)
+    private func updateScratchPoint(
+        temperature: Double,
+        humidity: Double,
+        continentalness: Double,
+        erosion: Double,
+        weirdness: Double,
+        depth: Double,
+        into scratchPoint: inout [Int64]
+    ) {
+        scratchPoint[0] = Int64(temperature * 10000.0)
+        scratchPoint[1] = Int64(humidity * 10000.0)
+        scratchPoint[2] = Int64(continentalness * 10000.0)
+        scratchPoint[3] = Int64(erosion * 10000.0)
+        scratchPoint[4] = Int64(depth * 10000.0)
+        scratchPoint[5] = Int64(weirdness * 10000.0)
         scratchPoint[6] = 0
     }
 
