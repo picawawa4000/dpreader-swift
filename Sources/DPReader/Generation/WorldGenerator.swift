@@ -405,7 +405,7 @@ public final class WorldGenerator {
     ///   - toPos: The ending position; exclusive.
     ///   - y: The Y coordinate to sample at.
     ///   - dim: The key of the dimension to sample in.
-    ///   - scale: Subsampling factor (e.g. 4 means 1:4 scale). Must be > 0.
+    ///   - scale: Subsampling factor (e.g. stride; 4 means 1:4 scale). Must be > 0.
     ///   - forceNoBaking: Whether to force the function to not bake the caches, irrespective of generation size.
     ///     For debugging only (will usually lead to poorly-optimised results).
     /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.

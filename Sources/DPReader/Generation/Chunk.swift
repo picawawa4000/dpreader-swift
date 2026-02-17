@@ -1,5 +1,5 @@
 /// TODO: should this be a struct or a class?
-public final class Block {
+public final class Block: Sendable {
     public let id: String
 
     /// It is recommended to use the `Blocks` interface to get vanilla block references,

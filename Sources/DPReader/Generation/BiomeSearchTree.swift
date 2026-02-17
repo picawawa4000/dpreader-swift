@@ -7,8 +7,6 @@ public enum BiomeSearchTreeError: Error {
 
 public final class BiomeSearchTree {
     private let root: BiomeTreeNode
-    private var lastResult: BiomeTreeNode
-    private var scratchPoint: [Int64] = Array(repeating: 0, count: 7)
 
     public init(entries: [(NoiseHypercube, RegistryKey<Biome>)]) throws {
         guard !entries.isEmpty else {
@@ -20,45 +18,75 @@ public final class BiomeSearchTree {
             converted.append(BiomeTreeNode(parameters: entry.0.toList(), value: entry.1, children: []))
         }
         self.root = try BiomeTreeNode.createNode(from: converted)
-        self.lastResult = BiomeTreeNode(parameters: [], value: nil, children: [])
     }
 
     public func get(_ point: NoisePoint) throws -> RegistryKey<Biome> {
-        self.updateScratchPoint(from: point)
-        let result = self.root.getResultingNode(point: self.scratchPoint, alternative: self.lastResult)
+        let state = self.lookupStateForCurrentThread()
+        self.updateScratchPoint(from: point, into: &state.scratchPoint)
+        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
         guard let value = result.value else {
             throw BiomeSearchTreeError.emptyEntries
         }
-        self.lastResult = result
+        state.lastResult = result
         return value
     }
 
     /// Resets the tree's internal "alternative".
     /// Useful for deterministic results, but will result in a massive performance hit.
     public func resetAlternative() {
-        self.lastResult = BiomeTreeNode(parameters: [], value: nil, children: [])
+        self.lookupStateForCurrentThread().lastResult = self.makeEmptyNode()
     }
 
     // Internal helper for diagnostics.
     func lastResultDistance(to point: NoisePoint) -> Int64? {
-        guard lastResult.value != nil else { return nil }
-        self.updateScratchPoint(from: point)
-        return squaredDistance(parameters: lastResult.parameters, point: self.scratchPoint)
+        let state = self.lookupStateForCurrentThread()
+        guard state.lastResult.value != nil else { return nil }
+        self.updateScratchPoint(from: point, into: &state.scratchPoint)
+        return squaredDistance(parameters: state.lastResult.parameters, point: state.scratchPoint)
     }
 
-    private func updateScratchPoint(from point: NoisePoint) {
-        self.scratchPoint[0] = Int64(point.temperature * 10000.0)
-        self.scratchPoint[1] = Int64(point.humidity * 10000.0)
-        self.scratchPoint[2] = Int64(point.continentalness * 10000.0)
-        self.scratchPoint[3] = Int64(point.erosion * 10000.0)
-        self.scratchPoint[4] = Int64(point.depth * 10000.0)
-        self.scratchPoint[5] = Int64(point.weirdness * 10000.0)
-        self.scratchPoint[6] = 0
+    private func updateScratchPoint(from point: NoisePoint, into scratchPoint: inout [Int64]) {
+        scratchPoint[0] = Int64(point.temperature * 10000.0)
+        scratchPoint[1] = Int64(point.humidity * 10000.0)
+        scratchPoint[2] = Int64(point.continentalness * 10000.0)
+        scratchPoint[3] = Int64(point.erosion * 10000.0)
+        scratchPoint[4] = Int64(point.depth * 10000.0)
+        scratchPoint[5] = Int64(point.weirdness * 10000.0)
+        scratchPoint[6] = 0
+    }
+
+    private func lookupStateForCurrentThread() -> LookupState {
+        let key = self.lookupStateThreadDictionaryKey
+        if let existing = Thread.current.threadDictionary[key] as? LookupState {
+            return existing
+        }
+        let state = LookupState(lastResult: self.makeEmptyNode(), scratchPoint: Array(repeating: 0, count: 7))
+        Thread.current.threadDictionary[key] = state
+        return state
     }
 
     // Internal helper for diagnostics and tests.
     func nodes(with biome: RegistryKey<Biome>) -> [BiomeTreeNode] {
         return self.root.nodes(with: biome)
+    }
+
+    private var lookupStateThreadDictionaryKey: String {
+        let pointer = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
+        return "BiomeSearchTree.lookupState.\(pointer)"
+    }
+
+    private func makeEmptyNode() -> BiomeTreeNode {
+        return BiomeTreeNode(parameters: [], value: nil, children: [])
+    }
+}
+
+private final class LookupState {
+    var lastResult: BiomeTreeNode
+    var scratchPoint: [Int64]
+
+    init(lastResult: BiomeTreeNode, scratchPoint: [Int64]) {
+        self.lastResult = lastResult
+        self.scratchPoint = scratchPoint
     }
 }
 
