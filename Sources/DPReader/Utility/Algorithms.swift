@@ -409,8 +409,6 @@ public class PerlinNoise {
         let localYOffset: Double
         if (yScale != 0.0) {
             let r = yMax >= 0.0 && yMax < localY ? yMax : localY
-            // Minecraft adds 1.0e-7 to (r / yScale), but Cubiomes does not.
-            // After speaking to some people in Minecraft@Home, I've decided to add it here.
             localYOffset = (r / yScale + 1.0e-7).rounded(FloatingPointRoundingRule.down) * yScale
         } else {
             localYOffset = 0.0
@@ -528,14 +526,19 @@ public class DoublePerlinNoise {
         self.firstSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
         self.secondSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
 
-        // remove amplitudes of zero from front and back
-        var octaves = amplitudes.count - 1
-        while amplitudes[octaves] == 0.0 { octaves -= 1 }
-        // correct for removing the earlier octave
-        octaves = octaves + 1
-        var i = 0
-        while amplitudes[i] == 0.0 { octaves -= 1; i += 1 }
-        self.amplitude = (5.0 / 3.0) * Double(octaves) / Double(octaves + 1)
+        // Match the existing DPReader weighting behavior, but guard the all-zero case
+        // used by legacy offset overrides.
+        if amplitudes.allSatisfy({ $0 == 0.0 }) {
+            self.amplitude = 0.0
+        } else {
+            var octaves = amplitudes.count - 1
+            while amplitudes[octaves] == 0.0 { octaves -= 1 }
+            // correct for removing the earlier octave
+            octaves = octaves + 1
+            var i = 0
+            while amplitudes[i] == 0.0 { octaves -= 1; i += 1 }
+            self.amplitude = (5.0 / 3.0) * Double(octaves) / Double(octaves + 1)
+        }
     }
 
     @inline(__always) public func sample(x: Double, y: Double, z: Double) -> Double {

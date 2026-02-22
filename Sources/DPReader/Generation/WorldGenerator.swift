@@ -14,14 +14,23 @@ final class WorldGenerationRegistries {
 final class FullDensityFunctionBaker: DensityFunctionBaker {
     fileprivate let registries: WorldGenerationRegistries
     private let seed: WorldSeed
+    private let usesLegacyRandomSource: Bool
+    private let randomDeriver: XoroshiroRandomSplitter
     private var initialisedFunctionIds = Set<RegistryKey<DensityFunction>>()
+    private var legacyNoiseOverrides: [RegistryKey<NoiseDefinition>: DoublePerlinNoise] = [:]
 
-    init(withSeed seed: WorldSeed, registries: WorldGenerationRegistries) {
+    init(withSeed seed: WorldSeed, usesLegacyRandomSource: Bool, registries: WorldGenerationRegistries) {
         self.seed = seed
+        self.usesLegacyRandomSource = usesLegacyRandomSource
         self.registries = registries
+        var random = XoroshiroRandom(seed: seed)
+        self.randomDeriver = XoroshiroRandomSplitter(seedLo: random.nextLong(), seedHi: random.nextLong())
     }
 
     func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
+        if self.usesLegacyRandomSource, let overrideSampler = self.legacySamplerOverride(for: noise.key) {
+            return BakedNoise(fromKey: noise.key, withSampler: overrideSampler)
+        }
         guard let sampler = self.registries.bakedNoiseRegistry.get(noise.key.convertType()) else {
             throw WorldGenerationErrors.noiseNotPresent(noise.key.name)
         }
@@ -60,9 +69,67 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 
     func bake(interpolatedNoise noise: InterpolatedNoise) throws -> InterpolatedNoise {
-        /// TODO: this is not correct unless using legacy random (see NoiseConfig)
-        var random: any Random = CheckedRandom(seed: self.seed)
+        if self.usesLegacyRandomSource {
+            var random: any Random = self.createLegacyNoiseRandom(seed: 0)
+            return noise.copy(withRandom: &random)
+        }
+
+        let terrainRandom = self.randomDeriver.split(usingString: LegacyNoiseKeys.terrain)
+        var random: any Random = terrainRandom
         return noise.copy(withRandom: &random)
+    }
+
+    private func legacySamplerOverride(for key: RegistryKey<NoiseDefinition>) -> DoublePerlinNoise? {
+        if let cachedSampler = self.legacyNoiseOverrides[key] {
+            return cachedSampler
+        }
+
+        let sampler: DoublePerlinNoise?
+        switch key.name {
+        case LegacyNoiseKeys.temperature:
+            var random: any Random = self.createLegacyNoiseRandom(seed: 0)
+            sampler = DoublePerlinNoise(
+                random: &random,
+                firstOctave: -7,
+                amplitudes: [1.0, 1.0],
+                useModernInitialization: false
+            )
+        case LegacyNoiseKeys.vegetation:
+            var random: any Random = self.createLegacyNoiseRandom(seed: 1)
+            sampler = DoublePerlinNoise(
+                random: &random,
+                firstOctave: -7,
+                amplitudes: [1.0, 1.0],
+                useModernInitialization: false
+            )
+        case LegacyNoiseKeys.offset:
+            let offsetRandom = self.randomDeriver.split(usingString: LegacyNoiseKeys.offset)
+            var random: any Random = offsetRandom
+            sampler = DoublePerlinNoise(
+                random: &random,
+                firstOctave: 0,
+                amplitudes: [0.0],
+                useModernInitialization: true
+            )
+        default:
+            sampler = nil
+        }
+
+        if let sampler {
+            self.legacyNoiseOverrides[key] = sampler
+        }
+        return sampler
+    }
+
+    private func createLegacyNoiseRandom(seed: UInt64) -> CheckedRandom {
+        return CheckedRandom(seed: seed &+ seed)
+    }
+
+    private enum LegacyNoiseKeys {
+        static let terrain = "minecraft:terrain"
+        static let temperature = "minecraft:temperature"
+        static let vegetation = "minecraft:vegetation"
+        static let offset = "minecraft:offset"
     }
 
     /// If this function key has already been baked, return true. Otherwise, mark it as baked and return false.
@@ -75,7 +142,7 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
-final class WorldScaleCache2D: DensityFunction {
+final class WorldScaleCache2D: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let argument: any DensityFunction
     private var hasValue = false
     private var lastX: Int32 = 0
@@ -114,13 +181,17 @@ final class WorldScaleCache2D: DensityFunction {
         return WorldScaleCache2D(wrapping: try self.argument.bake(withBaker: baker))
     }
 
+    var wrappedDensityFunction: any DensityFunction {
+        return self.argument
+    }
+
     private enum CodingKeys: String, CodingKey {
         case type = "type"
         case argument = "argument"
     }
 }
 
-final class WorldScaleFlatCache: DensityFunction {
+final class WorldScaleFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let argument: any DensityFunction
     private var hasValue = false
     private var lastColumnX: Int32 = 0
@@ -159,6 +230,10 @@ final class WorldScaleFlatCache: DensityFunction {
 
     func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return WorldScaleFlatCache(wrapping: try self.argument.bake(withBaker: baker))
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.argument
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -232,36 +307,535 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
-/// A chunk implementation for world generation.
+@inline(__always) private func floorDiv(_ value: Int32, by divisor: Int32) -> Int32 {
+    precondition(divisor > 0, "divisor must be positive")
+    let quotient = value / divisor
+    let remainder = value % divisor
+    return remainder < 0 ? quotient - 1 : quotient
+}
+
+@inline(__always) private func biomeCoord(fromBlock block: Int32) -> Int32 {
+    return floorDiv(block, by: 4)
+}
+
+@inline(__always) private func blockCoord(fromBiome biome: Int32) -> Int32 {
+    return biome * 4
+}
+
+struct ChunkSamplingBounds {
+    let minX: Int32
+    let maxXExclusive: Int32
+    let minY: Int32
+    let maxYExclusive: Int32
+    let minZ: Int32
+    let maxZExclusive: Int32
+    let height: Int32
+
+    init(chunkPos: PosInt2D, minY: Int32, height: Int32) {
+        self.minX = chunkPos.x &* Int32(ProtoChunk.sideLength)
+        self.maxXExclusive = self.minX &+ Int32(ProtoChunk.sideLength)
+        self.minY = minY
+        self.maxYExclusive = minY &+ height
+        self.minZ = chunkPos.z &* Int32(ProtoChunk.sideLength)
+        self.maxZExclusive = self.minZ &+ Int32(ProtoChunk.sideLength)
+        self.height = height
+    }
+
+    @inline(__always) func contains(_ pos: PosInt3D) -> Bool {
+        return self.containsColumn(x: pos.x, z: pos.z)
+            && pos.y >= self.minY
+            && pos.y < self.maxYExclusive
+    }
+
+    @inline(__always) func containsColumn(x: Int32, z: Int32) -> Bool {
+        return x >= self.minX && x < self.maxXExclusive
+            && z >= self.minZ && z < self.maxZExclusive
+    }
+
+    @inline(__always) func localColumnIndex(x: Int32, z: Int32) -> Int {
+        let localX = Int(x - self.minX)
+        let localZ = Int(z - self.minZ)
+        return localZ * ProtoChunk.sideLength + localX
+    }
+
+    @inline(__always) func localBlockIndex(for pos: PosInt3D) -> Int {
+        let localX = Int(pos.x - self.minX)
+        let localY = Int(pos.y - self.minY)
+        let localZ = Int(pos.z - self.minZ)
+        return ((localY * ProtoChunk.sideLength + localZ) * ProtoChunk.sideLength) + localX
+    }
+
+    @inline(__always) var localBlockCount: Int {
+        return ProtoChunk.sideLength * ProtoChunk.sideLength * Int(self.height)
+    }
+}
+
+private struct ChunkBlockKey: Hashable {
+    let x: Int32
+    let y: Int32
+    let z: Int32
+}
+
+private func runtimeOnlyDecodeError(_ decoder: any Decoder, forType typeName: String) -> DecodingError {
+    return DecodingError.dataCorrupted(
+        DecodingError.Context(
+            codingPath: decoder.codingPath,
+            debugDescription: "\(typeName) is a runtime-only density function wrapper."
+        )
+    )
+}
+
+private func runtimeOnlyEncodeError(_ encoder: any Encoder, forType typeName: String) -> EncodingError {
+    return EncodingError.invalidValue(
+        typeName,
+        EncodingError.Context(
+            codingPath: encoder.codingPath,
+            debugDescription: "\(typeName) is a runtime-only density function wrapper."
+        )
+    )
+}
+
+final class ChunkCache2D: DensityFunction, DensityFunctionWrapperIntrospectable {
+    private let delegate: any DensityFunction
+    private let bounds: ChunkSamplingBounds
+    private var hasLocalValues = [Bool](repeating: false, count: ProtoChunk.sideLength * ProtoChunk.sideLength)
+    private var localValues = [Double](repeating: 0.0, count: ProtoChunk.sideLength * ProtoChunk.sideLength)
+    private var hasOutsideValue = false
+    private var lastOutsideX: Int32 = 0
+    private var lastOutsideZ: Int32 = 0
+    private var lastOutsideValue: Double = 0.0
+
+    init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
+        self.delegate = delegate
+        self.bounds = bounds
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw runtimeOnlyDecodeError(decoder, forType: "ChunkCache2D")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw runtimeOnlyEncodeError(encoder, forType: "ChunkCache2D")
+    }
+
+    @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        if self.bounds.containsColumn(x: pos.x, z: pos.z) {
+            let columnIndex = self.bounds.localColumnIndex(x: pos.x, z: pos.z)
+            if self.hasLocalValues[columnIndex] {
+                return self.localValues[columnIndex]
+            }
+            let value = self.delegate.sample(at: pos)
+            self.hasLocalValues[columnIndex] = true
+            self.localValues[columnIndex] = value
+            return value
+        }
+
+        if self.hasOutsideValue && self.lastOutsideX == pos.x && self.lastOutsideZ == pos.z {
+            return self.lastOutsideValue
+        }
+        let value = self.delegate.sample(at: pos)
+        self.hasOutsideValue = true
+        self.lastOutsideX = pos.x
+        self.lastOutsideZ = pos.z
+        self.lastOutsideValue = value
+        return value
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.delegate
+    }
+}
+
+final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
+    private let delegate: any DensityFunction
+    private let startBiomeX: Int32
+    private let startBiomeZ: Int32
+    private let horizontalCacheSize: Int
+    private var cache: [Double]
+
+    init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
+        self.delegate = delegate
+        self.startBiomeX = biomeCoord(fromBlock: bounds.minX)
+        self.startBiomeZ = biomeCoord(fromBlock: bounds.minZ)
+        self.horizontalCacheSize = Int(biomeCoord(fromBlock: Int32(ProtoChunk.sideLength))) + 1
+        self.cache = [Double](repeating: 0.0, count: self.horizontalCacheSize * self.horizontalCacheSize)
+
+        for localBiomeZ in 0..<self.horizontalCacheSize {
+            let biomeZ = self.startBiomeZ + Int32(localBiomeZ)
+            let blockZ = blockCoord(fromBiome: biomeZ)
+            for localBiomeX in 0..<self.horizontalCacheSize {
+                let biomeX = self.startBiomeX + Int32(localBiomeX)
+                let blockX = blockCoord(fromBiome: biomeX)
+                let index = localBiomeX + localBiomeZ * self.horizontalCacheSize
+                self.cache[index] = delegate.sample(at: PosInt3D(x: blockX, y: 0, z: blockZ))
+            }
+        }
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw runtimeOnlyDecodeError(decoder, forType: "ChunkFlatCache")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw runtimeOnlyEncodeError(encoder, forType: "ChunkFlatCache")
+    }
+
+    @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        let biomeX = biomeCoord(fromBlock: pos.x)
+        let biomeZ = biomeCoord(fromBlock: pos.z)
+        let localBiomeX = biomeX - self.startBiomeX
+        let localBiomeZ = biomeZ - self.startBiomeZ
+        if localBiomeX >= 0
+            && localBiomeZ >= 0
+            && localBiomeX < Int32(self.horizontalCacheSize)
+            && localBiomeZ < Int32(self.horizontalCacheSize)
+        {
+            let index = Int(localBiomeX + localBiomeZ * Int32(self.horizontalCacheSize))
+            return self.cache[index]
+        }
+        return self.delegate.sample(at: pos)
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.delegate
+    }
+}
+
+final class ChunkPositionCache: DensityFunction, DensityFunctionWrapperIntrospectable {
+    private let delegate: any DensityFunction
+    private let bounds: ChunkSamplingBounds
+    private var hasLocalValues: [Bool]
+    private var localValues: [Double]
+
+    init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
+        self.delegate = delegate
+        self.bounds = bounds
+        self.hasLocalValues = [Bool](repeating: false, count: bounds.localBlockCount)
+        self.localValues = [Double](repeating: 0.0, count: bounds.localBlockCount)
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw runtimeOnlyDecodeError(decoder, forType: "ChunkPositionCache")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw runtimeOnlyEncodeError(encoder, forType: "ChunkPositionCache")
+    }
+
+    @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        guard self.bounds.contains(pos) else {
+            return self.delegate.sample(at: pos)
+        }
+
+        let localIndex = self.bounds.localBlockIndex(for: pos)
+        if self.hasLocalValues[localIndex] {
+            return self.localValues[localIndex]
+        }
+        let value = self.delegate.sample(at: pos)
+        self.hasLocalValues[localIndex] = true
+        self.localValues[localIndex] = value
+        return value
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.delegate
+    }
+}
+
+final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntrospectable {
+    private let delegate: any DensityFunction
+    private let bounds: ChunkSamplingBounds
+    private let horizontalCellBlockCount: Int32
+    private let verticalCellBlockCount: Int32
+    private var cornerCache: [ChunkBlockKey: Double] = [:]
+    private var hasLocalValues: [Bool]
+    private var localValues: [Double]
+
+    init(
+        wrapping delegate: any DensityFunction,
+        bounds: ChunkSamplingBounds,
+        horizontalCellBlockCount: Int32,
+        verticalCellBlockCount: Int32
+    ) {
+        self.delegate = delegate
+        self.bounds = bounds
+        self.horizontalCellBlockCount = max(1, horizontalCellBlockCount)
+        self.verticalCellBlockCount = max(1, verticalCellBlockCount)
+        self.hasLocalValues = [Bool](repeating: false, count: bounds.localBlockCount)
+        self.localValues = [Double](repeating: 0.0, count: bounds.localBlockCount)
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw runtimeOnlyDecodeError(decoder, forType: "ChunkInterpolatedCache")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw runtimeOnlyEncodeError(encoder, forType: "ChunkInterpolatedCache")
+    }
+
+    private func sampleCorner(x: Int32, y: Int32, z: Int32) -> Double {
+        let key = ChunkBlockKey(x: x, y: y, z: z)
+        if let cached = self.cornerCache[key] {
+            return cached
+        }
+        let sampled = self.delegate.sample(at: PosInt3D(x: x, y: y, z: z))
+        self.cornerCache[key] = sampled
+        return sampled
+    }
+
+    @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        guard self.bounds.contains(pos) else {
+            return self.delegate.sample(at: pos)
+        }
+
+        let localIndex = self.bounds.localBlockIndex(for: pos)
+        if self.hasLocalValues[localIndex] {
+            return self.localValues[localIndex]
+        }
+
+        let cellStartX = floorDiv(pos.x, by: self.horizontalCellBlockCount) * self.horizontalCellBlockCount
+        let cellStartY = floorDiv(pos.y, by: self.verticalCellBlockCount) * self.verticalCellBlockCount
+        let cellStartZ = floorDiv(pos.z, by: self.horizontalCellBlockCount) * self.horizontalCellBlockCount
+
+        let cellEndX = cellStartX + self.horizontalCellBlockCount
+        let cellEndY = cellStartY + self.verticalCellBlockCount
+        let cellEndZ = cellStartZ + self.horizontalCellBlockCount
+
+        let deltaX = Double(pos.x - cellStartX) / Double(self.horizontalCellBlockCount)
+        let deltaY = Double(pos.y - cellStartY) / Double(self.verticalCellBlockCount)
+        let deltaZ = Double(pos.z - cellStartZ) / Double(self.horizontalCellBlockCount)
+
+        let interpolated = lerp3(
+            deltaX: deltaX,
+            deltaY: deltaY,
+            deltaZ: deltaZ,
+            x0y0z0: self.sampleCorner(x: cellStartX, y: cellStartY, z: cellStartZ),
+            x1y0z0: self.sampleCorner(x: cellEndX, y: cellStartY, z: cellStartZ),
+            x0y1z0: self.sampleCorner(x: cellStartX, y: cellEndY, z: cellStartZ),
+            x1y1z0: self.sampleCorner(x: cellEndX, y: cellEndY, z: cellStartZ),
+            x0y0z1: self.sampleCorner(x: cellStartX, y: cellStartY, z: cellEndZ),
+            x1y0z1: self.sampleCorner(x: cellEndX, y: cellStartY, z: cellEndZ),
+            x0y1z1: self.sampleCorner(x: cellStartX, y: cellEndY, z: cellEndZ),
+            x1y1z1: self.sampleCorner(x: cellEndX, y: cellEndY, z: cellEndZ)
+        )
+
+        self.hasLocalValues[localIndex] = true
+        self.localValues[localIndex] = interpolated
+        return interpolated
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.delegate
+    }
+}
+
+final class ChunkDensityFunctionBaker: DensityFunctionBaker {
+    private let bounds: ChunkSamplingBounds
+    private let horizontalCellBlockCount: Int32
+    private let verticalCellBlockCount: Int32
+    private var cacheMarkerMemo: [ObjectIdentifier: any DensityFunction] = [:]
+    private var memo: [ObjectIdentifier: any DensityFunction] = [:]
+
+    init(chunkPos: PosInt2D, minY: Int32, height: Int32, sizeHorizontal: Int, sizeVertical: Int) {
+        self.bounds = ChunkSamplingBounds(chunkPos: chunkPos, minY: minY, height: height)
+        self.horizontalCellBlockCount = Self.cellBlockCount(fromNoiseSize: sizeHorizontal)
+        self.verticalCellBlockCount = Self.cellBlockCount(fromNoiseSize: sizeVertical)
+    }
+
+    private static func cellBlockCount(fromNoiseSize size: Int) -> Int32 {
+        // In vanilla this is derived from GenerationShapeConfig. We mirror it with a simplified direct mapping.
+        let shift = max(0, min(30, size + 1))
+        return Int32(1 << shift)
+    }
+
+    func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
+        guard let bakedNoise = noise as? BakedNoise else {
+            throw BakingErrors.noiseNotAlreadyBaked(noise.key.name)
+        }
+        return bakedNoise
+    }
+
+    func bake(referenceDensityFunction: ReferenceDensityFunction) throws -> any DensityFunction {
+        throw BakingErrors.referenceNotAlreadyBaked(referenceDensityFunction.targetKey.name)
+    }
+
+    func bake(cacheMarker: CacheMarker) throws -> any DensityFunction {
+        let key = ObjectIdentifier(cacheMarker)
+        if let cached = self.cacheMarkerMemo[key] {
+            return cached
+        }
+
+        let bakedArgument = try self.bakeDensityFunction(cacheMarker.argument)
+        let baked: any DensityFunction
+        switch cacheMarker.type {
+        case .flatCache:
+            baked = ChunkFlatCache(wrapping: bakedArgument, bounds: self.bounds)
+        case .cache2D:
+            baked = ChunkCache2D(wrapping: bakedArgument, bounds: self.bounds)
+        case .cacheOnce, .cacheAllInCell:
+            baked = ChunkPositionCache(wrapping: bakedArgument, bounds: self.bounds)
+        case .interpolated:
+            baked = ChunkInterpolatedCache(
+                wrapping: bakedArgument,
+                bounds: self.bounds,
+                horizontalCellBlockCount: self.horizontalCellBlockCount,
+                verticalCellBlockCount: self.verticalCellBlockCount
+            )
+        }
+        self.cacheMarkerMemo[key] = baked
+        return baked
+    }
+
+    func bakeDensityFunction(_ function: any DensityFunction) throws -> any DensityFunction {
+        if type(of: function) is AnyObject.Type {
+            let obj = function as AnyObject
+            let key = ObjectIdentifier(obj)
+            if let cached = self.memo[key] {
+                return cached
+            }
+            let baked = try function.bake(withBaker: self)
+            self.memo[key] = baked
+            return baked
+        }
+        return try function.bake(withBaker: self)
+    }
+
+    func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
+        return beardifier
+    }
+
+    func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise {
+        return simplexNoise
+    }
+
+    func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise {
+        return interpolatedNoise
+    }
+
+    private enum BakingErrors: Error {
+        case noiseNotAlreadyBaked(String)
+        case referenceNotAlreadyBaked(String)
+    }
+}
+
+public final class ProtoChunkSection {
+    public static let sideLength = 16
+    public static let blockCount = sideLength * sideLength * sideLength
+    public static let bitmapWordCount = blockCount / 64
+
+    private var terrainBitmap = [UInt64](repeating: 0, count: bitmapWordCount)
+
+    public init() {}
+
+    public var bitmap: [UInt64] {
+        return self.terrainBitmap
+    }
+
+    func clear() {
+        self.terrainBitmap = [UInt64](repeating: 0, count: Self.bitmapWordCount)
+    }
+
+    @inline(__always) func setTerrain(_ isSolid: Bool, at pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(Self.sideLength), "y position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z position out of range")
+
+        let blockIndex = (Int(pos.y) << 8) | (Int(pos.z) << 4) | Int(pos.x)
+        let wordIndex = blockIndex >> 6
+        let bitIndex = blockIndex & 63
+        let bitMask = UInt64(1) << UInt64(bitIndex)
+        if isSolid {
+            self.terrainBitmap[wordIndex] |= bitMask
+        } else {
+            self.terrainBitmap[wordIndex] &= ~bitMask
+        }
+    }
+
+    @inline(__always) func isTerrain(at pos: PosInt3D) -> Bool {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(Self.sideLength), "y position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z position out of range")
+
+        let blockIndex = (Int(pos.y) << 8) | (Int(pos.z) << 4) | Int(pos.x)
+        let wordIndex = blockIndex >> 6
+        let bitIndex = blockIndex & 63
+        let bitMask = UInt64(1) << UInt64(bitIndex)
+        return (self.terrainBitmap[wordIndex] & bitMask) != 0
+    }
+}
+
+/// A chunk implementation for world generation that stores terrain in 16x16x16 sections.
 public final class ProtoChunk {
-    private let storage = PalettedChunkBlockStorage(filledWith: BlockState(type: Blocks.AIR))
-    
-    public func setBlock(_ state: BlockState, at pos: PosInt3D) {
-        self.storage.setBlock(state, at: pos)
+    public static let sideLength = 16
+    public static let sectionHeight = 16
+
+    public private(set) var minY: Int32 = 0
+    public private(set) var height: Int32 = 0
+    private var sections: [ProtoChunkSection] = []
+
+    public init() {}
+
+    public var sectionCount: Int {
+        return self.sections.count
     }
 
-    public func getBlock(at pos: PosInt3D) -> BlockState {
-        return self.storage.getBlock(at: pos)
+    public func section(at index: Int) -> ProtoChunkSection? {
+        guard index >= 0 && index < self.sections.count else { return nil }
+        return self.sections[index]
+    }
+
+    public func configure(minY: Int32, height: Int32) throws {
+        guard height > 0 && height % Int32(Self.sectionHeight) == 0 else {
+            throw WorldGenerationErrors.invalidProtoChunkHeight(Int(height))
+        }
+
+        self.minY = minY
+        self.height = height
+        self.sections = (0..<Int(height / Int32(Self.sectionHeight))).map { _ in ProtoChunkSection() }
+    }
+
+    public func clearTerrain() {
+        for section in self.sections {
+            section.clear()
+        }
+    }
+
+    @inline(__always) public func setTerrain(_ isSolid: Bool, atLocal pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
+        precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z position out of range")
+
+        let sectionIndex = Int(pos.y) >> 4
+        let localY = pos.y & 15
+        self.sections[sectionIndex].setTerrain(isSolid, at: PosInt3D(x: pos.x, y: localY, z: pos.z))
+    }
+
+    @inline(__always) public func isTerrain(atLocal pos: PosInt3D) -> Bool {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
+        precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z position out of range")
+
+        let sectionIndex = Int(pos.y) >> 4
+        let localY = pos.y & 15
+        return self.sections[sectionIndex].isTerrain(at: PosInt3D(x: pos.x, y: localY, z: pos.z))
     }
 }
-
-/*
-final class ProtoChunkFlatCache: DensityFunction {
-    private let parent: ProtoChunk
-
-    init(withParent parent: ProtoChunk) {
-        self.parent = parent
-    }
-
-    func sample(at: PosInt3D) -> Double {
-        
-    }
-
-    func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
-        
-    }
-}
-*/
 
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
@@ -364,7 +938,11 @@ public final class WorldGenerator {
         // in the baker object, which can be queried to ensure that each density function only gets baked once.
 
         // Note: this solution is not concurrency-safe and is not a very good one in general.
-        let baker = FullDensityFunctionBaker(withSeed: self.worldSeed, registries: self.registries)
+        let baker = FullDensityFunctionBaker(
+            withSeed: self.worldSeed,
+            usesLegacyRandomSource: self.config?.legacyRandomSource ?? false,
+            registries: self.registries
+        )
         try self.registries.densityFunctionRegistry.forEach { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
             if baker.hasBeenBaked(atKey: key) { return }
             baker.registries.densityFunctionRegistry.register(try value.bake(withBaker: baker), forKey: key)
@@ -712,18 +1290,62 @@ public final class WorldGenerator {
         return biomes
     }
 
-    /*
-    Currently shelved along with the chunk protocol.
-
-    /// Generate the chunk at this position and store it in the passed-in chunk.
+    /// Generate terrain into a `ProtoChunk` at the requested chunk position.
+    /// This is the main entry point for chunk terrain sampling.
     /// - Parameters:
     ///   - chunk: The chunk to generate into.
-    ///   - chunkPos: The position to generate the chunk at.
-    public func generateInto<C: Chunk>(_ chunk: inout C, at chunkPos: PosInt2D) {
-        fatalError("Unimplemented function WorldGenerator.generateInto(_:at:)!")
-        #warning("Unimplemented function WorldGenerator.generateInto(_:at:)!")
+    ///   - chunkPos: The chunk position in chunk coordinates.
+    public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+        guard let config = self.config else {
+            throw WorldGenerationErrors.noiseSettingsNotPresent("Terrain generation requires a configured noise settings entry.")
+        }
+        guard config.height > 0 && config.height % ProtoChunk.sectionHeight == 0 else {
+            throw WorldGenerationErrors.invalidProtoChunkHeight(config.height)
+        }
+
+        let minY = Int32(config.minY)
+        let height = Int32(config.height)
+        try chunk.configure(minY: minY, height: height)
+
+        let chunkSampler = VanillaChunkTerrainSampler(
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+
+        // This path intentionally samples `final_density` only for parity with the current reference data.
+        let terrainDensityRoot = config.noiseRouter.finalDensity
+        let terrainDensity = try chunkSampler.bakeDensityFunction(terrainDensityRoot)
+        chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
     }
-    */
+
+    // Currently visible for testing only.
+    func sampleFinalDensity(at pos: PosInt3D) throws -> Double {
+        guard let config = self.config else {
+            throw WorldGenerationErrors.noiseSettingsNotPresent("Final density sampling requires a configured noise settings entry.")
+        }
+        guard config.height > 0 && config.height % ProtoChunk.sectionHeight == 0 else {
+            throw WorldGenerationErrors.invalidProtoChunkHeight(config.height)
+        }
+
+        let minY = Int32(config.minY)
+        let height = Int32(config.height)
+        let chunkPos = PosInt2D(
+            x: floorDiv(pos.x, by: Int32(ProtoChunk.sideLength)),
+            z: floorDiv(pos.z, by: Int32(ProtoChunk.sideLength))
+        )
+        let chunkSampler = VanillaChunkTerrainSampler(
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+        let finalDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
+        return finalDensity.sample(at: pos)
+    }
 
     // Currently visible for testing only.
     func getBakedNoiseOrThrow(at key: RegistryKey<DoublePerlinNoise>) throws -> DoublePerlinNoise {
@@ -759,4 +1381,5 @@ enum WorldGenerationErrors: Error {
     case invalidMultiNoiseBiomeSourceParameterList(String)
     case fromPosGreaterThanToPos
     case invalidScale
+    case invalidProtoChunkHeight(Int)
 }
