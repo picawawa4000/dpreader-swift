@@ -409,7 +409,7 @@ public class PerlinNoise {
         let localYOffset: Double
         if (yScale != 0.0) {
             let r = yMax >= 0.0 && yMax < localY ? yMax : localY
-            localYOffset = (r / yScale + 1.0e-7).rounded(FloatingPointRoundingRule.down) * yScale
+            localYOffset = (r / yScale).rounded(FloatingPointRoundingRule.down) * yScale
         } else {
             localYOffset = 0.0
         }

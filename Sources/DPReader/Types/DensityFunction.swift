@@ -152,7 +152,8 @@ private func densityFunctionBounds(_ function: any DensityFunction) -> (Double, 
         return (min(inLower, outLower), max(inUpper, outUpper))
     }
     if let blendDensity = function as? BlendDensity {
-        return densityFunctionBounds(blendDensity.argument)
+        _ = blendDensity
+        return (-Double.infinity, Double.infinity)
     }
 
     return (-Double.infinity, Double.infinity)
@@ -632,6 +633,18 @@ public struct DensityFunctionSimplexNoise {
 
     var whenOutOfRangeOutput: any DensityFunction {
         return self.whenOutOfRange
+    }
+
+    var inputChoiceFunction: any DensityFunction {
+        return self.inputChoice
+    }
+
+    var minimumInclusive: Double {
+        return self.minInclusive
+    }
+
+    var maximumExclusive: Double {
+        return self.maxExclusive
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1120,6 +1133,18 @@ public struct DensityFunctionSimplexNoise {
                 if input < 0.75 { return 2.0 }
                 return 3.0
         }
+    }
+
+    var inputFunction: any DensityFunction {
+        return self.input
+    }
+
+    var noiseSampler: any DensityFunctionNoise {
+        return self.noise
+    }
+
+    func scaleValue(_ input: Double) -> Double {
+        return self.scale(input)
     }
 
     public enum ScalingType: String, Codable {

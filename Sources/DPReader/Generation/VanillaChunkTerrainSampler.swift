@@ -38,7 +38,7 @@ private protocol VanillaChunkFillFunction {
     func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode)
 }
 
-private final class VanillaChunkCache2D: DensityFunction, DensityFunctionWrapperIntrospectable {
+private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private var hasLastSamplingResult = false
     private var lastX: Int32 = 0
@@ -67,6 +67,11 @@ private final class VanillaChunkCache2D: DensityFunction, DensityFunctionWrapper
         self.lastZ = pos.z
         self.lastSamplingResult = sampled
         return sampled
+    }
+
+    func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode) {
+        // Vanilla Cache2D bypasses its cache on fill and forwards directly.
+        sampler.fill(into: &densities, using: self.delegate, mode: mode)
     }
 
     func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -140,8 +145,8 @@ private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapp
 private final class VanillaChunkCacheOnce: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let sampler: VanillaChunkTerrainSampler
-    private var sampleUniqueIndex: Int64 = Int64.min
-    private var cacheOnceUniqueIndex: Int64 = Int64.min
+    private var sampleUniqueIndex: Int64 = 0
+    private var cacheOnceUniqueIndex: Int64 = 0
     private var lastSamplingResult: Double = 0.0
     private var cache: [Double]? = nil
 
@@ -551,6 +556,25 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     }
 
     private func fillBinary(into densities: inout [Double], using function: BinaryDensityFunction, mode: FillMode) {
+        if function.operationType == .MULTIPLY {
+            if let firstConstant = function.firstOperand as? ConstantDensityFunction {
+                self.fill(into: &densities, using: function.secondOperand, mode: mode)
+                let multiplier = firstConstant.constantValue
+                for i in densities.indices {
+                    densities[i] *= multiplier
+                }
+                return
+            }
+            if let secondConstant = function.secondOperand as? ConstantDensityFunction {
+                self.fill(into: &densities, using: function.firstOperand, mode: mode)
+                let multiplier = secondConstant.constantValue
+                for i in densities.indices {
+                    densities[i] *= multiplier
+                }
+                return
+            }
+        }
+
         self.fill(into: &densities, using: function.firstOperand, mode: mode)
         switch function.operationType {
         case .ADD:
@@ -597,6 +621,43 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
+    private func fillRangeChoice(into densities: inout [Double], using function: RangeChoice, mode: FillMode) {
+        self.fill(into: &densities, using: function.inputChoiceFunction, mode: mode)
+        for i in densities.indices {
+            let input = densities[i]
+            self.setSamplerPosForFillIndex(i, mode: mode)
+            if input >= function.minimumInclusive && input < function.maximumExclusive {
+                densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
+            } else {
+                densities[i] = self.sampleAtCurrentPos(function.whenOutOfRangeOutput)
+            }
+        }
+    }
+
+    private func fillBlendDensity(into densities: inout [Double], using function: BlendDensity, mode: FillMode) {
+        self.fill(into: &densities, using: function.argument, mode: mode)
+        // BlendDensity is identity in our no-blending path, but vanilla still advances
+        // applier position per element via Positional.fill(applier.at(i)).
+        for i in densities.indices {
+            self.setSamplerPosForFillIndex(i, mode: mode)
+        }
+    }
+
+    private func fillWeirdScaledSampler(into densities: inout [Double], using function: WeirdScaledSampler, mode: FillMode) {
+        self.fill(into: &densities, using: function.inputFunction, mode: mode)
+        for i in densities.indices {
+            self.setSamplerPosForFillIndex(i, mode: mode)
+            let scaledValue = function.scaleValue(densities[i])
+            densities[i] = scaledValue * abs(
+                function.noiseSampler.sample(
+                    x: Double(self.blockX) / scaledValue,
+                    y: Double(self.blockY) / scaledValue,
+                    z: Double(self.blockZ) / scaledValue
+                )
+            )
+        }
+    }
+
     func fillDefault(into densities: inout [Double], using function: any DensityFunction, mode: FillMode) {
         self.validateFillBufferSize(densities.count, mode: mode)
         for i in densities.indices {
@@ -637,7 +698,18 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             self.fillClamp(into: &densities, using: clampFunction, mode: mode)
             return
         }
-
+        if let rangeChoice = function as? RangeChoice {
+            self.fillRangeChoice(into: &densities, using: rangeChoice, mode: mode)
+            return
+        }
+        if let blendDensity = function as? BlendDensity {
+            self.fillBlendDensity(into: &densities, using: blendDensity, mode: mode)
+            return
+        }
+        if let weirdScaledSampler = function as? WeirdScaledSampler {
+            self.fillWeirdScaledSampler(into: &densities, using: weirdScaledSampler, mode: mode)
+            return
+        }
         self.fillDefault(into: &densities, using: function, mode: mode)
     }
 

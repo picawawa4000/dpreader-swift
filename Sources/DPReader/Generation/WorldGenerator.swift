@@ -1315,8 +1315,12 @@ public final class WorldGenerator {
             sizeVertical: config.sizeVertical
         )
 
-        // This path intentionally samples `final_density` only for parity with the current reference data.
-        let terrainDensityRoot = config.noiseRouter.finalDensity
+        // This path intentionally samples `final_density` only (without aquifer/beardifier),
+        // but still routes through cache_all_in_cell to match vanilla chunk sampling order.
+        let terrainDensityRoot: any DensityFunction = CacheMarker(
+            type: .cacheAllInCell,
+            wrapping: config.noiseRouter.finalDensity
+        )
         let terrainDensity = try chunkSampler.bakeDensityFunction(terrainDensityRoot)
         chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
     }
