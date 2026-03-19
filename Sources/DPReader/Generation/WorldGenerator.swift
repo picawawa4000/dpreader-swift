@@ -843,6 +843,9 @@ public final class WorldGenerator {
     private var config: NoiseSettings?
     private var registries = WorldGenerationRegistries()
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
+    // Terrain generation walks a shared baked density-function graph composed of reference types.
+    // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
+    private let terrainGenerationLock = NSLock()
 
     /// Initialise this world generator.
     /// This function bakes all datapacks supplied to it, which is why it is impossible to add datapacks to an
@@ -1296,6 +1299,9 @@ public final class WorldGenerator {
     ///   - chunk: The chunk to generate into.
     ///   - chunkPos: The chunk position in chunk coordinates.
     public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
         guard let config = self.config else {
             throw WorldGenerationErrors.noiseSettingsNotPresent("Terrain generation requires a configured noise settings entry.")
         }

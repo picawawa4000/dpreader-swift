@@ -220,6 +220,14 @@ private func decodeVanillaTerrainBitset() throws -> [UInt8] {
     return [UInt8](bytes)
 }
 
+private func snapshotTerrainBitmap(from chunk: ProtoChunk) -> [[UInt64]] {
+    return (0..<chunk.sectionCount).compactMap { chunk.section(at: $0)?.bitmap }
+}
+
+private struct UnsafeSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+}
+
 @inline(__always)
 private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bool {
     precondition(pos.x >= 0 && pos.x < Int32(ProtoChunk.sideLength), "x position out of range")
@@ -339,6 +347,78 @@ private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bo
         #expect(Bool(false), "Expected invalidProtoChunkHeight to be thrown")
     } catch WorldGenerationErrors.invalidProtoChunkHeight(let actualHeight) {
         #expect(actualHeight == 30)
+    }
+}
+
+@Test func testGenerateIntoIsStableAcrossConcurrentCalls() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 4,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "test:example"),
+        buildSearchTrees: false
+    )
+
+    let chunkPositions = [
+        PosInt2D(x: 0, z: 0),
+        PosInt2D(x: 1, z: 0),
+        PosInt2D(x: -1, z: 0),
+        PosInt2D(x: 0, z: 1),
+        PosInt2D(x: 0, z: -1),
+        PosInt2D(x: 2, z: 3),
+        PosInt2D(x: -4, z: 5),
+        PosInt2D(x: 7, z: -6)
+    ]
+
+    let expectedBitmaps = try chunkPositions.map { chunkPos in
+        let chunk = ProtoChunk()
+        try worldGenerator.generateInto(chunk, at: chunkPos)
+        return snapshotTerrainBitmap(from: chunk)
+    }
+
+    let sharedGenerator = UnsafeSendableBox(value: worldGenerator)
+    let sharedChunkPositions = UnsafeSendableBox(value: chunkPositions)
+    let results = chunkPositions.map { _ in LockedOptional<[[UInt64]]>() }
+    let failure = LockedOptional<String>()
+    DispatchQueue.concurrentPerform(iterations: chunkPositions.count) { index in
+        let chunk = ProtoChunk()
+        do {
+            try sharedGenerator.value.generateInto(chunk, at: sharedChunkPositions.value[index])
+            results[index].value = snapshotTerrainBitmap(from: chunk)
+        } catch {
+            failure.setIfNil(String(describing: error))
+        }
+    }
+
+    #expect(failure.value == nil)
+    for index in chunkPositions.indices {
+        #expect(results[index].value == .some(expectedBitmaps[index]))
+    }
+}
+
+private final class LockedOptional<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value?
+
+    var value: Value? {
+        get {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.storage
+        }
+        set {
+            self.lock.lock()
+            self.storage = newValue
+            self.lock.unlock()
+        }
+    }
+
+    func setIfNil(_ value: Value) {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        if self.storage == nil {
+            self.storage = value
+        }
     }
 }
 
