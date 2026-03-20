@@ -11,8 +11,8 @@ These may not be possible, but if they are, they should be done because they wou
 
 ## Tests
 
-- Output tests for the caches (especially `minecraft:interpolated`) and `Beardifier`.
-- Loading & output tests for `WeirdScaledSampler`.
-- Loading tests for `InterpolatedNoise`.
-- Loading & output tests for `SplineDensityFunction`.
 - Loading & output tests for anything & everything related to loot.
+
+## Cleanup
+
+- De-vibecode-ify `VanillaChunkTerrainSampler.swift`, and merge it into `WorldGenerator.swift`.
