@@ -738,8 +738,11 @@ public final class ProtoChunkSection {
     public static let sideLength = 16
     public static let blockCount = sideLength * sideLength * sideLength
     public static let bitmapWordCount = blockCount / 64
+    public static let biomeSideLength = 4
+    public static let biomeCount = biomeSideLength * biomeSideLength * biomeSideLength
 
     private var terrainBitmap = [UInt64](repeating: 0, count: bitmapWordCount)
+    private var biomes = [RegistryKey<Biome>?](repeating: nil, count: biomeCount)
 
     public init() {}
 
@@ -747,8 +750,23 @@ public final class ProtoChunkSection {
         return self.terrainBitmap
     }
 
+    public var biomePalette: [RegistryKey<Biome>?] {
+        return self.biomes
+    }
+
     func clear() {
         self.terrainBitmap = [UInt64](repeating: 0, count: Self.bitmapWordCount)
+        self.biomes = [RegistryKey<Biome>?](repeating: nil, count: Self.biomeCount)
+    }
+
+    @inline(__always) func setTerrainUnchecked(_ isSolid: Bool, blockIndex: Int) {
+        let wordIndex = blockIndex >> 6
+        let bitMask = UInt64(1) << UInt64(blockIndex & 63)
+        if isSolid {
+            self.terrainBitmap[wordIndex] |= bitMask
+        } else {
+            self.terrainBitmap[wordIndex] &= ~bitMask
+        }
     }
 
     @inline(__always) func setTerrain(_ isSolid: Bool, at pos: PosInt3D) {
@@ -778,12 +796,36 @@ public final class ProtoChunkSection {
         let bitMask = UInt64(1) << UInt64(bitIndex)
         return (self.terrainBitmap[wordIndex] & bitMask) != 0
     }
+
+    @inline(__always) func setBiomeUnchecked(_ biome: RegistryKey<Biome>, biomeIndex: Int) {
+        self.biomes[biomeIndex] = biome
+    }
+
+    @inline(__always) func setBiome(_ biome: RegistryKey<Biome>, atBiome pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.biomeSideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(Self.biomeSideLength), "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.biomeSideLength), "z biome position out of range")
+
+        let biomeIndex = (Int(pos.y) << 4) | (Int(pos.z) << 2) | Int(pos.x)
+        self.biomes[biomeIndex] = biome
+    }
+
+    @inline(__always) func biome(atBiome pos: PosInt3D) -> RegistryKey<Biome>? {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.biomeSideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(Self.biomeSideLength), "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.biomeSideLength), "z biome position out of range")
+
+        let biomeIndex = (Int(pos.y) << 4) | (Int(pos.z) << 2) | Int(pos.x)
+        return self.biomes[biomeIndex]
+    }
 }
 
 /// A chunk implementation for world generation that stores terrain in 16x16x16 sections.
 public final class ProtoChunk {
     public static let sideLength = 16
     public static let sectionHeight = 16
+    public static let biomeSideLength = 4
+    public static let biomeScale = 4
 
     public private(set) var minY: Int32 = 0
     public private(set) var height: Int32 = 0
@@ -816,6 +858,10 @@ public final class ProtoChunk {
         }
     }
 
+    public var biomeHeight: Int {
+        return Int(self.height) / Self.biomeScale
+    }
+
     @inline(__always) public func setTerrain(_ isSolid: Bool, atLocal pos: PosInt3D) {
         precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
         precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
@@ -824,6 +870,38 @@ public final class ProtoChunk {
         let sectionIndex = Int(pos.y) >> 4
         let localY = pos.y & 15
         self.sections[sectionIndex].setTerrain(isSolid, at: PosInt3D(x: pos.x, y: localY, z: pos.z))
+    }
+
+    @inline(__always) func setTerrainUnchecked(_ isSolid: Bool, sectionIndex: Int, blockIndex: Int) {
+        self.sections[sectionIndex].setTerrainUnchecked(isSolid, blockIndex: blockIndex)
+    }
+
+    @inline(__always) func sectionUnchecked(at index: Int) -> ProtoChunkSection {
+        return self.sections[index]
+    }
+
+    @inline(__always) func setBiomeUnchecked(_ biome: RegistryKey<Biome>, sectionIndex: Int, biomeIndex: Int) {
+        self.sections[sectionIndex].setBiomeUnchecked(biome, biomeIndex: biomeIndex)
+    }
+
+    @inline(__always) public func setBiome(_ biome: RegistryKey<Biome>, atBiomeLocal pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.biomeSideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(self.biomeHeight), "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.biomeSideLength), "z biome position out of range")
+
+        let sectionIndex = Int(pos.y) >> 2
+        let localY = pos.y & 3
+        self.sections[sectionIndex].setBiome(biome, atBiome: PosInt3D(x: pos.x, y: localY, z: pos.z))
+    }
+
+    @inline(__always) public func biome(atBiomeLocal pos: PosInt3D) -> RegistryKey<Biome>? {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.biomeSideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(self.biomeHeight), "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.biomeSideLength), "z biome position out of range")
+
+        let sectionIndex = Int(pos.y) >> 2
+        let localY = pos.y & 3
+        return self.sections[sectionIndex].biome(atBiome: PosInt3D(x: pos.x, y: localY, z: pos.z))
     }
 
     @inline(__always) public func isTerrain(atLocal pos: PosInt3D) -> Bool {
@@ -837,10 +915,65 @@ public final class ProtoChunk {
     }
 }
 
+private struct ChunkBiomeDensityFunctions {
+    let temperature: any DensityFunction
+    let humidity: any DensityFunction
+    let continentalness: any DensityFunction
+    let erosion: any DensityFunction
+    let weirdness: any DensityFunction
+    let depth: any DensityFunction
+}
+
+private struct BiomeGenerationProfile {
+    var loopNanos: UInt64 = 0
+    var noiseSamplingNanos: UInt64 = 0
+    var treeLookupNanos: UInt64 = 0
+    var chunkWriteNanos: UInt64 = 0
+    var temperatureNanos: UInt64 = 0
+    var humidityNanos: UInt64 = 0
+    var continentalnessNanos: UInt64 = 0
+    var erosionNanos: UInt64 = 0
+    var weirdnessNanos: UInt64 = 0
+    var depthNanos: UInt64 = 0
+    var sampleCount: Int = 0
+    var skipped = false
+
+    var exclusiveLoopNanos: UInt64 {
+        let measured = self.noiseSamplingNanos &+ self.treeLookupNanos &+ self.chunkWriteNanos
+        return self.loopNanos >= measured ? self.loopNanos &- measured : 0
+    }
+
+    var description: String {
+        if self.skipped {
+            return "biomes skipped"
+        }
+
+        return
+            "biome loop excl sample/tree/write \(self.exclusiveLoopNanos)ns (\(self.exclusiveLoopNanos / 1_000_000)ms); " +
+            "biome noise \(self.noiseSamplingNanos)ns (\(self.noiseSamplingNanos / 1_000_000)ms); " +
+            "biome tree \(self.treeLookupNanos)ns (\(self.treeLookupNanos / 1_000_000)ms); " +
+            "biome writes \(self.chunkWriteNanos)ns (\(self.chunkWriteNanos / 1_000_000)ms); " +
+            "biome total \(self.loopNanos)ns (\(self.loopNanos / 1_000_000)ms); " +
+            "samples \(self.sampleCount)"
+    }
+
+    var densityDescription: String {
+        return
+            "biome density functions: temperature \(self.temperatureNanos)ns (\(self.temperatureNanos / 1_000_000)ms); " +
+            "humidity \(self.humidityNanos)ns (\(self.humidityNanos / 1_000_000)ms); " +
+            "continentalness \(self.continentalnessNanos)ns (\(self.continentalnessNanos / 1_000_000)ms); " +
+            "erosion \(self.erosionNanos)ns (\(self.erosionNanos / 1_000_000)ms); " +
+            "weirdness \(self.weirdnessNanos)ns (\(self.weirdnessNanos / 1_000_000)ms); " +
+            "depth \(self.depthNanos)ns (\(self.depthNanos / 1_000_000)ms)"
+    }
+}
+
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
     private var config: NoiseSettings?
+    private let configuredSettingsKeyName: String?
+    private var configuredDimensionKey: RegistryKey<Dimension>?
     private var registries = WorldGenerationRegistries()
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
     // Terrain generation walks a shared baked density-function graph composed of reference types.
@@ -857,6 +990,7 @@ public final class WorldGenerator {
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
     public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>? = nil, buildSearchTrees: Bool = true) throws {
         self.worldSeed = seed
+        self.configuredSettingsKeyName = configKey?.name
         var random = XoroshiroRandom(seed: seed)
         let low = random.nextLong()
         let high = random.nextLong()
@@ -881,6 +1015,19 @@ public final class WorldGenerator {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
             self.registries.biomeRegistry.mergeDown(with: datapack.biomeRegistry)
             self.registries.dimensionRegistry.mergeDown(with: datapack.dimensionsRegistry)
+        }
+
+        if let configKey {
+            self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
+                guard self.configuredDimensionKey == nil else { return }
+                guard let noiseGenerator = value.generator as? NoiseDimensionGenerator else { return }
+                if noiseGenerator.settings == configKey.name {
+                    self.configuredDimensionKey = key
+                }
+            }
+            if self.configuredDimensionKey == nil, self.registries.dimensionRegistry.get(configKey.convertType()) != nil {
+                self.configuredDimensionKey = configKey.convertType()
+            }
         }
 
         if buildSearchTrees {
@@ -954,6 +1101,124 @@ public final class WorldGenerator {
         if self.config != nil {
             self.config = self.config!.with(noiseRouter: try self.config!.noiseRouter.bakeAll(withBaker: baker))
         }
+    }
+
+    private func configuredChunkBiomeSearchTree() -> BiomeSearchTree? {
+        if let configuredDimensionKey, let tree = self.searchTrees[configuredDimensionKey] {
+            return tree
+        }
+        if let configuredSettingsKeyName, let tree = self.searchTrees[RegistryKey(referencing: configuredSettingsKeyName)] {
+            return tree
+        }
+        if let overworld = self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] {
+            return overworld
+        }
+        return self.searchTrees.first?.value
+    }
+
+    private func generateBiomesIntoChunk(
+        _ chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        minY: Int32,
+        using searchTree: BiomeSearchTree,
+        with functions: ChunkBiomeDensityFunctions,
+        benchmark timingsEnabled: Bool = false
+    ) -> BiomeGenerationProfile {
+        let chunkStartX = chunkPos.x &* Int32(ProtoChunk.sideLength)
+        let chunkStartZ = chunkPos.z &* Int32(ProtoChunk.sideLength)
+        let quartXs = [chunkStartX, chunkStartX + 4, chunkStartX + 8, chunkStartX + 12]
+        let quartZs = [chunkStartZ, chunkStartZ + 4, chunkStartZ + 8, chunkStartZ + 12]
+        let biomeHeight = chunk.biomeHeight
+        let lookupState = searchTree.makeReusableLookupState()
+        var profile = BiomeGenerationProfile()
+
+        if timingsEnabled {
+            let loopStart = DispatchTime.now().uptimeNanoseconds
+            for localBiomeY in 0..<biomeHeight {
+                let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
+                let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
+                let sectionBiomeYBase = (localBiomeY & 3) << 4
+
+                for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
+                    let worldZ = quartZs[localBiomeZ]
+                    let sectionBiomeZBase = sectionBiomeYBase | (localBiomeZ << 2)
+
+                    for localBiomeX in 0..<ProtoChunk.biomeSideLength {
+                        let pos = PosInt3D(x: quartXs[localBiomeX], y: worldY, z: worldZ)
+
+                        let tTemp0 = DispatchTime.now().uptimeNanoseconds
+                        let temperature = functions.temperature.sample(at: pos)
+                        let tTemp1 = DispatchTime.now().uptimeNanoseconds
+                        let humidity = functions.humidity.sample(at: pos)
+                        let tHum1 = DispatchTime.now().uptimeNanoseconds
+                        let continentalness = functions.continentalness.sample(at: pos)
+                        let tCon1 = DispatchTime.now().uptimeNanoseconds
+                        let erosion = functions.erosion.sample(at: pos)
+                        let tEro1 = DispatchTime.now().uptimeNanoseconds
+                        let weirdness = functions.weirdness.sample(at: pos)
+                        let tWei1 = DispatchTime.now().uptimeNanoseconds
+                        let depth = functions.depth.sample(at: pos)
+                        let tDep1 = DispatchTime.now().uptimeNanoseconds
+
+                        profile.temperatureNanos &+= tTemp1 - tTemp0
+                        profile.humidityNanos &+= tHum1 - tTemp1
+                        profile.continentalnessNanos &+= tCon1 - tHum1
+                        profile.erosionNanos &+= tEro1 - tCon1
+                        profile.weirdnessNanos &+= tWei1 - tEro1
+                        profile.depthNanos &+= tDep1 - tWei1
+                        profile.noiseSamplingNanos &+= tDep1 - tTemp0
+
+                        let treeStart = DispatchTime.now().uptimeNanoseconds
+                        let biome = searchTree.getUnchecked(
+                            temperature: temperature,
+                            humidity: humidity,
+                            continentalness: continentalness,
+                            erosion: erosion,
+                            weirdness: weirdness,
+                            depth: depth,
+                            using: lookupState
+                        )
+                        let treeEnd = DispatchTime.now().uptimeNanoseconds
+                        profile.treeLookupNanos &+= treeEnd - treeStart
+
+                        let writeStart = DispatchTime.now().uptimeNanoseconds
+                        section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeZBase | localBiomeX)
+                        profile.chunkWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
+                        profile.sampleCount += 1
+                    }
+                }
+            }
+            profile.loopNanos = DispatchTime.now().uptimeNanoseconds - loopStart
+            return profile
+        }
+
+        for localBiomeY in 0..<biomeHeight {
+            let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
+            let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
+            let sectionBiomeYBase = (localBiomeY & 3) << 4
+
+            for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
+                let worldZ = quartZs[localBiomeZ]
+                let sectionBiomeZBase = sectionBiomeYBase | (localBiomeZ << 2)
+
+                for localBiomeX in 0..<ProtoChunk.biomeSideLength {
+                    let pos = PosInt3D(x: quartXs[localBiomeX], y: worldY, z: worldZ)
+                    let biome = searchTree.getUnchecked(
+                        temperature: functions.temperature.sample(at: pos),
+                        humidity: functions.humidity.sample(at: pos),
+                        continentalness: functions.continentalness.sample(at: pos),
+                        erosion: functions.erosion.sample(at: pos),
+                        weirdness: functions.weirdness.sample(at: pos),
+                        depth: functions.depth.sample(at: pos),
+                        using: lookupState
+                    )
+                    section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeZBase | localBiomeX)
+                }
+            }
+        }
+
+        profile.sampleCount = ProtoChunk.biomeSideLength * ProtoChunk.biomeSideLength * biomeHeight
+        return profile
     }
 
     public func sampleNoisePoint(at pos: PosInt3D) -> NoisePoint {
@@ -1298,7 +1563,8 @@ public final class WorldGenerator {
     /// - Parameters:
     ///   - chunk: The chunk to generate into.
     ///   - chunkPos: The chunk position in chunk coordinates.
-    public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+    public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D, benchmark timingsEnabled: Bool = false) throws {
+        let totalStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         self.terrainGenerationLock.lock()
         defer { self.terrainGenerationLock.unlock() }
 
@@ -1311,8 +1577,11 @@ public final class WorldGenerator {
 
         let minY = Int32(config.minY)
         let height = Int32(config.height)
+        let configureStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         try chunk.configure(minY: minY, height: height)
+        let configureEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
+        let samplerInitStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
             minY: minY,
@@ -1320,15 +1589,84 @@ public final class WorldGenerator {
             sizeHorizontal: config.sizeHorizontal,
             sizeVertical: config.sizeVertical
         )
+        let samplerInitEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
-        // This path intentionally samples `final_density` only (without aquifer/beardifier),
-        // but still routes through cache_all_in_cell to match vanilla chunk sampling order.
-        let terrainDensityRoot: any DensityFunction = CacheMarker(
-            type: .cacheAllInCell,
-            wrapping: config.noiseRouter.finalDensity
-        )
-        let terrainDensity = try chunkSampler.bakeDensityFunction(terrainDensityRoot)
-        chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
+        let terrainBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
+        let terrainBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let temperatureBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let temperature = try chunkSampler.bakeDensityFunction(config.noiseRouter.temperature)
+        let temperatureBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let humidityBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let humidity = try chunkSampler.bakeDensityFunction(config.noiseRouter.humidity)
+        let humidityBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let continentalnessBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let continentalness = try chunkSampler.bakeDensityFunction(config.noiseRouter.continents)
+        let continentalnessBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let erosionBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let erosion = try chunkSampler.bakeDensityFunction(config.noiseRouter.erosion)
+        let erosionBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let weirdnessBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let weirdness = try chunkSampler.bakeDensityFunction(config.noiseRouter.weirdness)
+        let weirdnessBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let depthBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let depth = try chunkSampler.bakeDensityFunction(config.noiseRouter.depth)
+        let depthBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+        let biomeProfile: BiomeGenerationProfile
+        if let searchTree = self.configuredChunkBiomeSearchTree() {
+            biomeProfile = self.generateBiomesIntoChunk(
+                chunk,
+                at: chunkPos,
+                minY: minY,
+                using: searchTree,
+                with: ChunkBiomeDensityFunctions(
+                    temperature: temperature,
+                    humidity: humidity,
+                    continentalness: continentalness,
+                    erosion: erosion,
+                    weirdness: weirdness,
+                    depth: depth
+                ),
+                benchmark: timingsEnabled
+            )
+        } else {
+            biomeProfile = BiomeGenerationProfile(skipped: true)
+        }
+
+        let terrainProfile = chunkSampler.generateTerrain(into: chunk, with: terrainDensity, benchmark: timingsEnabled)
+
+        if timingsEnabled {
+            let totalEnd = DispatchTime.now().uptimeNanoseconds
+            let bakeTotal =
+                (terrainBakeEnd - terrainBakeStart)
+                &+ (temperatureBakeEnd - temperatureBakeStart)
+                &+ (humidityBakeEnd - humidityBakeStart)
+                &+ (continentalnessBakeEnd - continentalnessBakeStart)
+                &+ (erosionBakeEnd - erosionBakeStart)
+                &+ (weirdnessBakeEnd - weirdnessBakeStart)
+                &+ (depthBakeEnd - depthBakeStart)
+            print(
+                "generateInto: configure \(configureEnd - configureStart)ns (\((configureEnd - configureStart) / 1_000_000)ms); " +
+                "sampler init \(samplerInitEnd - samplerInitStart)ns (\((samplerInitEnd - samplerInitStart) / 1_000_000)ms); " +
+                "bake total \(bakeTotal)ns (\(bakeTotal / 1_000_000)ms); " +
+                "bake final_density \(terrainBakeEnd - terrainBakeStart)ns (\((terrainBakeEnd - terrainBakeStart) / 1_000_000)ms); " +
+                "bake temperature \(temperatureBakeEnd - temperatureBakeStart)ns (\((temperatureBakeEnd - temperatureBakeStart) / 1_000_000)ms); " +
+                "bake humidity \(humidityBakeEnd - humidityBakeStart)ns (\((humidityBakeEnd - humidityBakeStart) / 1_000_000)ms); " +
+                "bake continentalness \(continentalnessBakeEnd - continentalnessBakeStart)ns (\((continentalnessBakeEnd - continentalnessBakeStart) / 1_000_000)ms); " +
+                "bake erosion \(erosionBakeEnd - erosionBakeStart)ns (\((erosionBakeEnd - erosionBakeStart) / 1_000_000)ms); " +
+                "bake weirdness \(weirdnessBakeEnd - weirdnessBakeStart)ns (\((weirdnessBakeEnd - weirdnessBakeStart) / 1_000_000)ms); " +
+                "bake depth \(depthBakeEnd - depthBakeStart)ns (\((depthBakeEnd - depthBakeStart) / 1_000_000)ms); " +
+                "\(terrainProfile.description); " +
+                "\(biomeProfile.description); " +
+                "total \(totalEnd - totalStart)ns (\((totalEnd - totalStart) / 1_000_000)ms)"
+            )
+            if let terrainClassDescription = terrainProfile.classDescription {
+                print("  terrain density classes: \(terrainClassDescription)")
+            }
+            if !biomeProfile.skipped {
+                print("  \(biomeProfile.densityDescription)")
+            }
+        }
     }
 
     // Currently visible for testing only.

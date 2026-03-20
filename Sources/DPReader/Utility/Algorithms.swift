@@ -632,31 +632,65 @@ public class InterpolatedNoise: DensityFunction {
         let smearedYScale = self.scaledYScale * self.smearScaleMultiplier
         let factoredYScale = smearedYScale / self.yFactor
         var lowerTotal = 0.0, upperTotal = 0.0, interpolationTotal = 0.0
-        var factor = 1.0
+        var interpolationX = factoredX
+        var interpolationY = factoredY
+        var interpolationZ = factoredZ
+        var interpolationYScale = factoredYScale
+        var octaveWeight = 1.0
 
         for sampler in self.interpolationOctaves {
-            interpolationTotal += sampler.sample(x: factoredX * factor, y: factoredY * factor, z: factoredZ * factor, yScale: factoredYScale * factor, yMax: factoredY * factor) / factor
-            factor *= 0.5
+            interpolationTotal += sampler.sample(
+                x: interpolationX,
+                y: interpolationY,
+                z: interpolationZ,
+                yScale: interpolationYScale,
+                yMax: interpolationY
+            ) * octaveWeight
+            interpolationX *= 0.5
+            interpolationY *= 0.5
+            interpolationZ *= 0.5
+            interpolationYScale *= 0.5
+            octaveWeight *= 2.0
         }
 
         let rescaledInterpolationTotal = (interpolationTotal / 10.0 + 1.0) / 2.0
         let useLower = rescaledInterpolationTotal < 1.0, useUpper = rescaledInterpolationTotal > 0.0
-        factor = 1.0
+        var samplingX = scaledX
+        var samplingY = scaledY
+        var samplingZ = scaledZ
+        var samplingYScale = smearedYScale
+        octaveWeight = 1.0
 
-        for idx in 0..<16 {
-            let samplingX = scaledX * factor, samplingY = scaledY * factor, samplingZ = scaledZ * factor
-            let yScale = smearedYScale * factor
-
-            if useLower {
-                let sampler = self.lowerInterpolatedOctaves[idx]
-                lowerTotal += sampler.sample(x: samplingX, y: samplingY, z: samplingZ, yScale: yScale, yMax: samplingY) / factor
+        if useLower && useUpper {
+            for idx in 0..<16 {
+                let lowerSampler = self.lowerInterpolatedOctaves[idx]
+                lowerTotal += lowerSampler.sample(x: samplingX, y: samplingY, z: samplingZ, yScale: samplingYScale, yMax: samplingY) * octaveWeight
+                let upperSampler = self.upperInterpolatedOctaves[idx]
+                upperTotal += upperSampler.sample(x: samplingX, y: samplingY, z: samplingZ, yScale: samplingYScale, yMax: samplingY) * octaveWeight
+                samplingX *= 0.5
+                samplingY *= 0.5
+                samplingZ *= 0.5
+                samplingYScale *= 0.5
+                octaveWeight *= 2.0
             }
-            if useUpper {
-                let sampler = self.upperInterpolatedOctaves[idx]
-                upperTotal += sampler.sample(x: samplingX, y: samplingY, z: samplingZ, yScale: yScale, yMax: samplingY) / factor
+        } else if useLower {
+            for sampler in self.lowerInterpolatedOctaves {
+                lowerTotal += sampler.sample(x: samplingX, y: samplingY, z: samplingZ, yScale: samplingYScale, yMax: samplingY) * octaveWeight
+                samplingX *= 0.5
+                samplingY *= 0.5
+                samplingZ *= 0.5
+                samplingYScale *= 0.5
+                octaveWeight *= 2.0
             }
-
-            factor *= 0.5
+        } else if useUpper {
+            for sampler in self.upperInterpolatedOctaves {
+                upperTotal += sampler.sample(x: samplingX, y: samplingY, z: samplingZ, yScale: samplingYScale, yMax: samplingY) * octaveWeight
+                samplingX *= 0.5
+                samplingY *= 0.5
+                samplingZ *= 0.5
+                samplingYScale *= 0.5
+                octaveWeight *= 2.0
+            }
         }
 
         // These are equivalent expressions, but only having to do one division is better than having to do three

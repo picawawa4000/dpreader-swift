@@ -760,6 +760,18 @@ public struct DensityFunctionSimplexNoise {
         )
     }
 
+    var noiseSampler: any DensityFunctionNoise {
+        return self.noise
+    }
+
+    var xzScaleValue: Double {
+        return self.scaleXZ
+    }
+
+    var yScaleValue: Double {
+        return self.scaleY
+    }
+
     private enum CodingKeys: String, CodingKey {
         case scaleXZ = "xz_scale"
         case scaleY = "y_scale"
@@ -833,6 +845,30 @@ public struct DensityFunctionSimplexNoise {
             scaleXZ: self.scaleXZ,
             scaleY: self.scaleY
         )
+    }
+
+    var shiftXFunction: any DensityFunction {
+        return self.shiftX
+    }
+
+    var shiftYFunction: any DensityFunction {
+        return self.shiftY
+    }
+
+    var shiftZFunction: any DensityFunction {
+        return self.shiftZ
+    }
+
+    var noiseSampler: any DensityFunctionNoise {
+        return self.noise
+    }
+
+    var xzScaleValue: Double {
+        return self.scaleXZ
+    }
+
+    var yScaleValue: Double {
+        return self.scaleY
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -968,6 +1004,10 @@ public struct DensityFunctionSimplexNoise {
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return BlendDensity(wrapping: try self.argument.bake(withBaker: baker))
+    }
+
+    var argumentFunction: any DensityFunction {
+        return self.argument
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1147,6 +1187,10 @@ public struct DensityFunctionSimplexNoise {
         return self.scale(input)
     }
 
+    var scalingType: ScalingType {
+        return self.type
+    }
+
     public enum ScalingType: String, Codable {
         case scaleTunnels = "type_1"
         case scaleCaves = "type_2"
@@ -1185,6 +1229,10 @@ public struct DensityFunctionSimplexNoise {
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return SplineDensityFunction(withSpline: try self.spline.bake(withBaker: baker))
+    }
+
+    var splineSegment: SplineSegment {
+        return self.spline
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1247,6 +1295,22 @@ public struct DensityFunctionSimplexNoise {
             lowerBound: self.lowerBound,
             cellHeight: self.cellHeight
         )
+    }
+
+    var densityFunction: any DensityFunction {
+        return self.density
+    }
+
+    var upperBoundFunction: any DensityFunction {
+        return self.upperBound
+    }
+
+    var lowerBoundValue: Int {
+        return self.lowerBound
+    }
+
+    var cellHeightValue: Int {
+        return self.cellHeight
     }
 
     private enum CodingKeys: String, CodingKey {

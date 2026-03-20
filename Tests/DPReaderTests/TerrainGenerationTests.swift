@@ -445,10 +445,6 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     let chunk = ProtoChunk()
     try worldGenerator.generateInto(chunk, at: PosInt2D(x: 0, z: 0))
     var mismatchCount = 0
-    var mismatchNearThreshold = 0
-    var mismatchLargeMagnitude = 0
-    var expectedTerrainGotAir = 0
-    var expectedAirGotTerrain = 0
 
     #expect(chunk.minY == vanillaTerrainMinY)
     #expect(chunk.height == vanillaTerrainHeight)
@@ -463,46 +459,95 @@ private final class LockedOptional<Value>: @unchecked Sendable {
                 let actualTerrain = chunk.isTerrain(atLocal: localPos)
                 if actualTerrain != expectedTerrain {
                     mismatchCount += 1
-                    if expectedTerrain {
-                        expectedTerrainGotAir += 1
-                    } else {
-                        expectedAirGotTerrain += 1
-                    }
-                    let density = try worldGenerator.sampleFinalDensity(at: worldPos)
-                    let magnitude = abs(density)
-                    if magnitude < 0.05 {
-                        mismatchNearThreshold += 1
-                    }
-                    if magnitude > 0.25 {
-                        mismatchLargeMagnitude += 1
-                    }
-                    if mismatchCount <= 10 {
-                        print(
-                            "Mismatch in terrain sample at (\(worldPos.x), \(worldPos.y), \(worldPos.z)): expected",
-                            expectedTerrain ? 1 : 0,
-                            "got",
-                            actualTerrain ? 1 : 0,
-                            "density",
-                            density
-                        )
-                    }
                 }
             }
         }
     }
-    if mismatchCount > 0 {
-        print(
-            "Mismatch summary: total",
-            mismatchCount,
-            "expected1->0",
-            expectedTerrainGotAir,
-            "expected0->1",
-            expectedAirGotTerrain,
-                    "near-threshold(|d|<0.05)",
-                    mismatchNearThreshold,
-                    "large(|d|>0.25)",
-                    mismatchLargeMagnitude
-        )
-    }
     #expect(mismatchCount == 0)
+}
+
+@Test func testGenerateIntoAlsoPopulatesChunkBiomes() async throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw TerrainTestErrors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let generatedWorld = try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let expectedWorld = try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+
+    let chunkPos = PosInt2D(x: 2, z: -1)
+    let chunk = ProtoChunk()
+    try generatedWorld.generateInto(chunk, at: chunkPos)
+
+    let chunkStartX = chunkPos.x * Int32(ProtoChunk.sideLength)
+    let chunkStartZ = chunkPos.z * Int32(ProtoChunk.sideLength)
+    for localBiomeY in 0..<chunk.biomeHeight {
+        let worldY = chunk.minY + Int32(localBiomeY * ProtoChunk.biomeScale)
+        for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
+            let worldZ = chunkStartZ + Int32(localBiomeZ * ProtoChunk.biomeScale)
+            for localBiomeX in 0..<ProtoChunk.biomeSideLength {
+                let worldX = chunkStartX + Int32(localBiomeX * ProtoChunk.biomeScale)
+                let expectedBiome = try expectedWorld.sampleBiome(
+                    at: PosInt3D(x: worldX, y: worldY, z: worldZ),
+                    in: RegistryKey(referencing: "minecraft:overworld")
+                )
+                let actualBiome = chunk.biome(
+                    atBiomeLocal: PosInt3D(x: Int32(localBiomeX), y: Int32(localBiomeY), z: Int32(localBiomeZ))
+                )
+                #expect(actualBiome == expectedBiome)
+            }
+        }
+    }
+}
+
+@Test func benchmarkVanillaTerrainChunkGeneration() async throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw TerrainTestErrors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+
+    let warmupChunk = ProtoChunk()
+    try worldGenerator.generateInto(warmupChunk, at: PosInt2D(x: 0, z: 0))
+
+    let start = DispatchTime.now().uptimeNanoseconds
+    for chunkX in 0..<8 {
+        for chunkZ in 0..<8 {
+            let chunk = ProtoChunk()
+            try worldGenerator.generateInto(chunk, at: PosInt2D(x: Int32(chunkX), z: Int32(chunkZ)))
+        }
+    }
+    let end = DispatchTime.now().uptimeNanoseconds
+
+    print(
+        "benchmarkVanillaTerrainChunkGeneration:",
+        "64 chunks in",
+        end - start,
+        "ns",
+        "(\((end - start) / 1_000_000)ms)"
+    )
+
+    let profiledChunk = ProtoChunk()
+    try worldGenerator.generateInto(profiledChunk, at: PosInt2D(x: 0, z: 0), benchmark: true)
 }

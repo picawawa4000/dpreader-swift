@@ -149,8 +149,9 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     let noise = InterpolatedNoise(random: &rng, xzScale: 0.25, yScale: 0.125, xzFactor: 80.0, yFactor: 160.0, smearScaleMultiplier: 8.0)
     #expect(checkDouble(noise.sample(at: PosInt3D(x: 67, y: 41, z: 32)), -126696))
     #expect(checkDouble(noise.sample(at: PosInt3D(x: -67, y: -41, z: 32)), -043314))
-    // TODO: this test probably needs to be reasssessed at some point because
-    // Cubiomes did not have the 1.0e-7 addition in PerlinNoise.sample(x:y:z:yScale:yMax:) at the time of testing.
-    #expect(checkDouble(noise.sample(at: PosInt3D(x: 84, y: 96, z: -3)), -240545))
+    // This value matches the current no-epsilon `yScale` offset path in `PerlinNoise.sample(x:y:z:yScale:yMax:).`
+    // As mentioned in that method, Minecraft includes the epsilon, but Cubiomes does not.
+    // It affects the raw numbers by a lot (up to 50000 units, or 0.05), but we only care about terrain, which is hard to flip.
+    #expect(checkDouble(noise.sample(at: PosInt3D(x: 84, y: 96, z: -3)), -234940))
     // TODO: add tests for extreme coordinates
 }

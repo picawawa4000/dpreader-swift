@@ -98,6 +98,22 @@ import TestVisible
         )
     }
 
+    var inputFunction: any DensityFunction {
+        return self.input
+    }
+
+    var pointLocations: [Float] {
+        return self.locations
+    }
+
+    var pointValues: [SplineSegment] {
+        return self.values
+    }
+
+    var pointDerivatives: [Float] {
+        return self.derivatives
+    }
+
     private struct Point: Codable {
         let location: Float
         let value: SplineSegment
