@@ -773,6 +773,105 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         return result
     }
 
+    private func fillBranchUsingExistingInputChoice(
+        into densities: inout [Double],
+        branch: any DensityFunction,
+        inputChoice: any DensityFunction,
+        mode: FillMode
+    ) -> Bool {
+        if sameDensityFunctionInstance(branch, inputChoice) {
+            return true
+        }
+        if let constant = branch as? ConstantDensityFunction {
+            let value = constant.constantValue
+            for index in densities.indices {
+                densities[index] = value
+            }
+            return true
+        }
+        if let unary = branch as? UnaryDensityFunction, sameDensityFunctionInstance(unary.inputOperand, inputChoice) {
+            for index in densities.indices {
+                let value = densities[index]
+                switch unary.operationType {
+                case .ABS:
+                    densities[index] = abs(value)
+                case .SQUARE:
+                    densities[index] = value * value
+                case .CUBE:
+                    densities[index] = value * value * value
+                case .HALF_NEGATIVE:
+                    densities[index] = value < 0 ? value / 2.0 : value
+                case .QUARTER_NEGATIVE:
+                    densities[index] = value < 0 ? value / 4.0 : value
+                case .SQUEEZE:
+                    let clampedValue = clamp(value: value, lowerBound: -1.0, upperBound: 1.0)
+                    densities[index] = clampedValue / 2.0 - clampedValue * clampedValue * clampedValue / 24.0
+                case .INVERT:
+                    densities[index] = 1.0 / value
+                }
+            }
+            return true
+        }
+        if let clampFunction = branch as? ClampDensityFunction, sameDensityFunctionInstance(clampFunction.clampedInput, inputChoice) {
+            for index in densities.indices {
+                densities[index] = clamp(value: densities[index], lowerBound: clampFunction.minimumValue, upperBound: clampFunction.maximumValue)
+            }
+            return true
+        }
+        if let binary = branch as? BinaryDensityFunction {
+            let leftIsInput = sameDensityFunctionInstance(binary.firstOperand, inputChoice)
+            let rightIsInput = sameDensityFunctionInstance(binary.secondOperand, inputChoice)
+            if leftIsInput || rightIsInput {
+                let otherOperand = leftIsInput ? binary.secondOperand : binary.firstOperand
+                switch binary.operationType {
+                case .ADD:
+                    if let constant = otherOperand as? ConstantDensityFunction {
+                        let addend = constant.constantValue
+                        for index in densities.indices {
+                            densities[index] += addend
+                        }
+                        return true
+                    }
+                case .MULTIPLY:
+                    if let constant = otherOperand as? ConstantDensityFunction {
+                        let multiplier = constant.constantValue
+                        for index in densities.indices {
+                            densities[index] *= multiplier
+                        }
+                        return true
+                    }
+                case .MINIMUM, .MAXIMUM:
+                    break
+                }
+
+                self.withScratchBuffer(count: densities.count) { other in
+                    self.fill(into: &other, using: otherOperand, mode: mode)
+                    switch binary.operationType {
+                    case .ADD:
+                        for index in densities.indices {
+                            densities[index] += other[index]
+                        }
+                    case .MULTIPLY:
+                        for index in densities.indices {
+                            let first = densities[index]
+                            densities[index] = first == 0.0 ? 0.0 : first * other[index]
+                        }
+                    case .MINIMUM:
+                        for index in densities.indices {
+                            densities[index] = min(densities[index], other[index])
+                        }
+                    case .MAXIMUM:
+                        for index in densities.indices {
+                            densities[index] = max(densities[index], other[index])
+                        }
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+
     private func fillUnary(into densities: inout [Double], using function: UnaryDensityFunction, mode: FillMode) {
         self.fill(into: &densities, using: function.inputOperand, mode: mode)
         for i in densities.indices {
@@ -924,11 +1023,25 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             }
 
             if allInRange {
-                self.fill(into: &densities, using: function.whenInRangeOutput, mode: mode)
+                if !self.fillBranchUsingExistingInputChoice(
+                    into: &densities,
+                    branch: function.whenInRangeOutput,
+                    inputChoice: function.inputChoiceFunction,
+                    mode: mode
+                ) {
+                    self.fill(into: &densities, using: function.whenInRangeOutput, mode: mode)
+                }
                 return
             }
             if allOutOfRange {
-                self.fill(into: &densities, using: function.whenOutOfRangeOutput, mode: mode)
+                if !self.fillBranchUsingExistingInputChoice(
+                    into: &densities,
+                    branch: function.whenOutOfRangeOutput,
+                    inputChoice: function.inputChoiceFunction,
+                    mode: mode
+                ) {
+                    self.fill(into: &densities, using: function.whenOutOfRangeOutput, mode: mode)
+                }
                 return
             }
         }

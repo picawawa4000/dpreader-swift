@@ -242,6 +242,64 @@ final class WorldScaleFlatCache: DensityFunction, DensityFunctionWrapperIntrospe
     }
 }
 
+@inline(__always) private func densityFunctionIsConstantZero(_ function: any DensityFunction) -> Bool {
+    if let wrapper = function as? any DensityFunctionWrapperIntrospectable {
+        return densityFunctionIsConstantZero(wrapper.wrappedDensityFunction)
+    }
+    if let cacheMarker = function as? CacheMarker {
+        return densityFunctionIsConstantZero(cacheMarker.argument)
+    }
+    guard let constant = function as? ConstantDensityFunction else {
+        return false
+    }
+    return constant.constantValue == 0.0
+}
+
+@inline(__always) private func densityFunctionHasFlatCache(_ function: any DensityFunction) -> Bool {
+    if function is WorldScaleFlatCache || function is ChunkFlatCache {
+        return true
+    }
+    if let cacheMarker = function as? CacheMarker, cacheMarker.type == .flatCache {
+        return true
+    }
+    return false
+}
+
+private func densityFunctionIsQuartColumnFlat(_ function: any DensityFunction) -> Bool {
+    if densityFunctionHasFlatCache(function) {
+        return true
+    }
+    if function is ConstantDensityFunction {
+        return true
+    }
+    if let wrapper = function as? any DensityFunctionWrapperIntrospectable {
+        return densityFunctionIsQuartColumnFlat(wrapper.wrappedDensityFunction)
+    }
+    if let cacheMarker = function as? CacheMarker {
+        return densityFunctionIsQuartColumnFlat(cacheMarker.argument)
+    }
+    guard let shiftedNoise = function as? ShiftedNoise else {
+        return false
+    }
+    return shiftedNoise.yScaleValue == 0.0
+        && densityFunctionIsConstantZero(shiftedNoise.shiftYFunction)
+        && densityFunctionHasFlatCache(shiftedNoise.shiftXFunction)
+        && densityFunctionHasFlatCache(shiftedNoise.shiftZFunction)
+}
+
+@inline(__always) private func withAutoAppliedFlatCache(
+    _ function: any DensityFunction,
+    bounds: ChunkSamplingBounds?
+) -> any DensityFunction {
+    guard densityFunctionIsQuartColumnFlat(function), !densityFunctionHasFlatCache(function) else {
+        return function
+    }
+    if let bounds {
+        return ChunkFlatCache(wrapping: function, bounds: bounds)
+    }
+    return WorldScaleFlatCache(wrapping: function)
+}
+
 final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
     private var cacheMarkerMemo: [ObjectIdentifier: any DensityFunction] = [:]
     private var memo: [ObjectIdentifier: any DensityFunction] = [:]
@@ -279,11 +337,11 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
             let obj = function as AnyObject
             let key = ObjectIdentifier(obj)
             if let cached = self.memo[key] { return cached }
-            let baked = try function.bake(withBaker: self)
+            let baked = withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: nil)
             self.memo[key] = baked
             return baked
         }
-        return try function.bake(withBaker: self)
+        return withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: nil)
     }
 
     func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
@@ -709,11 +767,11 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
             if let cached = self.memo[key] {
                 return cached
             }
-            let baked = try function.bake(withBaker: self)
+            let baked = withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: self.bounds)
             self.memo[key] = baked
             return baked
         }
-        return try function.bake(withBaker: self)
+        return withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: self.bounds)
     }
 
     func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
@@ -1134,17 +1192,16 @@ public final class WorldGenerator {
 
         if timingsEnabled {
             let loopStart = DispatchTime.now().uptimeNanoseconds
-            for localBiomeY in 0..<biomeHeight {
-                let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
-                let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
-                let sectionBiomeYBase = (localBiomeY & 3) << 4
-
-                for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
-                    let worldZ = quartZs[localBiomeZ]
-                    let sectionBiomeZBase = sectionBiomeYBase | (localBiomeZ << 2)
-
-                    for localBiomeX in 0..<ProtoChunk.biomeSideLength {
-                        let pos = PosInt3D(x: quartXs[localBiomeX], y: worldY, z: worldZ)
+            for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
+                let worldZ = quartZs[localBiomeZ]
+                for localBiomeX in 0..<ProtoChunk.biomeSideLength {
+                    let worldX = quartXs[localBiomeX]
+                    let sectionBiomeXZ = (localBiomeZ << 2) | localBiomeX
+                    for localBiomeY in 0..<biomeHeight {
+                        let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
+                        let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
+                        let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
+                        let pos = PosInt3D(x: worldX, y: worldY, z: worldZ)
 
                         let tTemp0 = DispatchTime.now().uptimeNanoseconds
                         let temperature = functions.temperature.sample(at: pos)
@@ -1182,7 +1239,7 @@ public final class WorldGenerator {
                         profile.treeLookupNanos &+= treeEnd - treeStart
 
                         let writeStart = DispatchTime.now().uptimeNanoseconds
-                        section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeZBase | localBiomeX)
+                        section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
                         profile.chunkWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
                         profile.sampleCount += 1
                     }
@@ -1192,17 +1249,16 @@ public final class WorldGenerator {
             return profile
         }
 
-        for localBiomeY in 0..<biomeHeight {
-            let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
-            let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
-            let sectionBiomeYBase = (localBiomeY & 3) << 4
-
-            for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
-                let worldZ = quartZs[localBiomeZ]
-                let sectionBiomeZBase = sectionBiomeYBase | (localBiomeZ << 2)
-
-                for localBiomeX in 0..<ProtoChunk.biomeSideLength {
-                    let pos = PosInt3D(x: quartXs[localBiomeX], y: worldY, z: worldZ)
+        for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
+            let worldZ = quartZs[localBiomeZ]
+            for localBiomeX in 0..<ProtoChunk.biomeSideLength {
+                let worldX = quartXs[localBiomeX]
+                let sectionBiomeXZ = (localBiomeZ << 2) | localBiomeX
+                for localBiomeY in 0..<biomeHeight {
+                    let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
+                    let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
+                    let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
+                    let pos = PosInt3D(x: worldX, y: worldY, z: worldZ)
                     let biome = searchTree.getUnchecked(
                         temperature: functions.temperature.sample(at: pos),
                         humidity: functions.humidity.sample(at: pos),
@@ -1212,7 +1268,7 @@ public final class WorldGenerator {
                         depth: functions.depth.sample(at: pos),
                         using: lookupState
                     )
-                    section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeZBase | localBiomeX)
+                    section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
                 }
             }
         }
