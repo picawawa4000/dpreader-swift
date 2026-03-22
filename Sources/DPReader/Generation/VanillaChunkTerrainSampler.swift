@@ -119,6 +119,16 @@ private func sameDensityFunctionInstance(_ lhs: any DensityFunction, _ rhs: any 
     return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
 }
 
+private enum RangeChoiceBranchStrategy {
+    case unsupported
+    case inputChoice
+    case constant(Double)
+    case unary(UnaryDensityFunction.OperationType)
+    case clamp(lower: Double, upper: Double)
+    case binary(operation: BinaryDensityFunction.OperationType, other: any DensityFunction)
+    case binaryConstant(operation: BinaryDensityFunction.OperationType, other: Double)
+}
+
 private protocol VanillaChunkFillFunction {
     func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode)
 }
@@ -872,6 +882,95 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         return false
     }
 
+    @inline(__always)
+    private func rangeChoiceBranchStrategy(
+        for branch: any DensityFunction,
+        inputChoice: any DensityFunction
+    ) -> RangeChoiceBranchStrategy {
+        if sameDensityFunctionInstance(branch, inputChoice) {
+            return .inputChoice
+        }
+        if let constant = branch as? ConstantDensityFunction {
+            return .constant(constant.constantValue)
+        }
+        if let unary = branch as? UnaryDensityFunction, sameDensityFunctionInstance(unary.inputOperand, inputChoice) {
+            return .unary(unary.operationType)
+        }
+        if let clampFunction = branch as? ClampDensityFunction, sameDensityFunctionInstance(clampFunction.clampedInput, inputChoice) {
+            return .clamp(lower: clampFunction.minimumValue, upper: clampFunction.maximumValue)
+        }
+        if let binary = branch as? BinaryDensityFunction {
+            let leftIsInput = sameDensityFunctionInstance(binary.firstOperand, inputChoice)
+            let rightIsInput = sameDensityFunctionInstance(binary.secondOperand, inputChoice)
+            if leftIsInput || rightIsInput {
+                let otherOperand = leftIsInput ? binary.secondOperand : binary.firstOperand
+                if let constant = otherOperand as? ConstantDensityFunction {
+                    return .binaryConstant(operation: binary.operationType, other: constant.constantValue)
+                }
+                return .binary(operation: binary.operationType, other: otherOperand)
+            }
+        }
+        return .unsupported
+    }
+
+    @inline(__always)
+    private func sampleRangeChoiceBranch(
+        _ strategy: RangeChoiceBranchStrategy,
+        inputValue: Double
+    ) -> Double? {
+        switch strategy {
+        case .unsupported:
+            return nil
+        case .inputChoice:
+            return inputValue
+        case .constant(let constant):
+            return constant
+        case .unary(let operation):
+            switch operation {
+            case .ABS:
+                return abs(inputValue)
+            case .SQUARE:
+                return inputValue * inputValue
+            case .CUBE:
+                return inputValue * inputValue * inputValue
+            case .HALF_NEGATIVE:
+                return inputValue < 0.0 ? inputValue / 2.0 : inputValue
+            case .QUARTER_NEGATIVE:
+                return inputValue < 0.0 ? inputValue / 4.0 : inputValue
+            case .SQUEEZE:
+                let clampedValue = clamp(value: inputValue, lowerBound: -1.0, upperBound: 1.0)
+                return clampedValue / 2.0 - clampedValue * clampedValue * clampedValue / 24.0
+            case .INVERT:
+                return 1.0 / inputValue
+            }
+        case .clamp(let lower, let upper):
+            return clamp(value: inputValue, lowerBound: lower, upperBound: upper)
+        case .binary(let operation, let otherOperand):
+            let otherValue = self.sampleAtCurrentPos(otherOperand)
+            switch operation {
+            case .ADD:
+                return inputValue + otherValue
+            case .MULTIPLY:
+                return inputValue == 0.0 ? 0.0 : inputValue * otherValue
+            case .MINIMUM:
+                return min(inputValue, otherValue)
+            case .MAXIMUM:
+                return max(inputValue, otherValue)
+            }
+        case .binaryConstant(let operation, let otherValue):
+            switch operation {
+            case .ADD:
+                return inputValue + otherValue
+            case .MULTIPLY:
+                return inputValue * otherValue
+            case .MINIMUM:
+                return min(inputValue, otherValue)
+            case .MAXIMUM:
+                return max(inputValue, otherValue)
+            }
+        }
+    }
+
     private func fillUnary(into densities: inout [Double], using function: UnaryDensityFunction, mode: FillMode) {
         self.fill(into: &densities, using: function.inputOperand, mode: mode)
         for i in densities.indices {
@@ -1045,13 +1144,23 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                 return
             }
         }
+        let inRangeStrategy = self.rangeChoiceBranchStrategy(for: function.whenInRangeOutput, inputChoice: function.inputChoiceFunction)
+        let outOfRangeStrategy = self.rangeChoiceBranchStrategy(for: function.whenOutOfRangeOutput, inputChoice: function.inputChoiceFunction)
         for i in densities.indices {
             let input = densities[i]
             self.setSamplerPosForFillIndex(i, mode: mode)
             if input >= function.minimumInclusive && input < function.maximumExclusive {
-                densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
+                if let sampled = self.sampleRangeChoiceBranch(inRangeStrategy, inputValue: input) {
+                    densities[i] = sampled
+                } else {
+                    densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
+                }
             } else {
-                densities[i] = self.sampleAtCurrentPos(function.whenOutOfRangeOutput)
+                if let sampled = self.sampleRangeChoiceBranch(outOfRangeStrategy, inputValue: input) {
+                    densities[i] = sampled
+                } else {
+                    densities[i] = self.sampleAtCurrentPos(function.whenOutOfRangeOutput)
+                }
             }
         }
     }

@@ -333,7 +333,7 @@ final class BiomeTreeNode {
         for child in self.children {
             let distance = child.squaredDistanceBounded(to: point, maxDistance: retDistance)
             if retDistance < distance { continue }
-            let endNode = child.getResultingNode(point: point, alternative: alternative)
+            let endNode = child.getResultingNode(point: point, alternative: ret)
             guard endNode.value != nil else {
                 continue
             }
