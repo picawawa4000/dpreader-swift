@@ -624,7 +624,16 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     )
 
     let profiledChunk = ProtoChunk()
-    try worldGenerator.generateInto(profiledChunk, at: PosInt2D(x: 0, z: 0), benchmark: true)
+    let profiledStart = DispatchTime.now().uptimeNanoseconds
+    try worldGenerator.generateInto(profiledChunk, at: PosInt2D(x: 0, z: 0))
+    let profiledEnd = DispatchTime.now().uptimeNanoseconds
+    print(
+        "benchmarkVanillaTerrainChunkGenerationProfiledSingle:",
+        "1 chunk in",
+        profiledEnd - profiledStart,
+        "ns",
+        "(\((profiledEnd - profiledStart) / 1_000_000)ms)"
+    )
 }
 
 @Test func benchmarkVanillaTerrainChunkGenerationUnprofiled() async throws {

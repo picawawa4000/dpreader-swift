@@ -34,86 +34,6 @@ private func terrainRuntimeOnlyEncodeError(_ encoder: any Encoder, forType typeN
     )
 }
 
-struct TerrainGenerationProfile {
-    var columnSamplingNanos: UInt64 = 0
-    var columnSampleEvaluationNanos: UInt64 = 0
-    var columnFillClassNanos: [(name: String, nanos: UInt64, calls: Int)] = []
-    var loopNanos: UInt64 = 0
-    var chunkWriteNanos: UInt64 = 0
-
-    var columnSamplingExclusiveNanos: UInt64 {
-        return self.columnSamplingNanos >= self.columnSampleEvaluationNanos ? self.columnSamplingNanos &- self.columnSampleEvaluationNanos : 0
-    }
-
-    var exclusiveLoopNanos: UInt64 {
-        return self.loopNanos &- self.chunkWriteNanos
-    }
-
-    var description: String {
-        let terrainNanos = self.columnSamplingNanos &+ self.exclusiveLoopNanos &+ self.chunkWriteNanos
-        return
-            "terrain sample columns \(self.columnSamplingNanos)ns (\(self.columnSamplingNanos / 1_000_000)ms); " +
-            "terrain sample columns excl raw sample \(self.columnSamplingExclusiveNanos)ns (\(self.columnSamplingExclusiveNanos / 1_000_000)ms); " +
-            "terrain sample raw density eval \(self.columnSampleEvaluationNanos)ns (\(self.columnSampleEvaluationNanos / 1_000_000)ms); " +
-            "terrain loop excl writes \(self.exclusiveLoopNanos)ns (\(self.exclusiveLoopNanos / 1_000_000)ms); " +
-            "terrain writes \(self.chunkWriteNanos)ns (\(self.chunkWriteNanos / 1_000_000)ms); " +
-            "terrain total \(terrainNanos)ns (\(terrainNanos / 1_000_000)ms)"
-    }
-
-    var classDescription: String? {
-        guard !self.columnFillClassNanos.isEmpty else { return nil }
-        return self.columnFillClassNanos
-            .map { "\($0.name) \($0.nanos)ns (\($0.nanos / 1_000_000)ms, \($0.calls) calls)" }
-            .joined(separator: "; ")
-    }
-}
-
-private final class TerrainColumnFillProfiler {
-    struct Frame {
-        let name: String
-        let startNanos: UInt64
-        var childNanos: UInt64
-    }
-
-    private var stack: [Frame] = []
-    private var totals: [String: (nanos: UInt64, calls: Int)] = [:]
-
-    func enter(_ name: String) {
-        self.stack.append(Frame(name: name, startNanos: DispatchTime.now().uptimeNanoseconds, childNanos: 0))
-    }
-
-    func exit() {
-        var frame = self.stack.removeLast()
-        let elapsed = DispatchTime.now().uptimeNanoseconds &- frame.startNanos
-        let exclusive = elapsed >= frame.childNanos ? elapsed &- frame.childNanos : 0
-        let existing = self.totals[frame.name] ?? (0, 0)
-        self.totals[frame.name] = (existing.nanos &+ exclusive, existing.calls + 1)
-        if !self.stack.isEmpty {
-            frame.childNanos = elapsed
-            self.stack[self.stack.count - 1].childNanos &+= elapsed
-        }
-    }
-
-    func sortedTotals() -> [(name: String, nanos: UInt64, calls: Int)] {
-        return self.totals
-            .map { (name: $0.key, nanos: $0.value.nanos, calls: $0.value.calls) }
-            .sorted { lhs, rhs in
-                if lhs.nanos != rhs.nanos { return lhs.nanos > rhs.nanos }
-                return lhs.name < rhs.name
-            }
-    }
-}
-
-private func terrainFillProfileName(for function: any DensityFunction) -> String {
-    if let binary = function as? BinaryDensityFunction {
-        return "BinaryDensityFunction.\(binary.operationType)"
-    }
-    if let unary = function as? UnaryDensityFunction {
-        return "UnaryDensityFunction.\(unary.operationType)"
-    }
-    return String(describing: type(of: function))
-}
-
 private func sameDensityFunctionInstance(_ lhs: any DensityFunction, _ rhs: any DensityFunction) -> Bool {
     guard type(of: lhs) is AnyObject.Type, type(of: rhs) is AnyObject.Type else { return false }
     return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
@@ -496,11 +416,9 @@ private final class VanillaChunkTerrainInterpolator {
     private let horizontalCellBlockCount: Int32
     private let columnSampleBlockZs: [Int32]
     private let strideY: Int
-    private let profilingEnabled: Bool
     private var startDensityBuffer: [Double]
     private var endDensityBuffer: [Double]
     private var columnScratch: [Double]
-    private(set) var columnSampleEvaluationNanos: UInt64 = 0
 
     private var x0y0z0: Double = 0.0
     private var x0y0z1: Double = 0.0
@@ -518,14 +436,13 @@ private final class VanillaChunkTerrainInterpolator {
     private var z1: Double = 0.0
     private var result: Double = 0.0
 
-    init(delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler, profilingEnabled: Bool = false) {
+    init(delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
         self.delegate = delegate
         self.sampler = sampler
         self.horizontalCellCount = sampler.horizontalCellCount
         self.horizontalCellBlockCount = sampler.horizontalCellBlockCount
         self.columnSampleBlockZs = sampler.columnSampleBlockZs
         self.strideY = sampler.verticalCellCount + 1
-        self.profilingEnabled = profilingEnabled
 
         let size = (sampler.horizontalCellCount + 1) * self.strideY
         self.startDensityBuffer = [Double](repeating: 0.0, count: size)
@@ -549,13 +466,7 @@ private final class VanillaChunkTerrainInterpolator {
             self.sampler.cellBlockZ = 0
             self.sampler.cacheOnceUniqueIndex += 1
 
-            if self.profilingEnabled {
-                let sampleStart = DispatchTime.now().uptimeNanoseconds
-                self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
-                self.columnSampleEvaluationNanos &+= DispatchTime.now().uptimeNanoseconds - sampleStart
-            } else {
-                self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
-            }
+            self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
             buffer.replaceSubrange(baseIndex..<(baseIndex + self.strideY), with: self.columnScratch)
         }
 
@@ -661,8 +572,6 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     private var memo: [ObjectIdentifier: any DensityFunction] = [:]
     private var strippedTerrainSamplingMemo: [ObjectIdentifier: any DensityFunction] = [:]
     private var scratchBuffers: [[Double]] = []
-    private var activeTerrainColumnFillProfiler: TerrainColumnFillProfiler? = nil
-
     init(chunkPos: PosInt2D, minY: Int32, height: Int32, sizeHorizontal: Int, sizeVertical: Int) {
         self.chunkPos = chunkPos
         self.minY = minY
@@ -1228,19 +1137,6 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
 
     func fill(into densities: inout [Double], using function: any DensityFunction, mode: FillMode) {
         self.validateFillBufferSize(densities.count, mode: mode)
-        let terrainClassProfileName: String?
-        if mode == .interpolationColumn, let _ = self.activeTerrainColumnFillProfiler {
-            terrainClassProfileName = terrainFillProfileName(for: function)
-            self.activeTerrainColumnFillProfiler?.enter(terrainClassProfileName!)
-        } else {
-            terrainClassProfileName = nil
-        }
-        defer {
-            if terrainClassProfileName != nil {
-                self.activeTerrainColumnFillProfiler?.exit()
-            }
-        }
-
         if let fillable = function as? VanillaChunkFillFunction {
             fillable.fill(into: &densities, using: self, mode: mode)
             return
@@ -1465,136 +1361,13 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    private func generateProfiledAlignedTerrain(
-        into chunk: ProtoChunk,
-        using terrainInterpolator: VanillaChunkTerrainInterpolator,
-        profile: inout TerrainGenerationProfile
-    ) {
-        let horizontalBlockCount = Int(self.horizontalCellBlockCount)
-        let verticalBlockCount = Int(self.verticalCellBlockCount)
-
-        for cellX in 0..<self.horizontalCellCount {
-            let currentCellX = self.startCellX + Int32(cellX)
-            let columnSampleStart = DispatchTime.now().uptimeNanoseconds
-            terrainInterpolator.fillEndColumns(atCellX: currentCellX + 1)
-            profile.columnSamplingNanos &+= DispatchTime.now().uptimeNanoseconds - columnSampleStart
-            let baseLocalX = Int(currentCellX * self.horizontalCellBlockCount - self.chunkStartX)
-
-            let terrainLoopStart = DispatchTime.now().uptimeNanoseconds
-            for cellZ in 0..<self.horizontalCellCount {
-                let baseLocalZShift = Int((self.startCellZ + Int32(cellZ)) * self.horizontalCellBlockCount - self.chunkStartZ) << 4
-                for cellY in stride(from: self.verticalCellCount - 1, through: 0, by: -1) {
-                    terrainInterpolator.onSampledCellCorners(cellY: cellY, cellZ: cellZ)
-
-                    let baseY = (Int32(cellY) + self.minimumCellY) * self.verticalCellBlockCount
-                    for localCellY in stride(from: verticalBlockCount - 1, through: 0, by: -1) {
-                        let localY = baseY + Int32(localCellY) - self.minY
-                        terrainInterpolator.interpolateY(self.verticalCellDeltas[localCellY])
-                        let section = chunk.sectionUnchecked(at: Int(localY) >> 4)
-                        let sectionBlockYBase = Int(localY & 15) << 8
-
-                        for localCellX in 0..<horizontalBlockCount {
-                            terrainInterpolator.interpolateX(self.horizontalCellDeltas[localCellX])
-                            let writeStart = DispatchTime.now().uptimeNanoseconds
-                            let blockIndexBase = sectionBlockYBase | baseLocalZShift | (baseLocalX + localCellX)
-                            for localCellZ in 0..<horizontalBlockCount {
-                                terrainInterpolator.interpolateZ(self.horizontalCellDeltas[localCellZ])
-                                section.setTerrainUnchecked(
-                                    terrainInterpolator.currentDensity > 0.0,
-                                    blockIndex: blockIndexBase | self.horizontalBlockIndexOffsets[localCellZ]
-                                )
-                            }
-                            profile.chunkWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
-                        }
-                    }
-                }
-            }
-            profile.loopNanos &+= DispatchTime.now().uptimeNanoseconds - terrainLoopStart
-
-            terrainInterpolator.swapBuffers()
-        }
-    }
-
-    private func generateProfiledClippedTerrain(
-        into chunk: ProtoChunk,
-        using terrainInterpolator: VanillaChunkTerrainInterpolator,
-        profile: inout TerrainGenerationProfile
-    ) {
-        let horizontalBlockCount = Int(self.horizontalCellBlockCount)
-        let verticalBlockCount = Int(self.verticalCellBlockCount)
-
-        for cellX in 0..<self.horizontalCellCount {
-            let currentCellX = self.startCellX + Int32(cellX)
-            let columnSampleStart = DispatchTime.now().uptimeNanoseconds
-            terrainInterpolator.fillEndColumns(atCellX: currentCellX + 1)
-            profile.columnSamplingNanos &+= DispatchTime.now().uptimeNanoseconds - columnSampleStart
-            let baseLocalX = Int(currentCellX * self.horizontalCellBlockCount - self.chunkStartX)
-
-            let terrainLoopStart = DispatchTime.now().uptimeNanoseconds
-            for cellZ in 0..<self.horizontalCellCount {
-                let baseLocalZ = Int((self.startCellZ + Int32(cellZ)) * self.horizontalCellBlockCount - self.chunkStartZ)
-                for cellY in stride(from: self.verticalCellCount - 1, through: 0, by: -1) {
-                    terrainInterpolator.onSampledCellCorners(cellY: cellY, cellZ: cellZ)
-
-                    let baseY = (Int32(cellY) + self.minimumCellY) * self.verticalCellBlockCount
-                    for localCellY in stride(from: verticalBlockCount - 1, through: 0, by: -1) {
-                        let localY = baseY + Int32(localCellY) - self.minY
-                        terrainInterpolator.interpolateY(self.verticalCellDeltas[localCellY])
-                        let section = chunk.sectionUnchecked(at: Int(localY) >> 4)
-                        let sectionBlockYBase = Int(localY & 15) << 8
-
-                        for localCellX in 0..<horizontalBlockCount {
-                            let localX = baseLocalX + localCellX
-                            terrainInterpolator.interpolateX(self.horizontalCellDeltas[localCellX])
-                            let writeStart = DispatchTime.now().uptimeNanoseconds
-                            guard localX >= 0 && localX < ProtoChunk.sideLength else { continue }
-
-                            for localCellZ in 0..<horizontalBlockCount {
-                                let localZ = baseLocalZ + localCellZ
-                                terrainInterpolator.interpolateZ(self.horizontalCellDeltas[localCellZ])
-                                guard localZ >= 0 && localZ < ProtoChunk.sideLength else { continue }
-
-                                section.setTerrainUnchecked(
-                                    terrainInterpolator.currentDensity > 0.0,
-                                    blockIndex: sectionBlockYBase | (localZ << 4) | localX
-                                )
-                            }
-                            profile.chunkWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
-                        }
-                    }
-                }
-            }
-            profile.loopNanos &+= DispatchTime.now().uptimeNanoseconds - terrainLoopStart
-
-            terrainInterpolator.swapBuffers()
-        }
-    }
-
-    func generateTerrain(into chunk: ProtoChunk, with terrainDensity: any DensityFunction, benchmark timingsEnabled: Bool = false) -> TerrainGenerationProfile {
-        var profile = TerrainGenerationProfile()
+    func generateTerrain(into chunk: ProtoChunk, with terrainDensity: any DensityFunction) {
         let directSamplingTerrainDensity = self.strippedTerrainSamplingFunction(from: terrainDensity)
-        let terrainInterpolator = VanillaChunkTerrainInterpolator(delegate: directSamplingTerrainDensity, using: self, profilingEnabled: timingsEnabled)
+        let terrainInterpolator = VanillaChunkTerrainInterpolator(delegate: directSamplingTerrainDensity, using: self)
         let usesFullHorizontalCells =
             Int32(self.horizontalCellCount) * self.horizontalCellBlockCount == Int32(ProtoChunk.sideLength)
             && self.startCellX * self.horizontalCellBlockCount == self.chunkStartX
             && self.startCellZ * self.horizontalCellBlockCount == self.chunkStartZ
-        if timingsEnabled {
-            let fillProfiler = TerrainColumnFillProfiler()
-            self.activeTerrainColumnFillProfiler = fillProfiler
-            defer { self.activeTerrainColumnFillProfiler = nil }
-            let initialSampleStart = DispatchTime.now().uptimeNanoseconds
-            terrainInterpolator.fillStartColumns(atCellX: self.startCellX)
-            profile.columnSamplingNanos = DispatchTime.now().uptimeNanoseconds - initialSampleStart
-
-            if usesFullHorizontalCells {
-                self.generateProfiledAlignedTerrain(into: chunk, using: terrainInterpolator, profile: &profile)
-            } else {
-                self.generateProfiledClippedTerrain(into: chunk, using: terrainInterpolator, profile: &profile)
-            }
-            profile.columnSampleEvaluationNanos = terrainInterpolator.columnSampleEvaluationNanos
-            profile.columnFillClassNanos = fillProfiler.sortedTotals()
-            return profile
-        }
 
         terrainInterpolator.fillStartColumns(atCellX: self.startCellX)
         if usesFullHorizontalCells {
@@ -1602,7 +1375,6 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         } else {
             self.generateClippedTerrain(into: chunk, using: terrainInterpolator)
         }
-        return profile
     }
 
     private func strippedTerrainSamplingFunction(from function: any DensityFunction) -> any DensityFunction {

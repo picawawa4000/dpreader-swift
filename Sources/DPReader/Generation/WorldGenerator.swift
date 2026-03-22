@@ -1254,57 +1254,6 @@ private struct BiomeLatticePosition: Hashable {
     }
 }
 
-private struct BiomeGenerationProfile {
-    var loopNanos: UInt64 = 0
-    var voronoiNanos: UInt64 = 0
-    var noiseSamplingNanos: UInt64 = 0
-    var treeLookupNanos: UInt64 = 0
-    var quartWriteNanos: UInt64 = 0
-    var blockWriteNanos: UInt64 = 0
-    var temperatureNanos: UInt64 = 0
-    var humidityNanos: UInt64 = 0
-    var continentalnessNanos: UInt64 = 0
-    var erosionNanos: UInt64 = 0
-    var weirdnessNanos: UInt64 = 0
-    var depthNanos: UInt64 = 0
-    var quartSampleCount: Int = 0
-    var blockSampleCount: Int = 0
-    var cacheHitCount: Int = 0
-    var cacheMissCount: Int = 0
-    var skipped = false
-
-    var exclusiveLoopNanos: UInt64 {
-        let measured = self.voronoiNanos &+ self.noiseSamplingNanos &+ self.treeLookupNanos &+ self.quartWriteNanos &+ self.blockWriteNanos
-        return self.loopNanos >= measured ? self.loopNanos &- measured : 0
-    }
-
-    var description: String {
-        if self.skipped {
-            return "biomes skipped"
-        }
-
-        return
-            "biome loop excl voronoi/sample/tree/write \(self.exclusiveLoopNanos)ns (\(self.exclusiveLoopNanos / 1_000_000)ms); " +
-            "biome voronoi \(self.voronoiNanos)ns (\(self.voronoiNanos / 1_000_000)ms); " +
-            "biome noise \(self.noiseSamplingNanos)ns (\(self.noiseSamplingNanos / 1_000_000)ms); " +
-            "biome tree \(self.treeLookupNanos)ns (\(self.treeLookupNanos / 1_000_000)ms); " +
-            "biome quart writes \(self.quartWriteNanos)ns (\(self.quartWriteNanos / 1_000_000)ms); " +
-            "biome block writes \(self.blockWriteNanos)ns (\(self.blockWriteNanos / 1_000_000)ms); " +
-            "biome total \(self.loopNanos)ns (\(self.loopNanos / 1_000_000)ms); " +
-            "quart samples \(self.quartSampleCount); block samples \(self.blockSampleCount); climate samples \(self.cacheMissCount); cache hits \(self.cacheHitCount)"
-    }
-
-    var densityDescription: String {
-        return
-            "biome density functions: temperature \(self.temperatureNanos)ns (\(self.temperatureNanos / 1_000_000)ms); " +
-            "humidity \(self.humidityNanos)ns (\(self.humidityNanos / 1_000_000)ms); " +
-            "continentalness \(self.continentalnessNanos)ns (\(self.continentalnessNanos / 1_000_000)ms); " +
-            "erosion \(self.erosionNanos)ns (\(self.erosionNanos / 1_000_000)ms); " +
-            "weirdness \(self.weirdnessNanos)ns (\(self.weirdnessNanos / 1_000_000)ms); " +
-            "depth \(self.depthNanos)ns (\(self.depthNanos / 1_000_000)ms)"
-    }
-}
-
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
@@ -1460,9 +1409,8 @@ public final class WorldGenerator {
         at chunkPos: PosInt2D,
         minY: Int32,
         using searchTree: BiomeSearchTree,
-        with functions: ChunkBiomeDensityFunctions,
-        benchmark timingsEnabled: Bool = false
-    ) -> BiomeGenerationProfile {
+        with functions: ChunkBiomeDensityFunctions
+    ) {
         let chunkStartX = chunkPos.x &* Int32(ProtoChunk.sideLength)
         let chunkStartZ = chunkPos.z &* Int32(ProtoChunk.sideLength)
         let quartXs = [chunkStartX, chunkStartX + 4, chunkStartX + 8, chunkStartX + 12]
@@ -1471,42 +1419,20 @@ public final class WorldGenerator {
         let lookupState = searchTree.makeReusableLookupState()
         var sampledBiomes: [BiomeLatticePosition: RegistryKey<Biome>] = [:]
         sampledBiomes.reserveCapacity((ProtoChunk.biomeSideLength + 2) * (ProtoChunk.biomeSideLength + 2) * (biomeHeight + 2))
-        var profile = BiomeGenerationProfile()
 
         @inline(__always)
         func cachedBiome(at latticePos: BiomeLatticePosition) -> RegistryKey<Biome> {
             if let cached = sampledBiomes[latticePos] {
-                if timingsEnabled {
-                    profile.cacheHitCount += 1
-                }
                 return cached
             }
 
             let pos = latticePos.blockPosition
-            let temperatureStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let temperature = functions.temperature.sample(at: pos)
-            let temperatureEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let humidity = functions.humidity.sample(at: pos)
-            let humidityEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let continentalness = functions.continentalness.sample(at: pos)
-            let continentalnessEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let erosion = functions.erosion.sample(at: pos)
-            let erosionEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let weirdness = functions.weirdness.sample(at: pos)
-            let weirdnessEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let depth = functions.depth.sample(at: pos)
-            let depthEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-            if timingsEnabled {
-                profile.temperatureNanos &+= temperatureEnd - temperatureStart
-                profile.humidityNanos &+= humidityEnd - temperatureEnd
-                profile.continentalnessNanos &+= continentalnessEnd - humidityEnd
-                profile.erosionNanos &+= erosionEnd - continentalnessEnd
-                profile.weirdnessNanos &+= weirdnessEnd - erosionEnd
-                profile.depthNanos &+= depthEnd - weirdnessEnd
-                profile.noiseSamplingNanos &+= depthEnd - temperatureStart
-            }
-
-            let treeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let biome = searchTree.getUnchecked(
                 temperature: temperature,
                 humidity: humidity,
@@ -1516,66 +1442,8 @@ public final class WorldGenerator {
                 depth: depth,
                 using: lookupState
             )
-            if timingsEnabled {
-                profile.treeLookupNanos &+= DispatchTime.now().uptimeNanoseconds - treeStart
-                profile.cacheMissCount += 1
-            }
             sampledBiomes[latticePos] = biome
             return biome
-        }
-
-        if timingsEnabled {
-            let loopStart = DispatchTime.now().uptimeNanoseconds
-            for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
-                let worldZ = quartZs[localBiomeZ]
-                for localBiomeX in 0..<ProtoChunk.biomeSideLength {
-                    let worldX = quartXs[localBiomeX]
-                    let sectionBiomeXZ = (localBiomeZ << 2) | localBiomeX
-                    for localBiomeY in 0..<biomeHeight {
-                        let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
-                        let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
-                        let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
-                        let latticePos = BiomeLatticePosition(
-                            PosInt3D(
-                                x: biomeCoord(fromBlock: worldX),
-                                y: biomeCoord(fromBlock: worldY),
-                                z: biomeCoord(fromBlock: worldZ)
-                            )
-                        )
-                        let biome = cachedBiome(at: latticePos)
-
-                        let writeStart = DispatchTime.now().uptimeNanoseconds
-                        section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
-                        profile.quartWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
-                        profile.quartSampleCount += 1
-                    }
-                }
-            }
-
-            for localY in 0..<Int(chunk.height) {
-                let worldY = minY + Int32(localY)
-                let section = chunk.sectionUnchecked(at: localY >> 4)
-                let blockIndexY = (localY & 15) << 8
-                for localZ in 0..<ProtoChunk.sideLength {
-                    let worldZ = chunkStartZ + Int32(localZ)
-                    let blockIndexYZ = blockIndexY | (localZ << 4)
-                    for localX in 0..<ProtoChunk.sideLength {
-                        let worldX = chunkStartX + Int32(localX)
-                        let worldPos = PosInt3D(x: worldX, y: worldY, z: worldZ)
-                        let voronoiStart = DispatchTime.now().uptimeNanoseconds
-                        let latticePos = BiomeLatticePosition(self.biomeSubsampler.biomePosition(forBlock: worldPos))
-                        profile.voronoiNanos &+= DispatchTime.now().uptimeNanoseconds - voronoiStart
-                        let biome = cachedBiome(at: latticePos)
-                        let writeStart = DispatchTime.now().uptimeNanoseconds
-                        section.setBiomeUnchecked(biome, blockIndex: blockIndexYZ | localX)
-                        profile.blockWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
-                        profile.blockSampleCount += 1
-                    }
-                }
-            }
-
-            profile.loopNanos = DispatchTime.now().uptimeNanoseconds - loopStart
-            return profile
         }
 
         for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
@@ -1617,10 +1485,6 @@ public final class WorldGenerator {
                 }
             }
         }
-
-        profile.quartSampleCount = ProtoChunk.biomeSideLength * ProtoChunk.biomeSideLength * biomeHeight
-        profile.blockSampleCount = ProtoChunk.sideLength * ProtoChunk.sideLength * Int(chunk.height)
-        return profile
     }
 
     /// Samples the configured climate noise router at a world position.
@@ -1685,20 +1549,9 @@ public final class WorldGenerator {
     ///   - scale: Subsampling factor (e.g. stride; 4 means 1:4 scale). Must be > 0.
     ///   - forceNoBaking: Whether to force the function to not bake the caches, irrespective of generation size.
     ///     For debugging only (will usually lead to poorly-optimised results).
-    ///   - timingsEnabled: Enables diagnostic timing output. For debugging and benchmarking only.
     /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.
     /// - Returns: An X-major array of biomes (indexed by [Z*(to.x-from.x)+X]).
-    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, scale: Int32 = 4, forceNoBaking: Bool = false, benchmark timingsEnabled: Bool = false) throws -> [RegistryKey<Biome>]? {
-        let startTime = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        var noiseSampleTime: UInt64 = 0
-        var treeSampleTime: UInt64 = 0
-        var temperatureTime: UInt64 = 0
-        var humidityTime: UInt64 = 0
-        var continentalnessTime: UInt64 = 0
-        var erosionTime: UInt64 = 0
-        var weirdnessTime: UInt64 = 0
-        var depthTime: UInt64 = 0
-        // TODO: make this not optional
+    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, scale: Int32 = 4, forceNoBaking: Bool = false) throws -> [RegistryKey<Biome>]? {
         if scale <= 0 {
             throw WorldGenerationErrors.invalidScale
         }
@@ -1726,168 +1579,61 @@ public final class WorldGenerator {
         var biomes: [RegistryKey<Biome>] = []
         biomes.reserveCapacity(area)
 
-        let timingNoiseRouter = timingsEnabled ? self.config?.noiseRouter : nil
         let directNoiseRouter = self.config?.noiseRouter
-
-        func samplePointWithTimings(
-            at pos: PosInt3D,
-            temperature: any DensityFunction,
-            humidity: any DensityFunction,
-            continentalness: any DensityFunction,
-            erosion: any DensityFunction,
-            weirdness: any DensityFunction,
-            depth: any DensityFunction
-        ) -> NoisePoint {
-            let tTemp0 = DispatchTime.now().uptimeNanoseconds
-            let temperatureValue = temperature.sample(at: pos)
-            let tTemp1 = DispatchTime.now().uptimeNanoseconds
-            let tHum0 = DispatchTime.now().uptimeNanoseconds
-            let humidityValue = humidity.sample(at: pos)
-            let tHum1 = DispatchTime.now().uptimeNanoseconds
-            let tCon0 = DispatchTime.now().uptimeNanoseconds
-            let continentalnessValue = continentalness.sample(at: pos)
-            let tCon1 = DispatchTime.now().uptimeNanoseconds
-            let tEro0 = DispatchTime.now().uptimeNanoseconds
-            let erosionValue = erosion.sample(at: pos)
-            let tEro1 = DispatchTime.now().uptimeNanoseconds
-            let tWei0 = DispatchTime.now().uptimeNanoseconds
-            let weirdnessValue = weirdness.sample(at: pos)
-            let tWei1 = DispatchTime.now().uptimeNanoseconds
-            let tDep0 = DispatchTime.now().uptimeNanoseconds
-            let depthValue = depth.sample(at: pos)
-            let tDep1 = DispatchTime.now().uptimeNanoseconds
-            temperatureTime += tTemp1 - tTemp0
-            humidityTime += tHum1 - tHum0
-            continentalnessTime += tCon1 - tCon0
-            erosionTime += tEro1 - tEro0
-            weirdnessTime += tWei1 - tWei0
-            depthTime += tDep1 - tDep0
-            return NoisePoint(
-                temperature: temperatureValue,
-                humidity: humidityValue,
-                continentalness: continentalnessValue,
-                erosion: erosionValue,
-                weirdness: weirdnessValue,
-                depth: depthValue
-            )
-        }
 
         if area <= smallAreaThreshold || self.config == nil || forceNoBaking {
             if useScale {
-                let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
                 let startWorldX = fromX * scale
                 var worldZ = fromZ * scale
                 for _ in fromZ..<toZ {
                     var worldX = startWorldX
                     for _ in fromX..<toX {
                         let pos = PosInt3D(x: worldX, y: y, z: worldZ)
-                        if timingsEnabled {
-                            let t0 = DispatchTime.now().uptimeNanoseconds
-                            let point: NoisePoint
-                            if let noiseRouter = timingNoiseRouter {
-                                point = samplePointWithTimings(
-                                    at: pos,
-                                    temperature: noiseRouter.temperature,
-                                    humidity: noiseRouter.humidity,
-                                    continentalness: noiseRouter.continents,
-                                    erosion: noiseRouter.erosion,
-                                    weirdness: noiseRouter.weirdness,
-                                    depth: noiseRouter.depth
-                                )
-                            } else {
-                                point = self.sampleNoisePoint(at: pos)
-                            }
-                            let t1 = DispatchTime.now().uptimeNanoseconds
-                            let biome = searchTree.getUnchecked(point)
-                            let t2 = DispatchTime.now().uptimeNanoseconds
-                            noiseSampleTime += t1 - t0
-                            treeSampleTime += t2 - t1
-                            biomes.append(biome)
+                        let biome: RegistryKey<Biome>
+                        if let noiseRouter = directNoiseRouter {
+                            biome = searchTree.getUnchecked(
+                                temperature: noiseRouter.temperature.sample(at: pos),
+                                humidity: noiseRouter.humidity.sample(at: pos),
+                                continentalness: noiseRouter.continents.sample(at: pos),
+                                erosion: noiseRouter.erosion.sample(at: pos),
+                                weirdness: noiseRouter.weirdness.sample(at: pos),
+                                depth: noiseRouter.depth.sample(at: pos)
+                            )
                         } else {
-                            let biome: RegistryKey<Biome>
-                            if let noiseRouter = directNoiseRouter {
-                                biome = searchTree.getUnchecked(
-                                    temperature: noiseRouter.temperature.sample(at: pos),
-                                    humidity: noiseRouter.humidity.sample(at: pos),
-                                    continentalness: noiseRouter.continents.sample(at: pos),
-                                    erosion: noiseRouter.erosion.sample(at: pos),
-                                    weirdness: noiseRouter.weirdness.sample(at: pos),
-                                    depth: noiseRouter.depth.sample(at: pos)
-                                )
-                            } else {
-                                let point = self.sampleNoisePoint(at: pos)
-                                biome = searchTree.getUnchecked(point)
-                            }
-                            biomes.append(biome)
+                            let point = self.sampleNoisePoint(at: pos)
+                            biome = searchTree.getUnchecked(point)
                         }
+                        biomes.append(biome)
                         worldX += scale
                     }
                     worldZ += scale
                 }
-                if timingsEnabled {
-                    let loopEnd = DispatchTime.now().uptimeNanoseconds
-                    let totalEnd = loopEnd
-                    print("generateBiomesInSquare: small(no-bake) fourScale loop \(loopEnd - loopStart)ns; noise \(noiseSampleTime)ns; tree \(treeSampleTime)ns; total \(totalEnd - startTime)ns; samples \(area)")
-                    print("  density functions: temperature \(temperatureTime)ns; humidity \(humidityTime)ns; continentalness \(continentalnessTime)ns; erosion \(erosionTime)ns; weirdness \(weirdnessTime)ns; depth \(depthTime)ns")
-                }
                 return biomes
             } else {
-                let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
                 for z in fromPos.z..<toPos.z {
                     for x in fromPos.x..<toPos.x {
                         let pos = PosInt3D(x: x, y: y, z: z)
-                        if timingsEnabled {
-                            let t0 = DispatchTime.now().uptimeNanoseconds
-                            let point: NoisePoint
-                            if let noiseRouter = timingNoiseRouter {
-                                point = samplePointWithTimings(
-                                    at: pos,
-                                    temperature: noiseRouter.temperature,
-                                    humidity: noiseRouter.humidity,
-                                    continentalness: noiseRouter.continents,
-                                    erosion: noiseRouter.erosion,
-                                    weirdness: noiseRouter.weirdness,
-                                    depth: noiseRouter.depth
-                                )
-                            } else {
-                                point = self.sampleNoisePoint(at: pos)
-                            }
-                            let t1 = DispatchTime.now().uptimeNanoseconds
-                            let biome = searchTree.getUnchecked(point)
-                            let t2 = DispatchTime.now().uptimeNanoseconds
-                            noiseSampleTime += t1 - t0
-                            treeSampleTime += t2 - t1
-                            biomes.append(biome)
+                        let biome: RegistryKey<Biome>
+                        if let noiseRouter = directNoiseRouter {
+                            biome = searchTree.getUnchecked(
+                                temperature: noiseRouter.temperature.sample(at: pos),
+                                humidity: noiseRouter.humidity.sample(at: pos),
+                                continentalness: noiseRouter.continents.sample(at: pos),
+                                erosion: noiseRouter.erosion.sample(at: pos),
+                                weirdness: noiseRouter.weirdness.sample(at: pos),
+                                depth: noiseRouter.depth.sample(at: pos)
+                            )
                         } else {
-                            let biome: RegistryKey<Biome>
-                            if let noiseRouter = directNoiseRouter {
-                                biome = searchTree.getUnchecked(
-                                    temperature: noiseRouter.temperature.sample(at: pos),
-                                    humidity: noiseRouter.humidity.sample(at: pos),
-                                    continentalness: noiseRouter.continents.sample(at: pos),
-                                    erosion: noiseRouter.erosion.sample(at: pos),
-                                    weirdness: noiseRouter.weirdness.sample(at: pos),
-                                    depth: noiseRouter.depth.sample(at: pos)
-                                )
-                            } else {
-                                let point = self.sampleNoisePoint(at: pos)
-                                biome = searchTree.getUnchecked(point)
-                            }
-                            biomes.append(biome)
+                            let point = self.sampleNoisePoint(at: pos)
+                            biome = searchTree.getUnchecked(point)
                         }
+                        biomes.append(biome)
                     }
-                }
-                if timingsEnabled {
-                    let loopEnd = DispatchTime.now().uptimeNanoseconds
-                    let totalEnd = loopEnd
-                    print("generateBiomesInSquare: small(no-bake) fullScale loop \(loopEnd - loopStart)ns; noise \(noiseSampleTime)ns; tree \(treeSampleTime)ns; total \(totalEnd - startTime)ns; samples \(area)")
-                    print("  density functions: temperature \(temperatureTime)ns; humidity \(humidityTime)ns; continentalness \(continentalnessTime)ns; erosion \(erosionTime)ns; weirdness \(weirdnessTime)ns; depth \(depthTime)ns")
                 }
                 return biomes
             }
         }
 
-        let bakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let baker = WorldScaleDensityFunctionBaker()
 
         let noiseRouter = self.config!.noiseRouter
@@ -1897,94 +1643,41 @@ public final class WorldGenerator {
         let erosion = try baker.bakeDensityFunction(noiseRouter.erosion)
         let weirdness = try baker.bakeDensityFunction(noiseRouter.weirdness)
         let depthFunc = try baker.bakeDensityFunction(noiseRouter.depth)
-        let bakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
         if useScale {
-            let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let startWorldX = fromX * scale
             var worldZ = fromZ * scale
             for _ in fromZ..<toZ {
                 var worldX = startWorldX
                 for _ in fromX..<toX {
                     let pos = PosInt3D(x: worldX, y: y, z: worldZ)
-                    if timingsEnabled {
-                        let t0 = DispatchTime.now().uptimeNanoseconds
-                        let point = samplePointWithTimings(
-                            at: pos,
-                            temperature: temperature,
-                            humidity: humidity,
-                            continentalness: continentalness,
-                            erosion: erosion,
-                            weirdness: weirdness,
-                            depth: depthFunc
-                        )
-                        let t1 = DispatchTime.now().uptimeNanoseconds
-                        let biome = searchTree.getUnchecked(point)
-                        let t2 = DispatchTime.now().uptimeNanoseconds
-                        noiseSampleTime += t1 - t0
-                        treeSampleTime += t2 - t1
-                        biomes.append(biome)
-                    } else {
-                        let biome = searchTree.getUnchecked(
-                            temperature: temperature.sample(at: pos),
-                            humidity: humidity.sample(at: pos),
-                            continentalness: continentalness.sample(at: pos),
-                            erosion: erosion.sample(at: pos),
-                            weirdness: weirdness.sample(at: pos),
-                            depth: depthFunc.sample(at: pos)
-                        )
-                        biomes.append(biome)
-                    }
+                    let biome = searchTree.getUnchecked(
+                        temperature: temperature.sample(at: pos),
+                        humidity: humidity.sample(at: pos),
+                        continentalness: continentalness.sample(at: pos),
+                        erosion: erosion.sample(at: pos),
+                        weirdness: weirdness.sample(at: pos),
+                        depth: depthFunc.sample(at: pos)
+                    )
+                    biomes.append(biome)
                     worldX += scale
                 }
                 worldZ += scale
             }
-            if timingsEnabled {
-                let loopEnd = DispatchTime.now().uptimeNanoseconds
-                let totalEnd = loopEnd
-                print("generateBiomesInSquare: bake \(bakeEnd - bakeStart)ns (\((bakeEnd - bakeStart) / 1_000_000)ms); fourScale loop \(loopEnd - loopStart)ns (\((loopEnd - loopStart) / 1_000_000)ms); noise \(noiseSampleTime)ns (\(noiseSampleTime / 1_000_000)ms); tree \(treeSampleTime)ns (\(treeSampleTime / 1_000_000)ms); total \(totalEnd - startTime)ns (\((totalEnd - startTime) / 1_000_000)ms); samples \(area)")
-                print("  density functions: temperature \(temperatureTime)ns (\(temperatureTime / 1_000_000)ms); humidity \(humidityTime)ns (\(humidityTime / 1_000_000)ms); continentalness \(continentalnessTime)ns (\(continentalnessTime / 1_000_000)ms); erosion \(erosionTime)ns (\(erosionTime / 1_000_000)ms); weirdness \(weirdnessTime)ns (\(weirdnessTime / 1_000_000)ms); depth \(depthTime)ns (\(depthTime / 1_000_000)ms)")
-            }
         } else {
-            let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             for z in fromPos.z..<toPos.z {
                 for x in fromPos.x..<toPos.x {
                     let pos = PosInt3D(x: x, y: y, z: z)
-                    if timingsEnabled {
-                        let t0 = DispatchTime.now().uptimeNanoseconds
-                        let point = samplePointWithTimings(
-                            at: pos,
-                            temperature: temperature,
-                            humidity: humidity,
-                            continentalness: continentalness,
-                            erosion: erosion,
-                            weirdness: weirdness,
-                            depth: depthFunc
-                        )
-                        let t1 = DispatchTime.now().uptimeNanoseconds
-                        let biome = searchTree.getUnchecked(point)
-                        let t2 = DispatchTime.now().uptimeNanoseconds
-                        noiseSampleTime += t1 - t0
-                        treeSampleTime += t2 - t1
-                        biomes.append(biome)
-                    } else {
-                        let biome = searchTree.getUnchecked(
-                            temperature: temperature.sample(at: pos),
-                            humidity: humidity.sample(at: pos),
-                            continentalness: continentalness.sample(at: pos),
-                            erosion: erosion.sample(at: pos),
-                            weirdness: weirdness.sample(at: pos),
-                            depth: depthFunc.sample(at: pos)
-                        )
-                        biomes.append(biome)
-                    }
+                    let biome = searchTree.getUnchecked(
+                        temperature: temperature.sample(at: pos),
+                        humidity: humidity.sample(at: pos),
+                        continentalness: continentalness.sample(at: pos),
+                        erosion: erosion.sample(at: pos),
+                        weirdness: weirdness.sample(at: pos),
+                        depth: depthFunc.sample(at: pos)
+                    )
+                    biomes.append(biome)
                 }
-            }
-            if timingsEnabled {
-                let loopEnd = DispatchTime.now().uptimeNanoseconds
-                let totalEnd = loopEnd
-                print("generateBiomesInSquare: bake \(bakeEnd - bakeStart)ns (\((bakeEnd - bakeStart) / 1_000_000)ms); fullScale loop \(loopEnd - loopStart)ns (\((loopEnd - loopStart) / 1_000_000)ms); noise \(noiseSampleTime)ns (\(noiseSampleTime / 1_000_000)ms); tree \(treeSampleTime)ns (\(treeSampleTime / 1_000_000)ms); total \(totalEnd - startTime)ns (\((totalEnd - startTime) / 1_000_000)ms); samples \(area)")
-                print("  density functions: temperature \(temperatureTime)ns; humidity \(humidityTime)ns; continentalness \(continentalnessTime)ns; erosion \(erosionTime)ns; weirdness \(weirdnessTime)ns; depth \(depthTime)ns")
             }
         }
 
@@ -1996,10 +1689,8 @@ public final class WorldGenerator {
     /// - Parameters:
     ///   - chunk: The chunk to configure and populate.
     ///   - chunkPos: The chunk position in chunk coordinates.
-    ///   - timingsEnabled: Enables diagnostic timing output. For debugging and benchmarking only.
     /// - Throws: Any error thrown while configuring the chunk, baking density functions, or sampling terrain and biomes.
-    public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D, benchmark timingsEnabled: Bool = false) throws {
-        let totalStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+    public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
         self.terrainGenerationLock.lock()
         defer { self.terrainGenerationLock.unlock() }
 
@@ -2012,11 +1703,8 @@ public final class WorldGenerator {
 
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        let configureStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         try chunk.configure(minY: minY, height: height)
-        let configureEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
-        let samplerInitStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
             minY: minY,
@@ -2024,32 +1712,16 @@ public final class WorldGenerator {
             sizeHorizontal: config.sizeHorizontal,
             sizeVertical: config.sizeVertical
         )
-        let samplerInitEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
-        let terrainBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
-        let terrainBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let temperatureBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let temperature = try chunkSampler.bakeDensityFunction(config.noiseRouter.temperature)
-        let temperatureBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let humidityBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let humidity = try chunkSampler.bakeDensityFunction(config.noiseRouter.humidity)
-        let humidityBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let continentalnessBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let continentalness = try chunkSampler.bakeDensityFunction(config.noiseRouter.continents)
-        let continentalnessBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let erosionBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let erosion = try chunkSampler.bakeDensityFunction(config.noiseRouter.erosion)
-        let erosionBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let weirdnessBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let weirdness = try chunkSampler.bakeDensityFunction(config.noiseRouter.weirdness)
-        let weirdnessBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let depthBakeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         let depth = try chunkSampler.bakeDensityFunction(config.noiseRouter.depth)
-        let depthBakeEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let biomeProfile: BiomeGenerationProfile
         if let searchTree = self.configuredChunkBiomeSearchTree() {
-            biomeProfile = self.generateBiomesIntoChunk(
+            self.generateBiomesIntoChunk(
                 chunk,
                 at: chunkPos,
                 minY: minY,
@@ -2061,47 +1733,11 @@ public final class WorldGenerator {
                     erosion: erosion,
                     weirdness: weirdness,
                     depth: depth
-                ),
-                benchmark: timingsEnabled
+                )
             )
-        } else {
-            biomeProfile = BiomeGenerationProfile(skipped: true)
         }
 
-        let terrainProfile = chunkSampler.generateTerrain(into: chunk, with: terrainDensity, benchmark: timingsEnabled)
-
-        if timingsEnabled {
-            let totalEnd = DispatchTime.now().uptimeNanoseconds
-            let bakeTotal =
-                (terrainBakeEnd - terrainBakeStart)
-                &+ (temperatureBakeEnd - temperatureBakeStart)
-                &+ (humidityBakeEnd - humidityBakeStart)
-                &+ (continentalnessBakeEnd - continentalnessBakeStart)
-                &+ (erosionBakeEnd - erosionBakeStart)
-                &+ (weirdnessBakeEnd - weirdnessBakeStart)
-                &+ (depthBakeEnd - depthBakeStart)
-            print(
-                "generateInto: configure \(configureEnd - configureStart)ns (\((configureEnd - configureStart) / 1_000_000)ms); " +
-                "sampler init \(samplerInitEnd - samplerInitStart)ns (\((samplerInitEnd - samplerInitStart) / 1_000_000)ms); " +
-                "bake total \(bakeTotal)ns (\(bakeTotal / 1_000_000)ms); " +
-                "bake final_density \(terrainBakeEnd - terrainBakeStart)ns (\((terrainBakeEnd - terrainBakeStart) / 1_000_000)ms); " +
-                "bake temperature \(temperatureBakeEnd - temperatureBakeStart)ns (\((temperatureBakeEnd - temperatureBakeStart) / 1_000_000)ms); " +
-                "bake humidity \(humidityBakeEnd - humidityBakeStart)ns (\((humidityBakeEnd - humidityBakeStart) / 1_000_000)ms); " +
-                "bake continentalness \(continentalnessBakeEnd - continentalnessBakeStart)ns (\((continentalnessBakeEnd - continentalnessBakeStart) / 1_000_000)ms); " +
-                "bake erosion \(erosionBakeEnd - erosionBakeStart)ns (\((erosionBakeEnd - erosionBakeStart) / 1_000_000)ms); " +
-                "bake weirdness \(weirdnessBakeEnd - weirdnessBakeStart)ns (\((weirdnessBakeEnd - weirdnessBakeStart) / 1_000_000)ms); " +
-                "bake depth \(depthBakeEnd - depthBakeStart)ns (\((depthBakeEnd - depthBakeStart) / 1_000_000)ms); " +
-                "\(terrainProfile.description); " +
-                "\(biomeProfile.description); " +
-                "total \(totalEnd - totalStart)ns (\((totalEnd - totalStart) / 1_000_000)ms)"
-            )
-            if let terrainClassDescription = terrainProfile.classDescription {
-                print("  terrain density classes: \(terrainClassDescription)")
-            }
-            if !biomeProfile.skipped {
-                print("  \(biomeProfile.densityDescription)")
-            }
-        }
+        chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
     }
 
     // Currently visible for testing only.

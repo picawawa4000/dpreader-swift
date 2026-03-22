@@ -266,8 +266,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
         from: PosInt2D(x: 0, z: 0),
         to: PosInt2D(x: 1024, z: 1024),
         atY: 256,
-        in: RegistryKey(referencing: "minecraft:overworld"),
-        benchmark: true
+        in: RegistryKey(referencing: "minecraft:overworld")
     )
     let firstEndTime = DispatchTime.now().uptimeNanoseconds
     _ = try worldGenerator.generateBiomesInSquare(
@@ -295,8 +294,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
         from: PosInt2D(x: 0, z: 0),
         to: PosInt2D(x: 2048, z: 2048),
         atY: 256,
-        in: RegistryKey(referencing: "minecraft:overworld"),
-        benchmark: true
+        in: RegistryKey(referencing: "minecraft:overworld")
     )
     let fullEndTime = DispatchTime.now().uptimeNanoseconds
     print("""
