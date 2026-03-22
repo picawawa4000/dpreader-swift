@@ -737,6 +737,20 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         return function.sample(at: self.currentPos)
     }
 
+    private func fillNoiseDensityInterpolationColumn(into densities: inout [Double], using function: NoiseDensityFunction) {
+        let blockX = self.blockX
+        let blockZ = self.blockZ
+        let scaledX = Double(blockX) * function.xzScaleValue
+        let scaledZ = Double(blockZ) * function.xzScaleValue
+        var scaledY = Double(self.minimumCellY * self.verticalCellBlockCount) * function.yScaleValue
+        let scaledYStep = Double(self.verticalCellBlockCount) * function.yScaleValue
+        let noise = function.noiseSampler
+        for index in densities.indices {
+            densities[index] = noise.sample(x: scaledX, y: scaledY, z: scaledZ)
+            scaledY += scaledYStep
+        }
+    }
+
     @inline(__always) private func validateFillBufferSize(_ count: Int, mode: FillMode) {
         switch mode {
         case .interpolationColumn:
@@ -911,6 +925,16 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             }
         }
         return .unsupported
+    }
+
+    @inline(__always)
+    private func rangeChoiceBranchStrategyNeedsSamplerPos(_ strategy: RangeChoiceBranchStrategy) -> Bool {
+        switch strategy {
+        case .unsupported, .binary:
+            return true
+        case .inputChoice, .constant, .unary, .clamp, .binaryConstant:
+            return false
+        }
     }
 
     @inline(__always)
@@ -1148,14 +1172,19 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         let outOfRangeStrategy = self.rangeChoiceBranchStrategy(for: function.whenOutOfRangeOutput, inputChoice: function.inputChoiceFunction)
         for i in densities.indices {
             let input = densities[i]
-            self.setSamplerPosForFillIndex(i, mode: mode)
             if input >= function.minimumInclusive && input < function.maximumExclusive {
+                if self.rangeChoiceBranchStrategyNeedsSamplerPos(inRangeStrategy) {
+                    self.setSamplerPosForFillIndex(i, mode: mode)
+                }
                 if let sampled = self.sampleRangeChoiceBranch(inRangeStrategy, inputValue: input) {
                     densities[i] = sampled
                 } else {
                     densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
                 }
             } else {
+                if self.rangeChoiceBranchStrategyNeedsSamplerPos(outOfRangeStrategy) {
+                    self.setSamplerPosForFillIndex(i, mode: mode)
+                }
                 if let sampled = self.sampleRangeChoiceBranch(outOfRangeStrategy, inputValue: input) {
                     densities[i] = sampled
                 } else {
@@ -1227,6 +1256,20 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
         if function is BlendOffset {
             densities = [Double](repeating: 0.0, count: densities.count)
+            return
+        }
+        if mode == .interpolationColumn, let noiseDensity = function as? NoiseDensityFunction {
+            self.fillNoiseDensityInterpolationColumn(into: &densities, using: noiseDensity)
+            return
+        }
+        if mode == .interpolationColumn, let interpolatedNoise = function as? InterpolatedNoise {
+            interpolatedNoise.fillInterpolationColumn(
+                into: &densities,
+                blockX: self.blockX,
+                startBlockY: self.minimumCellY * self.verticalCellBlockCount,
+                blockZ: self.blockZ,
+                blockYStep: self.verticalCellBlockCount
+            )
             return
         }
         if let unary = function as? UnaryDensityFunction {

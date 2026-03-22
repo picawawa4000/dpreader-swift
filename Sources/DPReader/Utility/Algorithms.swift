@@ -623,9 +623,25 @@ public class InterpolatedNoise: DensityFunction {
 
     /// Because `InterpolatedNoise` is a density function, it uses ints instead of doubles.
     public func sample(at pos: PosInt3D) -> Double {
-        let scaledX = Double(pos.x) * self.scaledXZScale
-        let scaledY = Double(pos.y) * self.scaledYScale
-        let scaledZ = Double(pos.z) * self.scaledXZScale
+        return self.sampleScaled(
+            x: Double(pos.x) * self.scaledXZScale,
+            y: Double(pos.y) * self.scaledYScale,
+            z: Double(pos.z) * self.scaledXZScale
+        )
+    }
+
+    func fillInterpolationColumn(into densities: inout [Double], blockX: Int32, startBlockY: Int32, blockZ: Int32, blockYStep: Int32) {
+        let scaledX = Double(blockX) * self.scaledXZScale
+        var scaledY = Double(startBlockY) * self.scaledYScale
+        let scaledZ = Double(blockZ) * self.scaledXZScale
+        let scaledYStep = Double(blockYStep) * self.scaledYScale
+        for index in densities.indices {
+            densities[index] = self.sampleScaled(x: scaledX, y: scaledY, z: scaledZ)
+            scaledY += scaledYStep
+        }
+    }
+
+    @inline(__always) private func sampleScaled(x scaledX: Double, y scaledY: Double, z scaledZ: Double) -> Double {
         let factoredX = scaledX / self.xzFactor
         let factoredY = scaledY / self.yFactor
         let factoredZ = scaledZ / self.xzFactor

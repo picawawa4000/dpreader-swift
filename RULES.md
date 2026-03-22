@@ -112,6 +112,7 @@ Avoid:
 - Provide debug utilities:
   - Heightmap export
   - ASCII or image previews
+  - Note: These should not be directly contained in DPReader, but should instead leverage its API. [MineScene](https://github.com/picawawa4000/minescene) is a good example.
 - Avoid polluting production code with debug logic.
 
 ## 8. Error Handling

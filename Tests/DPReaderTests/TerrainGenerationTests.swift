@@ -512,7 +512,7 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     }
 }
 
-@Test func benchmarkVanillaTerrainChunkGeneration() async throws {
+@Test func testVoronoiSubsampleMapsBlocksToExpectedBiomePositions() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -527,6 +527,81 @@ private final class LockedOptional<Value>: @unchecked Sendable {
         usingDataPacks: [pack],
         usingSettings: RegistryKey(referencing: "minecraft:overworld")
     )
+    let cases: [(PosInt3D, PosInt3D)] = [
+        (PosInt3D(x: 0, y: 0, z: 0), PosInt3D(x: -1, y: -1, z: -1)),
+        (PosInt3D(x: 1, y: 0, z: 0), PosInt3D(x: 0, y: 0, z: -1)),
+        (PosInt3D(x: 2, y: 0, z: 0), PosInt3D(x: 0, y: 0, z: -1)),
+        (PosInt3D(x: 4, y: 0, z: 0), PosInt3D(x: 0, y: 0, z: -1)),
+        (PosInt3D(x: 15, y: 63, z: -9), PosInt3D(x: 3, y: 15, z: -3)),
+        (PosInt3D(x: -17, y: -64, z: 20), PosInt3D(x: -4, y: -16, z: 4)),
+        (PosInt3D(x: 31, y: 255, z: 31), PosInt3D(x: 7, y: 63, z: 7)),
+        (PosInt3D(x: 64, y: 70, z: -64), PosInt3D(x: 16, y: 17, z: -16)),
+    ]
+
+    for (blockPos, expectedBiomePos) in cases {
+        let actualBiomePos = worldGenerator.biomePosition(forBlock: blockPos)
+        #expect(actualBiomePos.x == expectedBiomePos.x)
+        #expect(actualBiomePos.y == expectedBiomePos.y)
+        #expect(actualBiomePos.z == expectedBiomePos.z)
+    }
+}
+
+@Test func testGenerateIntoAlsoPopulatesExactBlockBiomes() async throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw TerrainTestErrors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let generatedWorld = try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let expectedWorld = try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+
+    let chunkPos = PosInt2D(x: 2, z: -1)
+    let chunk = ProtoChunk()
+    try generatedWorld.generateInto(chunk, at: chunkPos)
+
+    let chunkStartX = chunkPos.x * Int32(ProtoChunk.sideLength)
+    let chunkStartZ = chunkPos.z * Int32(ProtoChunk.sideLength)
+    let sampledSectionStarts = [
+        0,
+        max(0, Int(chunk.height / 2) - ProtoChunk.sectionHeight / 2),
+        Int(chunk.height) - ProtoChunk.sectionHeight,
+    ]
+
+    for sectionStart in sampledSectionStarts {
+        for localY in sectionStart..<(sectionStart + ProtoChunk.sectionHeight) {
+            let worldY = chunk.minY + Int32(localY)
+            for localZ in 0..<ProtoChunk.sideLength {
+                let worldZ = chunkStartZ + Int32(localZ)
+                for localX in 0..<ProtoChunk.sideLength {
+                    let worldX = chunkStartX + Int32(localX)
+                    let expectedBiome = try expectedWorld.sampleBlockBiome(
+                        at: PosInt3D(x: worldX, y: worldY, z: worldZ),
+                        in: RegistryKey(referencing: "minecraft:overworld")
+                    )
+                    let actualBiome = chunk.biome(
+                        atLocal: PosInt3D(x: Int32(localX), y: Int32(localY), z: Int32(localZ))
+                    )
+                    #expect(actualBiome == expectedBiome)
+                }
+            }
+        }
+    }
+}
+
+@Test func benchmarkVanillaTerrainChunkGenerationProfiled() async throws {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
 
     let warmupChunk = ProtoChunk()
     try worldGenerator.generateInto(warmupChunk, at: PosInt2D(x: 0, z: 0))
@@ -541,7 +616,7 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     let end = DispatchTime.now().uptimeNanoseconds
 
     print(
-        "benchmarkVanillaTerrainChunkGeneration:",
+        "benchmarkVanillaTerrainChunkGenerationProfiled:",
         "64 chunks in",
         end - start,
         "ns",
@@ -550,4 +625,41 @@ private final class LockedOptional<Value>: @unchecked Sendable {
 
     let profiledChunk = ProtoChunk()
     try worldGenerator.generateInto(profiledChunk, at: PosInt2D(x: 0, z: 0), benchmark: true)
+}
+
+@Test func benchmarkVanillaTerrainChunkGenerationUnprofiled() async throws {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
+
+    let warmupChunk = ProtoChunk()
+    try worldGenerator.generateInto(warmupChunk, at: PosInt2D(x: 0, z: 0))
+
+    let chunk = ProtoChunk()
+    let start = DispatchTime.now().uptimeNanoseconds
+    try worldGenerator.generateInto(chunk, at: PosInt2D(x: 0, z: 0))
+    let end = DispatchTime.now().uptimeNanoseconds
+
+    print(
+        "benchmarkVanillaTerrainChunkGenerationUnprofiled:",
+        "1 chunk in",
+        end - start,
+        "ns",
+        "(\((end - start) / 1_000_000)ms)"
+    )
+}
+
+private func makeVanillaTerrainBenchmarkWorldGenerator() throws -> WorldGenerator {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw TerrainTestErrors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    return try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
 }

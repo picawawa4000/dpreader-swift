@@ -380,6 +380,160 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
     return biome * 4
 }
 
+private struct VoronoiBiomeSubsampler {
+    private static let roundConstants: [UInt32] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]
+    private static let initialState: [UInt32] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ]
+    private static let stepMultiplier: UInt64 = 6_364_136_223_846_793_005
+    private static let stepIncrement: UInt64 = 1_442_695_040_888_963_407
+
+    let seedHash: UInt64
+
+    init(worldSeed: WorldSeed) {
+        self.seedHash = Self.makeSeedHash(worldSeed)
+    }
+
+    @inline(__always)
+    func biomePosition(forBlock pos: PosInt3D) -> PosInt3D {
+        let x = pos.x &- 2
+        let y = pos.y &- 2
+        let z = pos.z &- 2
+        let pX = x >> 2
+        let pY = y >> 2
+        let pZ = z >> 2
+        let dx = (x & 3) * 10_240
+        let dy = (y & 3) * 10_240
+        let dz = (z & 3) * 10_240
+        var bestX: Int32 = 0
+        var bestY: Int32 = 0
+        var bestZ: Int32 = 0
+        var bestDistance = UInt64.max
+
+        for index in 0..<8 {
+            let bx: Int32 = (index & 4) == 0 ? 0 : 1
+            let by: Int32 = (index & 2) == 0 ? 0 : 1
+            let bz: Int32 = (index & 1) == 0 ? 0 : 1
+            let cellX = pX &+ bx
+            let cellY = pY &+ by
+            let cellZ = pZ &+ bz
+            let cellOffset = self.cellOffset(at: PosInt3D(x: cellX, y: cellY, z: cellZ))
+            let rx = Int64(cellOffset.x &+ dx &- 40_960 &* bx)
+            let ry = Int64(cellOffset.y &+ dy &- 40_960 &* by)
+            let rz = Int64(cellOffset.z &+ dz &- 40_960 &* bz)
+            let distance = UInt64(rx &* rx) &+ UInt64(ry &* ry) &+ UInt64(rz &* rz)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestX = cellX
+                bestY = cellY
+                bestZ = cellZ
+            }
+        }
+
+        return PosInt3D(x: bestX, y: bestY, z: bestZ)
+    }
+
+    @inline(__always)
+    private func cellOffset(at pos: PosInt3D) -> PosInt3D {
+        var seed = self.seedHash
+        seed = Self.stepSeed(seed, salt: Self.salt(pos.x))
+        seed = Self.stepSeed(seed, salt: Self.salt(pos.y))
+        seed = Self.stepSeed(seed, salt: Self.salt(pos.z))
+        seed = Self.stepSeed(seed, salt: Self.salt(pos.x))
+        seed = Self.stepSeed(seed, salt: Self.salt(pos.y))
+        seed = Self.stepSeed(seed, salt: Self.salt(pos.z))
+
+        let x = (Int32((seed >> 24) & 1023) &- 512) &* 36
+        seed = Self.stepSeed(seed, salt: self.seedHash)
+        let y = (Int32((seed >> 24) & 1023) &- 512) &* 36
+        seed = Self.stepSeed(seed, salt: self.seedHash)
+        let z = (Int32((seed >> 24) & 1023) &- 512) &* 36
+        return PosInt3D(x: x, y: y, z: z)
+    }
+
+    @inline(__always)
+    private static func salt(_ value: Int32) -> UInt64 {
+        return UInt64(bitPattern: Int64(value))
+    }
+
+    @inline(__always)
+    private static func stepSeed(_ seed: UInt64, salt: UInt64) -> UInt64 {
+        return seed &* (seed &* Self.stepMultiplier &+ Self.stepIncrement) &+ salt
+    }
+
+    private static func makeSeedHash(_ seed: WorldSeed) -> UInt64 {
+        var message = [UInt32](repeating: 0, count: 64)
+        message[0] = UInt32(truncatingIfNeeded: seed).byteSwapped
+        message[1] = UInt32(truncatingIfNeeded: seed >> 32).byteSwapped
+        message[2] = 0x80000000
+        message[15] = 0x00000040
+
+        for index in 16..<64 {
+            let s0 = Self.rotateRight(message[index - 15], by: 7)
+                ^ Self.rotateRight(message[index - 15], by: 18)
+                ^ (message[index - 15] >> 3)
+            let s1 = Self.rotateRight(message[index - 2], by: 17)
+                ^ Self.rotateRight(message[index - 2], by: 19)
+                ^ (message[index - 2] >> 10)
+            message[index] = message[index - 7] &+ message[index - 16] &+ s0 &+ s1
+        }
+
+        var a0 = Self.initialState[0]
+        var a1 = Self.initialState[1]
+        var a2 = Self.initialState[2]
+        var a3 = Self.initialState[3]
+        var a4 = Self.initialState[4]
+        var a5 = Self.initialState[5]
+        var a6 = Self.initialState[6]
+        var a7 = Self.initialState[7]
+
+        for index in 0..<64 {
+            var temp1 = a7 &+ Self.roundConstants[index] &+ message[index]
+            temp1 &+= Self.rotateRight(a4, by: 6) ^ Self.rotateRight(a4, by: 11) ^ Self.rotateRight(a4, by: 25)
+            temp1 &+= (a4 & a5) ^ (~a4 & a6)
+
+            var temp2 = Self.rotateRight(a0, by: 2) ^ Self.rotateRight(a0, by: 13) ^ Self.rotateRight(a0, by: 22)
+            temp2 &+= (a0 & a1) ^ (a0 & a2) ^ (a1 & a2)
+
+            a7 = a6
+            a6 = a5
+            a5 = a4
+            a4 = a3 &+ temp1
+            a3 = a2
+            a2 = a1
+            a1 = a0
+            a0 = temp1 &+ temp2
+        }
+
+        a0 &+= Self.initialState[0]
+        a1 &+= Self.initialState[1]
+        return UInt64(a0.byteSwapped) | (UInt64(a1.byteSwapped) << 32)
+    }
+
+    @inline(__always)
+    private static func rotateRight(_ value: UInt32, by bits: UInt32) -> UInt32 {
+        return (value >> bits) | (value << (32 &- bits))
+    }
+}
+
 struct ChunkSamplingBounds {
     let minX: Int32
     let maxXExclusive: Int32
@@ -792,6 +946,8 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
+/// Stores one 16x16x16 chunk section of terrain, exact block-biome data, and quart-biome data.
+/// Not concurrency-safe; callers must synchronize concurrent reads and writes.
 public final class ProtoChunkSection {
     public static let sideLength = 16
     public static let blockCount = sideLength * sideLength * sideLength
@@ -800,21 +956,29 @@ public final class ProtoChunkSection {
     public static let biomeCount = biomeSideLength * biomeSideLength * biomeSideLength
 
     private var terrainBitmap = [UInt64](repeating: 0, count: bitmapWordCount)
-    private var biomes = [RegistryKey<Biome>?](repeating: nil, count: biomeCount)
+    private var blockBiomes = [RegistryKey<Biome>?](repeating: nil, count: blockCount)
+    private var quartBiomes = [RegistryKey<Biome>?](repeating: nil, count: biomeCount)
 
+    /// Creates an empty section with no terrain bits and no assigned biomes.
+    /// Not concurrency-safe.
     public init() {}
 
+    /// Returns the section terrain bitmap in local block order.
+    /// Not concurrency-safe.
     public var bitmap: [UInt64] {
         return self.terrainBitmap
     }
 
+    /// Returns the quart-biome palette for this section.
+    /// Not concurrency-safe.
     public var biomePalette: [RegistryKey<Biome>?] {
-        return self.biomes
+        return self.quartBiomes
     }
 
     func clear() {
         self.terrainBitmap = [UInt64](repeating: 0, count: Self.bitmapWordCount)
-        self.biomes = [RegistryKey<Biome>?](repeating: nil, count: Self.biomeCount)
+        self.blockBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.blockCount)
+        self.quartBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.biomeCount)
     }
 
     @inline(__always) func setTerrainUnchecked(_ isSolid: Bool, blockIndex: Int) {
@@ -856,7 +1020,29 @@ public final class ProtoChunkSection {
     }
 
     @inline(__always) func setBiomeUnchecked(_ biome: RegistryKey<Biome>, biomeIndex: Int) {
-        self.biomes[biomeIndex] = biome
+        self.quartBiomes[biomeIndex] = biome
+    }
+
+    @inline(__always) func setBiomeUnchecked(_ biome: RegistryKey<Biome>, blockIndex: Int) {
+        self.blockBiomes[blockIndex] = biome
+    }
+
+    @inline(__always) func setBiome(_ biome: RegistryKey<Biome>, at pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(Self.sideLength), "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z biome position out of range")
+
+        let blockIndex = (Int(pos.y) << 8) | (Int(pos.z) << 4) | Int(pos.x)
+        self.blockBiomes[blockIndex] = biome
+    }
+
+    @inline(__always) func biome(at pos: PosInt3D) -> RegistryKey<Biome>? {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < Int32(Self.sideLength), "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z biome position out of range")
+
+        let blockIndex = (Int(pos.y) << 8) | (Int(pos.z) << 4) | Int(pos.x)
+        return self.blockBiomes[blockIndex]
     }
 
     @inline(__always) func setBiome(_ biome: RegistryKey<Biome>, atBiome pos: PosInt3D) {
@@ -865,7 +1051,7 @@ public final class ProtoChunkSection {
         precondition(pos.z >= 0 && pos.z < Int32(Self.biomeSideLength), "z biome position out of range")
 
         let biomeIndex = (Int(pos.y) << 4) | (Int(pos.z) << 2) | Int(pos.x)
-        self.biomes[biomeIndex] = biome
+        self.quartBiomes[biomeIndex] = biome
     }
 
     @inline(__always) func biome(atBiome pos: PosInt3D) -> RegistryKey<Biome>? {
@@ -874,11 +1060,12 @@ public final class ProtoChunkSection {
         precondition(pos.z >= 0 && pos.z < Int32(Self.biomeSideLength), "z biome position out of range")
 
         let biomeIndex = (Int(pos.y) << 4) | (Int(pos.z) << 2) | Int(pos.x)
-        return self.biomes[biomeIndex]
+        return self.quartBiomes[biomeIndex]
     }
 }
 
-/// A chunk implementation for world generation that stores terrain in 16x16x16 sections.
+/// A chunk implementation for world generation that stores terrain, exact block biomes, and quart biomes in 16x16x16 sections.
+/// Not concurrency-safe; callers must synchronize access when mutating or reading the same instance from multiple threads.
 public final class ProtoChunk {
     public static let sideLength = 16
     public static let sectionHeight = 16
@@ -889,17 +1076,31 @@ public final class ProtoChunk {
     public private(set) var height: Int32 = 0
     private var sections: [ProtoChunkSection] = []
 
+    /// Creates an empty proto-chunk with no configured vertical range.
+    /// Not concurrency-safe.
     public init() {}
 
+    /// Returns the number of configured sections in the chunk.
+    /// Not concurrency-safe.
     public var sectionCount: Int {
         return self.sections.count
     }
 
+    /// Returns the section at the requested index if it exists.
+    /// Not concurrency-safe.
+    /// - Parameter index: The zero-based section index.
+    /// - Returns: The section at `index`, or `nil` if the index is out of bounds.
     public func section(at index: Int) -> ProtoChunkSection? {
         guard index >= 0 && index < self.sections.count else { return nil }
         return self.sections[index]
     }
 
+    /// Configures the vertical bounds and allocates backing sections for this chunk.
+    /// Not concurrency-safe.
+    /// - Parameters:
+    ///   - minY: The minimum block Y stored by the chunk.
+    ///   - height: The total chunk height in blocks. Must be positive and divisible by `sectionHeight`.
+    /// - Throws: `WorldGenerationErrors.invalidProtoChunkHeight` if `height` is not section-aligned.
     public func configure(minY: Int32, height: Int32) throws {
         guard height > 0 && height % Int32(Self.sectionHeight) == 0 else {
             throw WorldGenerationErrors.invalidProtoChunkHeight(Int(height))
@@ -910,16 +1111,25 @@ public final class ProtoChunk {
         self.sections = (0..<Int(height / Int32(Self.sectionHeight))).map { _ in ProtoChunkSection() }
     }
 
+    /// Clears all terrain and biome data currently stored in the chunk.
+    /// Not concurrency-safe.
     public func clearTerrain() {
         for section in self.sections {
             section.clear()
         }
     }
 
+    /// Returns the configured biome height in quart units.
+    /// Not concurrency-safe.
     public var biomeHeight: Int {
         return Int(self.height) / Self.biomeScale
     }
 
+    /// Sets one local block position in the chunk terrain bitmap.
+    /// Not concurrency-safe.
+    /// - Parameters:
+    ///   - isSolid: Whether the block should be marked solid.
+    ///   - pos: The block position in chunk-local coordinates.
     @inline(__always) public func setTerrain(_ isSolid: Bool, atLocal pos: PosInt3D) {
         precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
         precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
@@ -942,6 +1152,30 @@ public final class ProtoChunk {
         self.sections[sectionIndex].setBiomeUnchecked(biome, biomeIndex: biomeIndex)
     }
 
+    @inline(__always) func setBiomeUnchecked(_ biome: RegistryKey<Biome>, sectionIndex: Int, blockIndex: Int) {
+        self.sections[sectionIndex].setBiomeUnchecked(biome, blockIndex: blockIndex)
+    }
+
+    /// Sets one local block-biome position in the chunk biome map.
+    /// Not concurrency-safe.
+    /// - Parameters:
+    ///   - biome: The biome key to store.
+    ///   - pos: The biome position in chunk-local block coordinates.
+    @inline(__always) public func setBiome(_ biome: RegistryKey<Biome>, atLocal pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < self.height, "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z biome position out of range")
+
+        let sectionIndex = Int(pos.y) >> 4
+        let localY = pos.y & 15
+        self.sections[sectionIndex].setBiome(biome, at: PosInt3D(x: pos.x, y: localY, z: pos.z))
+    }
+
+    /// Sets one local quart-biome position in the chunk biome palette.
+    /// Not concurrency-safe.
+    /// - Parameters:
+    ///   - biome: The biome key to store.
+    ///   - pos: The biome position in chunk-local quart coordinates.
     @inline(__always) public func setBiome(_ biome: RegistryKey<Biome>, atBiomeLocal pos: PosInt3D) {
         precondition(pos.x >= 0 && pos.x < Int32(Self.biomeSideLength), "x biome position out of range")
         precondition(pos.y >= 0 && pos.y < Int32(self.biomeHeight), "y biome position out of range")
@@ -952,6 +1186,10 @@ public final class ProtoChunk {
         self.sections[sectionIndex].setBiome(biome, atBiome: PosInt3D(x: pos.x, y: localY, z: pos.z))
     }
 
+    /// Returns the biome stored at one local quart-biome position.
+    /// Not concurrency-safe.
+    /// - Parameter pos: The biome position in chunk-local quart coordinates.
+    /// - Returns: The stored biome key, or `nil` if the position has not been assigned.
     @inline(__always) public func biome(atBiomeLocal pos: PosInt3D) -> RegistryKey<Biome>? {
         precondition(pos.x >= 0 && pos.x < Int32(Self.biomeSideLength), "x biome position out of range")
         precondition(pos.y >= 0 && pos.y < Int32(self.biomeHeight), "y biome position out of range")
@@ -962,6 +1200,24 @@ public final class ProtoChunk {
         return self.sections[sectionIndex].biome(atBiome: PosInt3D(x: pos.x, y: localY, z: pos.z))
     }
 
+    /// Returns the exact biome stored at one local block position.
+    /// Not concurrency-safe.
+    /// - Parameter pos: The biome position in chunk-local block coordinates.
+    /// - Returns: The stored biome key, or `nil` if the position has not been assigned.
+    @inline(__always) public func biome(atLocal pos: PosInt3D) -> RegistryKey<Biome>? {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x biome position out of range")
+        precondition(pos.y >= 0 && pos.y < self.height, "y biome position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z biome position out of range")
+
+        let sectionIndex = Int(pos.y) >> 4
+        let localY = pos.y & 15
+        return self.sections[sectionIndex].biome(at: PosInt3D(x: pos.x, y: localY, z: pos.z))
+    }
+
+    /// Returns whether the chunk stores solid terrain at one local block position.
+    /// Not concurrency-safe.
+    /// - Parameter pos: The block position in chunk-local coordinates.
+    /// - Returns: `true` if the block is marked solid.
     @inline(__always) public func isTerrain(atLocal pos: PosInt3D) -> Bool {
         precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
         precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
@@ -982,22 +1238,43 @@ private struct ChunkBiomeDensityFunctions {
     let depth: any DensityFunction
 }
 
+private struct BiomeLatticePosition: Hashable {
+    let x: Int32
+    let y: Int32
+    let z: Int32
+
+    init(_ pos: PosInt3D) {
+        self.x = pos.x
+        self.y = pos.y
+        self.z = pos.z
+    }
+
+    @inline(__always) var blockPosition: PosInt3D {
+        return PosInt3D(x: blockCoord(fromBiome: self.x), y: blockCoord(fromBiome: self.y), z: blockCoord(fromBiome: self.z))
+    }
+}
+
 private struct BiomeGenerationProfile {
     var loopNanos: UInt64 = 0
+    var voronoiNanos: UInt64 = 0
     var noiseSamplingNanos: UInt64 = 0
     var treeLookupNanos: UInt64 = 0
-    var chunkWriteNanos: UInt64 = 0
+    var quartWriteNanos: UInt64 = 0
+    var blockWriteNanos: UInt64 = 0
     var temperatureNanos: UInt64 = 0
     var humidityNanos: UInt64 = 0
     var continentalnessNanos: UInt64 = 0
     var erosionNanos: UInt64 = 0
     var weirdnessNanos: UInt64 = 0
     var depthNanos: UInt64 = 0
-    var sampleCount: Int = 0
+    var quartSampleCount: Int = 0
+    var blockSampleCount: Int = 0
+    var cacheHitCount: Int = 0
+    var cacheMissCount: Int = 0
     var skipped = false
 
     var exclusiveLoopNanos: UInt64 {
-        let measured = self.noiseSamplingNanos &+ self.treeLookupNanos &+ self.chunkWriteNanos
+        let measured = self.voronoiNanos &+ self.noiseSamplingNanos &+ self.treeLookupNanos &+ self.quartWriteNanos &+ self.blockWriteNanos
         return self.loopNanos >= measured ? self.loopNanos &- measured : 0
     }
 
@@ -1007,12 +1284,14 @@ private struct BiomeGenerationProfile {
         }
 
         return
-            "biome loop excl sample/tree/write \(self.exclusiveLoopNanos)ns (\(self.exclusiveLoopNanos / 1_000_000)ms); " +
+            "biome loop excl voronoi/sample/tree/write \(self.exclusiveLoopNanos)ns (\(self.exclusiveLoopNanos / 1_000_000)ms); " +
+            "biome voronoi \(self.voronoiNanos)ns (\(self.voronoiNanos / 1_000_000)ms); " +
             "biome noise \(self.noiseSamplingNanos)ns (\(self.noiseSamplingNanos / 1_000_000)ms); " +
             "biome tree \(self.treeLookupNanos)ns (\(self.treeLookupNanos / 1_000_000)ms); " +
-            "biome writes \(self.chunkWriteNanos)ns (\(self.chunkWriteNanos / 1_000_000)ms); " +
+            "biome quart writes \(self.quartWriteNanos)ns (\(self.quartWriteNanos / 1_000_000)ms); " +
+            "biome block writes \(self.blockWriteNanos)ns (\(self.blockWriteNanos / 1_000_000)ms); " +
             "biome total \(self.loopNanos)ns (\(self.loopNanos / 1_000_000)ms); " +
-            "samples \(self.sampleCount)"
+            "quart samples \(self.quartSampleCount); block samples \(self.blockSampleCount); climate samples \(self.cacheMissCount); cache hits \(self.cacheHitCount)"
     }
 
     var densityDescription: String {
@@ -1029,6 +1308,7 @@ private struct BiomeGenerationProfile {
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
+    private let biomeSubsampler: VoronoiBiomeSubsampler
     private var config: NoiseSettings?
     private let configuredSettingsKeyName: String?
     private var configuredDimensionKey: RegistryKey<Dimension>?
@@ -1048,6 +1328,7 @@ public final class WorldGenerator {
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
     public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>? = nil, buildSearchTrees: Bool = true) throws {
         self.worldSeed = seed
+        self.biomeSubsampler = VoronoiBiomeSubsampler(worldSeed: seed)
         self.configuredSettingsKeyName = configKey?.name
         var random = XoroshiroRandom(seed: seed)
         let low = random.nextLong()
@@ -1188,7 +1469,60 @@ public final class WorldGenerator {
         let quartZs = [chunkStartZ, chunkStartZ + 4, chunkStartZ + 8, chunkStartZ + 12]
         let biomeHeight = chunk.biomeHeight
         let lookupState = searchTree.makeReusableLookupState()
+        var sampledBiomes: [BiomeLatticePosition: RegistryKey<Biome>] = [:]
+        sampledBiomes.reserveCapacity((ProtoChunk.biomeSideLength + 2) * (ProtoChunk.biomeSideLength + 2) * (biomeHeight + 2))
         var profile = BiomeGenerationProfile()
+
+        @inline(__always)
+        func cachedBiome(at latticePos: BiomeLatticePosition) -> RegistryKey<Biome> {
+            if let cached = sampledBiomes[latticePos] {
+                if timingsEnabled {
+                    profile.cacheHitCount += 1
+                }
+                return cached
+            }
+
+            let pos = latticePos.blockPosition
+            let temperatureStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let temperature = functions.temperature.sample(at: pos)
+            let temperatureEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let humidity = functions.humidity.sample(at: pos)
+            let humidityEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let continentalness = functions.continentalness.sample(at: pos)
+            let continentalnessEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let erosion = functions.erosion.sample(at: pos)
+            let erosionEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let weirdness = functions.weirdness.sample(at: pos)
+            let weirdnessEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let depth = functions.depth.sample(at: pos)
+            let depthEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            if timingsEnabled {
+                profile.temperatureNanos &+= temperatureEnd - temperatureStart
+                profile.humidityNanos &+= humidityEnd - temperatureEnd
+                profile.continentalnessNanos &+= continentalnessEnd - humidityEnd
+                profile.erosionNanos &+= erosionEnd - continentalnessEnd
+                profile.weirdnessNanos &+= weirdnessEnd - erosionEnd
+                profile.depthNanos &+= depthEnd - weirdnessEnd
+                profile.noiseSamplingNanos &+= depthEnd - temperatureStart
+            }
+
+            let treeStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let biome = searchTree.getUnchecked(
+                temperature: temperature,
+                humidity: humidity,
+                continentalness: continentalness,
+                erosion: erosion,
+                weirdness: weirdness,
+                depth: depth,
+                using: lookupState
+            )
+            if timingsEnabled {
+                profile.treeLookupNanos &+= DispatchTime.now().uptimeNanoseconds - treeStart
+                profile.cacheMissCount += 1
+            }
+            sampledBiomes[latticePos] = biome
+            return biome
+        }
 
         if timingsEnabled {
             let loopStart = DispatchTime.now().uptimeNanoseconds
@@ -1201,50 +1535,45 @@ public final class WorldGenerator {
                         let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
                         let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
                         let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
-                        let pos = PosInt3D(x: worldX, y: worldY, z: worldZ)
-
-                        let tTemp0 = DispatchTime.now().uptimeNanoseconds
-                        let temperature = functions.temperature.sample(at: pos)
-                        let tTemp1 = DispatchTime.now().uptimeNanoseconds
-                        let humidity = functions.humidity.sample(at: pos)
-                        let tHum1 = DispatchTime.now().uptimeNanoseconds
-                        let continentalness = functions.continentalness.sample(at: pos)
-                        let tCon1 = DispatchTime.now().uptimeNanoseconds
-                        let erosion = functions.erosion.sample(at: pos)
-                        let tEro1 = DispatchTime.now().uptimeNanoseconds
-                        let weirdness = functions.weirdness.sample(at: pos)
-                        let tWei1 = DispatchTime.now().uptimeNanoseconds
-                        let depth = functions.depth.sample(at: pos)
-                        let tDep1 = DispatchTime.now().uptimeNanoseconds
-
-                        profile.temperatureNanos &+= tTemp1 - tTemp0
-                        profile.humidityNanos &+= tHum1 - tTemp1
-                        profile.continentalnessNanos &+= tCon1 - tHum1
-                        profile.erosionNanos &+= tEro1 - tCon1
-                        profile.weirdnessNanos &+= tWei1 - tEro1
-                        profile.depthNanos &+= tDep1 - tWei1
-                        profile.noiseSamplingNanos &+= tDep1 - tTemp0
-
-                        let treeStart = DispatchTime.now().uptimeNanoseconds
-                        let biome = searchTree.getUnchecked(
-                            temperature: temperature,
-                            humidity: humidity,
-                            continentalness: continentalness,
-                            erosion: erosion,
-                            weirdness: weirdness,
-                            depth: depth,
-                            using: lookupState
+                        let latticePos = BiomeLatticePosition(
+                            PosInt3D(
+                                x: biomeCoord(fromBlock: worldX),
+                                y: biomeCoord(fromBlock: worldY),
+                                z: biomeCoord(fromBlock: worldZ)
+                            )
                         )
-                        let treeEnd = DispatchTime.now().uptimeNanoseconds
-                        profile.treeLookupNanos &+= treeEnd - treeStart
+                        let biome = cachedBiome(at: latticePos)
 
                         let writeStart = DispatchTime.now().uptimeNanoseconds
                         section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
-                        profile.chunkWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
-                        profile.sampleCount += 1
+                        profile.quartWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
+                        profile.quartSampleCount += 1
                     }
                 }
             }
+
+            for localY in 0..<Int(chunk.height) {
+                let worldY = minY + Int32(localY)
+                let section = chunk.sectionUnchecked(at: localY >> 4)
+                let blockIndexY = (localY & 15) << 8
+                for localZ in 0..<ProtoChunk.sideLength {
+                    let worldZ = chunkStartZ + Int32(localZ)
+                    let blockIndexYZ = blockIndexY | (localZ << 4)
+                    for localX in 0..<ProtoChunk.sideLength {
+                        let worldX = chunkStartX + Int32(localX)
+                        let worldPos = PosInt3D(x: worldX, y: worldY, z: worldZ)
+                        let voronoiStart = DispatchTime.now().uptimeNanoseconds
+                        let latticePos = BiomeLatticePosition(self.biomeSubsampler.biomePosition(forBlock: worldPos))
+                        profile.voronoiNanos &+= DispatchTime.now().uptimeNanoseconds - voronoiStart
+                        let biome = cachedBiome(at: latticePos)
+                        let writeStart = DispatchTime.now().uptimeNanoseconds
+                        section.setBiomeUnchecked(biome, blockIndex: blockIndexYZ | localX)
+                        profile.blockWriteNanos &+= DispatchTime.now().uptimeNanoseconds - writeStart
+                        profile.blockSampleCount += 1
+                    }
+                }
+            }
+
             profile.loopNanos = DispatchTime.now().uptimeNanoseconds - loopStart
             return profile
         }
@@ -1258,28 +1587,49 @@ public final class WorldGenerator {
                     let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
                     let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
                     let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
-                    let pos = PosInt3D(x: worldX, y: worldY, z: worldZ)
-                    let biome = searchTree.getUnchecked(
-                        temperature: functions.temperature.sample(at: pos),
-                        humidity: functions.humidity.sample(at: pos),
-                        continentalness: functions.continentalness.sample(at: pos),
-                        erosion: functions.erosion.sample(at: pos),
-                        weirdness: functions.weirdness.sample(at: pos),
-                        depth: functions.depth.sample(at: pos),
-                        using: lookupState
+                    let latticePos = BiomeLatticePosition(
+                        PosInt3D(
+                            x: biomeCoord(fromBlock: worldX),
+                            y: biomeCoord(fromBlock: worldY),
+                            z: biomeCoord(fromBlock: worldZ)
+                        )
                     )
+                    let biome = cachedBiome(at: latticePos)
                     section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
                 }
             }
         }
 
-        profile.sampleCount = ProtoChunk.biomeSideLength * ProtoChunk.biomeSideLength * biomeHeight
+        for localY in 0..<Int(chunk.height) {
+            let worldY = minY + Int32(localY)
+            let section = chunk.sectionUnchecked(at: localY >> 4)
+            let blockIndexY = (localY & 15) << 8
+            for localZ in 0..<ProtoChunk.sideLength {
+                let worldZ = chunkStartZ + Int32(localZ)
+                let blockIndexYZ = blockIndexY | (localZ << 4)
+                for localX in 0..<ProtoChunk.sideLength {
+                    let worldX = chunkStartX + Int32(localX)
+                    let latticePos = BiomeLatticePosition(
+                        self.biomeSubsampler.biomePosition(forBlock: PosInt3D(x: worldX, y: worldY, z: worldZ))
+                    )
+                    let biome = cachedBiome(at: latticePos)
+                    section.setBiomeUnchecked(biome, blockIndex: blockIndexYZ | localX)
+                }
+            }
+        }
+
+        profile.quartSampleCount = ProtoChunk.biomeSideLength * ProtoChunk.biomeSideLength * biomeHeight
+        profile.blockSampleCount = ProtoChunk.sideLength * ProtoChunk.sideLength * Int(chunk.height)
         return profile
     }
 
+    /// Samples the configured climate noise router at a world position.
+    /// Not concurrency-safe; the baked world-scale cache wrappers used here are mutable and require external synchronization.
+    /// - Parameter pos: The world position to sample.
+    /// - Returns: The sampled climate point, or a zeroed point if no noise settings are configured.
     public func sampleNoisePoint(at pos: PosInt3D) -> NoisePoint {
         if self.config == nil {
-            print("WARNING: WorldGenerator.sampleNoisePoint(at:) called with no noise settings!")
+            assertionFailure("WorldGenerator.sampleNoisePoint(at:) called without configured noise settings")
             return NoisePoint(temperature: 0, humidity: 0, continentalness: 0, erosion: 0, weirdness: 0, depth: 0)
         }
         return NoisePoint(
@@ -1292,16 +1642,41 @@ public final class WorldGenerator {
         )
     }
 
+    /// Samples the biome selected by the configured biome search tree at a world position.
+    /// Not concurrency-safe; this method delegates to `sampleNoisePoint(at:)` and shares its cache-mutation behavior.
+    /// - Parameters:
+    ///   - pos: The world position to sample.
+    ///   - dim: The dimension whose biome search tree should be used.
+    /// - Throws: Any error thrown by biome search tree lookup.
+    /// - Returns: The selected biome key, or `nil` if no search tree is configured for `dim`.
     public func sampleBiome(at pos: PosInt3D, in dim: RegistryKey<Dimension>) throws -> RegistryKey<Biome>? {
         let point = self.sampleNoisePoint(at: pos)
         guard let searchTree = self.searchTrees[dim] else {
-            print("WARNING: No search tree for requested biome \(dim.name)!")
+            assertionFailure("WorldGenerator.sampleBiome(at:in:) called without a search tree for \(dim.name)")
             return nil
         }
         return try searchTree.get(point)
     }
 
-    /// Generates the biomes in a square.
+    /// Samples the final block biome selected after vanilla Voronoi subsampling at a world position.
+    /// Not concurrency-safe; this method delegates to `sampleNoisePoint(at:)` and shares its cache-mutation behavior.
+    /// - Parameters:
+    ///   - pos: The world block position to sample.
+    ///   - dim: The dimension whose biome search tree should be used.
+    /// - Throws: Any error thrown by biome search tree lookup.
+    /// - Returns: The final biome key at `pos`, or `nil` if no search tree is configured for `dim`.
+    public func sampleBlockBiome(at pos: PosInt3D, in dim: RegistryKey<Dimension>) throws -> RegistryKey<Biome>? {
+        let biomePos = self.biomeSubsampler.biomePosition(forBlock: pos)
+        let climatePos = PosInt3D(
+            x: blockCoord(fromBiome: biomePos.x),
+            y: blockCoord(fromBiome: biomePos.y),
+            z: blockCoord(fromBiome: biomePos.z)
+        )
+        return try self.sampleBiome(at: climatePos, in: dim)
+    }
+
+    /// Generates biomes in a rectangular area.
+    /// Not concurrency-safe; this method may use mutable cache wrappers during sampling.
     /// - Parameters:
     ///   - fromPos: The starting position; inclusive.
     ///   - toPos: The ending position; exclusive.
@@ -1310,6 +1685,7 @@ public final class WorldGenerator {
     ///   - scale: Subsampling factor (e.g. stride; 4 means 1:4 scale). Must be > 0.
     ///   - forceNoBaking: Whether to force the function to not bake the caches, irrespective of generation size.
     ///     For debugging only (will usually lead to poorly-optimised results).
+    ///   - timingsEnabled: Enables diagnostic timing output. For debugging and benchmarking only.
     /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.
     /// - Returns: An X-major array of biomes (indexed by [Z*(to.x-from.x)+X]).
     public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, scale: Int32 = 4, forceNoBaking: Bool = false, benchmark timingsEnabled: Bool = false) throws -> [RegistryKey<Biome>]? {
@@ -1352,6 +1728,7 @@ public final class WorldGenerator {
 
         let timingNoiseRouter = timingsEnabled ? self.config?.noiseRouter : nil
         let directNoiseRouter = self.config?.noiseRouter
+
         func samplePointWithTimings(
             at pos: PosInt3D,
             temperature: any DensityFunction,
@@ -1458,12 +1835,13 @@ public final class WorldGenerator {
                 let loopStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
                 for z in fromPos.z..<toPos.z {
                     for x in fromPos.x..<toPos.x {
+                        let pos = PosInt3D(x: x, y: y, z: z)
                         if timingsEnabled {
                             let t0 = DispatchTime.now().uptimeNanoseconds
                             let point: NoisePoint
                             if let noiseRouter = timingNoiseRouter {
                                 point = samplePointWithTimings(
-                                    at: PosInt3D(x: x, y: y, z: z),
+                                    at: pos,
                                     temperature: noiseRouter.temperature,
                                     humidity: noiseRouter.humidity,
                                     continentalness: noiseRouter.continents,
@@ -1472,7 +1850,7 @@ public final class WorldGenerator {
                                     depth: noiseRouter.depth
                                 )
                             } else {
-                                point = self.sampleNoisePoint(at: PosInt3D(x: x, y: y, z: z))
+                                point = self.sampleNoisePoint(at: pos)
                             }
                             let t1 = DispatchTime.now().uptimeNanoseconds
                             let biome = searchTree.getUnchecked(point)
@@ -1481,7 +1859,6 @@ public final class WorldGenerator {
                             treeSampleTime += t2 - t1
                             biomes.append(biome)
                         } else {
-                            let pos = PosInt3D(x: x, y: y, z: z)
                             let biome: RegistryKey<Biome>
                             if let noiseRouter = directNoiseRouter {
                                 biome = searchTree.getUnchecked(
@@ -1614,11 +1991,13 @@ public final class WorldGenerator {
         return biomes
     }
 
-    /// Generate terrain into a `ProtoChunk` at the requested chunk position.
-    /// This is the main entry point for chunk terrain sampling.
+    /// Generates terrain, exact block-biome data, and quart-biome data into a `ProtoChunk` at the requested chunk position.
+    /// Concurrency-safe for calls on the same `WorldGenerator`; generation is internally synchronized around shared mutable terrain-sampling state.
     /// - Parameters:
-    ///   - chunk: The chunk to generate into.
+    ///   - chunk: The chunk to configure and populate.
     ///   - chunkPos: The chunk position in chunk coordinates.
+    ///   - timingsEnabled: Enables diagnostic timing output. For debugging and benchmarking only.
+    /// - Throws: Any error thrown while configuring the chunk, baking density functions, or sampling terrain and biomes.
     public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D, benchmark timingsEnabled: Bool = false) throws {
         let totalStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
         self.terrainGenerationLock.lock()
@@ -1757,6 +2136,11 @@ public final class WorldGenerator {
             throw WorldGenerationErrors.noiseNotPresent(key.name)
         }
         return ret
+    }
+
+    // Currently visible for testing only.
+    func biomePosition(forBlock pos: PosInt3D) -> PosInt3D {
+        return self.biomeSubsampler.biomePosition(forBlock: pos)
     }
 
     // Currently visible for testing only.
