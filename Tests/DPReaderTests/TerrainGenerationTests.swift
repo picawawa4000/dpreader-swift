@@ -810,6 +810,57 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     }
 }
 
+@Test func testGenerateIntoExactBlockBiomeSliceMatchesCubiomesReference() async throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw TerrainTestErrors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let world = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let chunk = ProtoChunk()
+    try world.generateInto(chunk, at: PosInt2D(x: 0, z: 0))
+
+    let cubiomesNumberToKeyMap = [
+        23: RegistryKey<Biome>(referencing: "minecraft:sparse_jungle"),
+        175: RegistryKey<Biome>(referencing: "minecraft:lush_caves"),
+        184: RegistryKey<Biome>(referencing: "minecraft:mangrove_swamp"),
+    ]
+    let cubiomesSlice = [
+        23, 23, 23, 23, 23, 23, 23, 175, 175, 175, 175, 175, 175, 184, 184, 184,
+        23, 175, 175, 23, 23, 23, 23, 175, 175, 175, 175, 175, 175, 184, 184, 184,
+        175, 175, 175, 175, 23, 23, 175, 175, 175, 175, 175, 175, 175, 184, 184, 184,
+        175, 175, 175, 175, 23, 175, 175, 175, 175, 175, 175, 175, 175, 184, 184, 184,
+        175, 175, 175, 175, 175, 175, 175, 175, 175, 175, 175, 175, 175, 184, 184, 184,
+        175, 175, 23, 175, 175, 175, 175, 175, 175, 175, 175, 175, 175, 184, 184, 184,
+        175, 23, 23, 175, 175, 175, 23, 23, 23, 175, 175, 175, 175, 184, 184, 184,
+        175, 23, 23, 175, 175, 175, 23, 23, 23, 175, 175, 175, 175, 184, 184, 184,
+        175, 23, 175, 175, 175, 175, 23, 23, 23, 23, 175, 175, 175, 184, 184, 184,
+        23, 23, 23, 23, 175, 175, 175, 23, 23, 184, 184, 184, 184, 184, 184, 184,
+        23, 23, 23, 23, 175, 175, 175, 175, 184, 184, 184, 184, 184, 184, 184, 184,
+        23, 23, 23, 23, 175, 175, 175, 175, 175, 184, 184, 184, 175, 175, 175, 175,
+        175, 23, 23, 175, 175, 175, 175, 175, 175, 175, 184, 184, 184, 175, 175, 175,
+        23, 175, 175, 184, 184, 184, 184, 175, 175, 184, 184, 184, 184, 175, 175, 175,
+        23, 23, 175, 184, 184, 184, 184, 175, 175, 184, 184, 184, 184, 184, 175, 175,
+        23, 23, 23, 184, 184, 184, 184, 175, 175, 184, 184, 184, 184, 184, 184, 175,
+    ]
+
+    for localZ in 0..<ProtoChunk.sideLength {
+        for localX in 0..<ProtoChunk.sideLength {
+            let expected = cubiomesNumberToKeyMap[cubiomesSlice[localZ * ProtoChunk.sideLength + localX]]!
+            let actual = chunk.biome(atLocal: PosInt3D(x: Int32(localX), y: 64, z: Int32(localZ)))
+            #expect(actual == .some(expected), "Mismatch at local (\(localX), 64, \(localZ)): expected \(expected.name), got \(actual?.name ?? "nil")")
+        }
+    }
+}
+
 @Test func benchmarkVanillaTerrainChunkGenerationProfiled() async throws {
     let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
 

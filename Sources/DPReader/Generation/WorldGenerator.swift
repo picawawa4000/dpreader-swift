@@ -421,51 +421,6 @@ private struct VoronoiBiomeSubsampler {
     private static let stepMultiplier: UInt64 = 6_364_136_223_846_793_005
     private static let stepIncrement: UInt64 = 1_442_695_040_888_963_407
 
-    let seedHash: UInt64
-
-    init(worldSeed: WorldSeed) {
-        self.seedHash = Self.makeSeedHash(worldSeed)
-    }
-
-    @inline(__always)
-    func biomePosition(forBlock pos: PosInt3D) -> PosInt3D {
-        let x = pos.x &- 2
-        let y = pos.y &- 2
-        let z = pos.z &- 2
-        let pX = x >> 2
-        let pY = y >> 2
-        let pZ = z >> 2
-        let dx = (x & 3) * 10_240
-        let dy = (y & 3) * 10_240
-        let dz = (z & 3) * 10_240
-        var bestX: Int32 = 0
-        var bestY: Int32 = 0
-        var bestZ: Int32 = 0
-        var bestDistance = UInt64.max
-
-        for index in 0..<8 {
-            let bx: Int32 = (index & 4) == 0 ? 0 : 1
-            let by: Int32 = (index & 2) == 0 ? 0 : 1
-            let bz: Int32 = (index & 1) == 0 ? 0 : 1
-            let cellX = pX &+ bx
-            let cellY = pY &+ by
-            let cellZ = pZ &+ bz
-            let cellOffset = self.cellOffset(at: PosInt3D(x: cellX, y: cellY, z: cellZ))
-            let rx = Int64(cellOffset.x &+ dx &- 40_960 &* bx)
-            let ry = Int64(cellOffset.y &+ dy &- 40_960 &* by)
-            let rz = Int64(cellOffset.z &+ dz &- 40_960 &* bz)
-            let distance = UInt64(rx &* rx) &+ UInt64(ry &* ry) &+ UInt64(rz &* rz)
-            if distance < bestDistance {
-                bestDistance = distance
-                bestX = cellX
-                bestY = cellY
-                bestZ = cellZ
-            }
-        }
-
-        return PosInt3D(x: bestX, y: bestY, z: bestZ)
-    }
-
     func sectionAxisData(chunkStartX: Int32, chunkStartZ: Int32) -> VoronoiSectionAxisData {
         var pxs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         var pzs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
@@ -500,6 +455,8 @@ private struct VoronoiBiomeSubsampler {
             pzs: pzs,
             dxs: dxs,
             dzs: dzs,
+            xRuns: voronoiAxisRuns(from: pxs),
+            zRuns: voronoiAxisRuns(from: pzs),
             minPX: minPX,
             maxPX: maxPX,
             minPZ: minPZ,
@@ -510,6 +467,7 @@ private struct VoronoiBiomeSubsampler {
     func sectionBiomeLatticeMap(
         axisData: VoronoiSectionAxisData,
         sectionStartY: Int32,
+        voronoiSHA: UInt64
     ) -> SectionBiomeLatticeMap {
         var pys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         var dys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
@@ -524,10 +482,14 @@ private struct VoronoiBiomeSubsampler {
             minPY = min(minPY, pY)
             maxPY = max(maxPY, pY)
         }
+        let yRuns = voronoiAxisRuns(from: pys)
         let offsetCountX = Int(axisData.maxPX - axisData.minPX + 2)
         let offsetCountY = Int(maxPY - minPY + 2)
         let offsetCountZ = Int(axisData.maxPZ - axisData.minPZ + 2)
-        var offsets = [PosInt3D](repeating: PosInt3D(x: 0, y: 0, z: 0), count: offsetCountX * offsetCountY * offsetCountZ)
+        let offsetCount = offsetCountX * offsetCountY * offsetCountZ
+        var offsetXs = [Int32](repeating: 0, count: offsetCount)
+        var offsetYs = [Int32](repeating: 0, count: offsetCount)
+        var offsetZs = [Int32](repeating: 0, count: offsetCount)
         var uniqueIndicesByCell = [Int16](repeating: -1, count: offsetCountX * offsetCountY * offsetCountZ)
 
         @inline(__always)
@@ -541,7 +503,11 @@ private struct VoronoiBiomeSubsampler {
                 let cellZ = axisData.minPZ &+ Int32(offsetZ)
                 for offsetX in 0..<offsetCountX {
                     let cellX = axisData.minPX &+ Int32(offsetX)
-                    offsets[offsetIndex(offsetX, offsetY, offsetZ)] = self.cellOffset(at: PosInt3D(x: cellX, y: cellY, z: cellZ))
+                    let index = offsetIndex(offsetX, offsetY, offsetZ)
+                    let offset = Self.getVoronoiCell(voronoiSHA, cellX, cellY, cellZ)
+                    offsetXs[index] = offset.x
+                    offsetYs[index] = offset.y
+                    offsetZs[index] = offset.z
                 }
             }
         }
@@ -549,61 +515,88 @@ private struct VoronoiBiomeSubsampler {
         var uniquePositions: [BiomeLatticePosition] = []
         uniquePositions.reserveCapacity(1024)
         var blockToUniqueIndex = [UInt16](repeating: 0, count: ProtoChunkSection.blockCount)
-        for localY in 0..<ProtoChunkSection.sideLength {
-            let pY = pys[localY]
-            let dy = dys[localY]
-            let offsetY = Int(pY - minPY)
-            for localZ in 0..<ProtoChunkSection.sideLength {
-                let pZ = axisData.pzs[localZ]
-                let dz = axisData.dzs[localZ]
-                let offsetZ = Int(pZ - axisData.minPZ)
-                for localX in 0..<ProtoChunkSection.sideLength {
-                    let pX = axisData.pxs[localX]
-                    let dx = axisData.dxs[localX]
-                    let offsetX = Int(pX - axisData.minPX)
-                    let blockIndex = (localY << 8) | (localZ << 4) | localX
-                    var bestX: Int32 = 0
-                    var bestY: Int32 = 0
-                    var bestZ: Int32 = 0
-                    var bestDistance = UInt64.max
+        let cornerXBits = [0, 0, 0, 0, 1, 1, 1, 1]
+        let cornerYBits = [0, 0, 1, 1, 0, 0, 1, 1]
+        let cornerZBits = [0, 1, 0, 1, 0, 1, 0, 1]
+        let cellShift = Int32(40 * 1024)
+        var xTerms = [UInt64](repeating: 0, count: ProtoChunkSection.sideLength * 8)
+        var yTerms = [UInt64](repeating: 0, count: ProtoChunkSection.sideLength * 8)
+        var zTerms = [UInt64](repeating: 0, count: ProtoChunkSection.sideLength * 8)
 
-                    for cornerY in 0...1 {
-                        let cellY = pY &+ Int32(cornerY)
-                        let cornerOffsetY = offsetY + cornerY
-                        let ryBase = Int64(dy &- 40_960 &* Int32(cornerY))
-                        for cornerZ in 0...1 {
-                            let cellZ = pZ &+ Int32(cornerZ)
-                            let cornerOffsetZ = offsetZ + cornerZ
-                            let rzBase = Int64(dz &- 40_960 &* Int32(cornerZ))
-                            for cornerX in 0...1 {
-                                let cellX = pX &+ Int32(cornerX)
-                                let cellOffset = offsets[offsetIndex(offsetX + cornerX, cornerOffsetY, cornerOffsetZ)]
-                                let rxBase = cellOffset.x &+ dx
-                                let rxShift = 40_960 &* Int32(cornerX)
-                                let rx = Int64(rxBase &- rxShift)
-                                let ry = Int64(cellOffset.y) &+ ryBase
-                                let rz = Int64(cellOffset.z) &+ rzBase
-                                let distance = UInt64(rx &* rx) &+ UInt64(ry &* ry) &+ UInt64(rz &* rz)
-                                if distance < bestDistance {
-                                    bestDistance = distance
-                                    bestX = cellX
-                                    bestY = cellY
-                                    bestZ = cellZ
-                                }
-                            }
+        for yRun in yRuns {
+            let offsetY = Int(yRun.p - minPY)
+            for zRun in axisData.zRuns {
+                let offsetZ = Int(zRun.p - axisData.minPZ)
+                for xRun in axisData.xRuns {
+                    let offsetX = Int(xRun.p - axisData.minPX)
+
+                    for cornerIndex in 0..<8 {
+                        let bx = cornerXBits[cornerIndex]
+                        let by = cornerYBits[cornerIndex]
+                        let bz = cornerZBits[cornerIndex]
+                        let cellIndex = offsetIndex(offsetX + bx, offsetY + by, offsetZ + bz)
+                        let xBase = offsetXs[cellIndex] &- cellShift &* Int32(bx)
+                        let yBase = offsetYs[cellIndex] &- cellShift &* Int32(by)
+                        let zBase = offsetZs[cellIndex] &- cellShift &* Int32(bz)
+                        let termBase = cornerIndex * ProtoChunkSection.sideLength
+
+                        for localX in xRun.start..<xRun.endExclusive {
+                            let rx = Int64(xBase &+ axisData.dxs[localX])
+                            xTerms[termBase + localX] = UInt64(rx &* rx)
+                        }
+                        for localY in yRun.start..<yRun.endExclusive {
+                            let ry = Int64(yBase &+ dys[localY])
+                            yTerms[termBase + localY] = UInt64(ry &* ry)
+                        }
+                        for localZ in zRun.start..<zRun.endExclusive {
+                            let rz = Int64(zBase &+ axisData.dzs[localZ])
+                            zTerms[termBase + localZ] = UInt64(rz &* rz)
                         }
                     }
 
-                    let latticePosition = BiomeLatticePosition(PosInt3D(x: bestX, y: bestY, z: bestZ))
-                    let uniqueIndex = offsetIndex(Int(bestX - axisData.minPX), Int(bestY - minPY), Int(bestZ - axisData.minPZ))
-                    let existingIndex = uniqueIndicesByCell[uniqueIndex]
-                    if existingIndex >= 0 {
-                        blockToUniqueIndex[blockIndex] = UInt16(existingIndex)
-                    } else {
-                        let newIndex = UInt16(uniquePositions.count)
-                        uniquePositions.append(latticePosition)
-                        uniqueIndicesByCell[uniqueIndex] = Int16(bitPattern: newIndex)
-                        blockToUniqueIndex[blockIndex] = newIndex
+                    for localY in yRun.start..<yRun.endExclusive {
+                        let yBlockBase = localY << 8
+                        for localZ in zRun.start..<zRun.endExclusive {
+                            let yzBlockBase = yBlockBase | (localZ << 4)
+                            for localX in xRun.start..<xRun.endExclusive {
+                                var bestCorner = 0
+                                var bestDistance = UInt64.max
+
+                                for cornerIndex in 0..<8 {
+                                    let termBase = cornerIndex * ProtoChunkSection.sideLength
+                                    let distance = xTerms[termBase + localX]
+                                        &+ yTerms[termBase + localY]
+                                        &+ zTerms[termBase + localZ]
+                                    if distance < bestDistance {
+                                        bestDistance = distance
+                                        bestCorner = cornerIndex
+                                    }
+                                }
+
+                                let bx = cornerXBits[bestCorner]
+                                let by = cornerYBits[bestCorner]
+                                let bz = cornerZBits[bestCorner]
+                                let uniqueIndex = offsetIndex(offsetX + bx, offsetY + by, offsetZ + bz)
+                                let blockIndex = yzBlockBase | localX
+                                let existingIndex = uniqueIndicesByCell[uniqueIndex]
+                                if existingIndex >= 0 {
+                                    blockToUniqueIndex[blockIndex] = UInt16(existingIndex)
+                                } else {
+                                    let newIndex = UInt16(uniquePositions.count)
+                                    uniquePositions.append(
+                                        BiomeLatticePosition(
+                                            PosInt3D(
+                                                x: xRun.p &+ Int32(bx),
+                                                y: yRun.p &+ Int32(by),
+                                                z: zRun.p &+ Int32(bz)
+                                            )
+                                        )
+                                    )
+                                    uniqueIndicesByCell[uniqueIndex] = Int16(bitPattern: newIndex)
+                                    blockToUniqueIndex[blockIndex] = newIndex
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -630,19 +623,19 @@ private struct VoronoiBiomeSubsampler {
     }
 
     @inline(__always)
-    private func cellOffset(at pos: PosInt3D) -> PosInt3D {
-        var seed = self.seedHash
-        seed = Self.stepSeed(seed, salt: Self.salt(pos.x))
-        seed = Self.stepSeed(seed, salt: Self.salt(pos.y))
-        seed = Self.stepSeed(seed, salt: Self.salt(pos.z))
-        seed = Self.stepSeed(seed, salt: Self.salt(pos.x))
-        seed = Self.stepSeed(seed, salt: Self.salt(pos.y))
-        seed = Self.stepSeed(seed, salt: Self.salt(pos.z))
+    static func getVoronoiCell(_ sha: UInt64, _ a: Int32, _ b: Int32, _ c: Int32) -> PosInt3D {
+        var seed = sha
+        seed = Self.stepSeed(seed, salt: Self.salt(a))
+        seed = Self.stepSeed(seed, salt: Self.salt(b))
+        seed = Self.stepSeed(seed, salt: Self.salt(c))
+        seed = Self.stepSeed(seed, salt: Self.salt(a))
+        seed = Self.stepSeed(seed, salt: Self.salt(b))
+        seed = Self.stepSeed(seed, salt: Self.salt(c))
 
         let x = (Int32((seed >> 24) & 1023) &- 512) &* 36
-        seed = Self.stepSeed(seed, salt: self.seedHash)
+        seed = Self.stepSeed(seed, salt: sha)
         let y = (Int32((seed >> 24) & 1023) &- 512) &* 36
-        seed = Self.stepSeed(seed, salt: self.seedHash)
+        seed = Self.stepSeed(seed, salt: sha)
         let z = (Int32((seed >> 24) & 1023) &- 512) &* 36
         return PosInt3D(x: x, y: y, z: z)
     }
@@ -657,7 +650,7 @@ private struct VoronoiBiomeSubsampler {
         return seed &* (seed &* Self.stepMultiplier &+ Self.stepIncrement) &+ salt
     }
 
-    private static func makeSeedHash(_ seed: WorldSeed) -> UInt64 {
+    static func makeVoronoiSHA(_ seed: WorldSeed) -> UInt64 {
         var message = [UInt32](repeating: 0, count: 64)
         message[0] = UInt32(truncatingIfNeeded: seed).byteSwapped
         message[1] = UInt32(truncatingIfNeeded: seed >> 32).byteSwapped
@@ -1489,10 +1482,34 @@ private struct VoronoiSectionAxisData {
     let pzs: [Int32]
     let dxs: [Int32]
     let dzs: [Int32]
+    let xRuns: [VoronoiAxisRun]
+    let zRuns: [VoronoiAxisRun]
     let minPX: Int32
     let maxPX: Int32
     let minPZ: Int32
     let maxPZ: Int32
+}
+
+private struct VoronoiAxisRun {
+    let start: Int
+    let endExclusive: Int
+    let p: Int32
+}
+
+private func voronoiAxisRuns(from positions: [Int32]) -> [VoronoiAxisRun] {
+    precondition(!positions.isEmpty)
+    var runs: [VoronoiAxisRun] = []
+    runs.reserveCapacity(5)
+    var start = 0
+    var current = positions[0]
+    for index in 1..<positions.count {
+        if positions[index] == current { continue }
+        runs.append(VoronoiAxisRun(start: start, endExclusive: index, p: current))
+        start = index
+        current = positions[index]
+    }
+    runs.append(VoronoiAxisRun(start: start, endExclusive: positions.count, p: current))
+    return runs
 }
 
 private struct BiomeLatticePosition: Hashable {
@@ -1565,7 +1582,8 @@ private struct BiomeGenerationProfile {
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private let worldSeed: WorldSeed
-    private let biomeSubsampler: VoronoiBiomeSubsampler
+    private let biomeSubsampler = VoronoiBiomeSubsampler()
+    private let voronoiSHA: UInt64
     private var config: NoiseSettings?
     private let configuredSettingsKeyName: String?
     private var configuredDimensionKey: RegistryKey<Dimension>?
@@ -1585,7 +1603,7 @@ public final class WorldGenerator {
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
     public init(withWorldSeed seed: WorldSeed, usingDataPacks datapacks: [DataPack], usingSettings configKey: RegistryKey<NoiseSettings>? = nil, buildSearchTrees: Bool = true) throws {
         self.worldSeed = seed
-        self.biomeSubsampler = VoronoiBiomeSubsampler(worldSeed: seed)
+        self.voronoiSHA = VoronoiBiomeSubsampler.makeVoronoiSHA(seed)
         self.configuredSettingsKeyName = configKey?.name
         var random = XoroshiroRandom(seed: seed)
         let low = random.nextLong()
@@ -1712,6 +1730,46 @@ public final class WorldGenerator {
         return self.searchTrees.first?.value
     }
 
+    @inline(__always)
+    private func voronoiAccess3D(_ pos: PosInt3D) -> PosInt3D {
+        let x = pos.x &- 2
+        let y = pos.y &- 2
+        let z = pos.z &- 2
+        let pX = x >> 2
+        let pY = y >> 2
+        let pZ = z >> 2
+        let dx = (x & 3) * 10_240
+        let dy = (y & 3) * 10_240
+        let dz = (z & 3) * 10_240
+        var bestX = Int32(0)
+        var bestY = Int32(0)
+        var bestZ = Int32(0)
+        var minDistance = UInt64.max
+
+        for index in 0..<8 {
+            let bx = Int32((index & 4) != 0 ? 1 : 0)
+            let by = Int32((index & 2) != 0 ? 1 : 0)
+            let bz = Int32((index & 1) != 0 ? 1 : 0)
+            let cellX = pX &+ bx
+            let cellY = pY &+ by
+            let cellZ = pZ &+ bz
+            let offset = VoronoiBiomeSubsampler.getVoronoiCell(self.voronoiSHA, cellX, cellY, cellZ)
+
+            let rx = Int64(offset.x &+ dx &- 40_960 &* bx)
+            let ry = Int64(offset.y &+ dy &- 40_960 &* by)
+            let rz = Int64(offset.z &+ dz &- 40_960 &* bz)
+            let distance = UInt64(rx &* rx) &+ UInt64(ry &* ry) &+ UInt64(rz &* rz)
+            if distance < minDistance {
+                minDistance = distance
+                bestX = cellX
+                bestY = cellY
+                bestZ = cellZ
+            }
+        }
+
+        return PosInt3D(x: bestX, y: bestY, z: bestZ)
+    }
+
     private func validatedTerrainConfig(for operation: String) throws -> NoiseSettings {
         guard let config = self.config else {
             throw WorldGenerationErrors.noiseSettingsNotPresent("\(operation) requires a configured noise settings entry.")
@@ -1786,16 +1844,16 @@ public final class WorldGenerator {
         var profile = BiomeGenerationProfile()
 
         @inline(__always)
-        func sampledBiomeIndex(for latticePos: BiomeLatticePosition) -> Int {
-            let x = Int(latticePos.x - minSampleBiomeX)
-            let y = Int(latticePos.y - minSampleBiomeY)
-            let z = Int(latticePos.z - minSampleBiomeZ)
+        func sampledBiomeIndex(x: Int32, y: Int32, z: Int32) -> Int {
+            let x = Int(x - minSampleBiomeX)
+            let y = Int(y - minSampleBiomeY)
+            let z = Int(z - minSampleBiomeZ)
             return (y * sampledBiomeDepth + z) * sampledBiomeWidth + x
         }
 
         @inline(__always)
-        func cachedBiome(at latticePos: BiomeLatticePosition) -> RegistryKey<Biome> {
-            let sampledIndex = sampledBiomeIndex(for: latticePos)
+        func cachedBiome(x: Int32, y: Int32, z: Int32) -> RegistryKey<Biome> {
+            let sampledIndex = sampledBiomeIndex(x: x, y: y, z: z)
             if let cached = sampledBiomes[sampledIndex] {
                 if timingsEnabled {
                     profile.cacheHitCount += 1
@@ -1803,7 +1861,11 @@ public final class WorldGenerator {
                 return cached
             }
 
-            let pos = latticePos.blockPosition
+            let pos = PosInt3D(
+                x: blockCoord(fromBiome: x),
+                y: blockCoord(fromBiome: y),
+                z: blockCoord(fromBiome: z)
+            )
             let temperatureStart = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             let temperature = functions.temperature.sample(at: pos)
             let temperatureEnd = timingsEnabled ? DispatchTime.now().uptimeNanoseconds : 0
@@ -1850,7 +1912,8 @@ public final class WorldGenerator {
             var sectionBiomes = [RegistryKey<Biome>?](repeating: nil, count: latticeMap.uniquePositions.count)
             for uniqueIndex in latticeMap.samplingOrder {
                 let index = Int(uniqueIndex)
-                sectionBiomes[index] = cachedBiome(at: latticeMap.uniquePositions[index])
+                let latticePos = latticeMap.uniquePositions[index]
+                sectionBiomes[index] = cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
             }
             return sectionBiomes
         }
@@ -1874,7 +1937,7 @@ public final class WorldGenerator {
                                     z: biomeCoord(fromBlock: worldZ)
                                 )
                             )
-                            let biome = cachedBiome(at: latticePos)
+                            let biome = cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
 
                             let writeStart = DispatchTime.now().uptimeNanoseconds
                             section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
@@ -1892,7 +1955,8 @@ public final class WorldGenerator {
                     let voronoiStart = DispatchTime.now().uptimeNanoseconds
                     let latticeMap = self.biomeSubsampler.sectionBiomeLatticeMap(
                         axisData: sectionAxisData,
-                        sectionStartY: sectionStartY
+                        sectionStartY: sectionStartY,
+                        voronoiSHA: self.voronoiSHA
                     )
                     profile.voronoiNanos &+= DispatchTime.now().uptimeNanoseconds - voronoiStart
                     let sectionBiomes = sampledSectionBiomes(for: latticeMap)
@@ -1927,7 +1991,7 @@ public final class WorldGenerator {
                                 z: biomeCoord(fromBlock: worldZ)
                             )
                         )
-                        let biome = cachedBiome(at: latticePos)
+                        let biome = cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
                         section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
                     }
                 }
@@ -1940,7 +2004,8 @@ public final class WorldGenerator {
                 let sectionStartY = minY + Int32(sectionIndex * ProtoChunk.sectionHeight)
                 let latticeMap = self.biomeSubsampler.sectionBiomeLatticeMap(
                     axisData: sectionAxisData,
-                    sectionStartY: sectionStartY
+                    sectionStartY: sectionStartY,
+                    voronoiSHA: self.voronoiSHA
                 )
                 let sectionBiomes = sampledSectionBiomes(for: latticeMap)
                 for blockIndex in 0..<ProtoChunkSection.blockCount {
@@ -2002,7 +2067,7 @@ public final class WorldGenerator {
     /// - Throws: Any error thrown by biome search tree lookup.
     /// - Returns: The final biome key at `pos`, or `nil` if no search tree is configured for `dim`.
     public func sampleBlockBiome(at pos: PosInt3D, in dim: RegistryKey<Dimension>) throws -> RegistryKey<Biome>? {
-        let biomePos = self.biomeSubsampler.biomePosition(forBlock: pos)
+        let biomePos = self.voronoiAccess3D(pos)
         let climatePos = PosInt3D(
             x: blockCoord(fromBiome: biomePos.x),
             y: blockCoord(fromBiome: biomePos.y),
@@ -2661,7 +2726,7 @@ public final class WorldGenerator {
 
     // Currently visible for testing only.
     func biomePosition(forBlock pos: PosInt3D) -> PosInt3D {
-        return self.biomeSubsampler.biomePosition(forBlock: pos)
+        return self.voronoiAccess3D(pos)
     }
 
     // Currently visible for testing only.
