@@ -273,6 +273,8 @@ final class BiomeTreeNode {
     let parameters: [ParameterRange]
     let children: [BiomeTreeNode]
     let value: RegistryKey<Biome>?
+    private let isLeaf: Bool
+    private let offsetContainsZero: Bool
     private let min0: Int64
     private let max0: Int64
     private let min1: Int64
@@ -292,6 +294,7 @@ final class BiomeTreeNode {
         self.parameters = parameters
         self.value = value
         self.children = children
+        self.isLeaf = value != nil
         if parameters.count == 7 {
             self.min0 = parameters[0].min
             self.max0 = parameters[0].max
@@ -307,6 +310,7 @@ final class BiomeTreeNode {
             self.max5 = parameters[5].max
             self.min6 = parameters[6].min
             self.max6 = parameters[6].max
+            self.offsetContainsZero = self.min6 <= 0 && self.max6 >= 0
         } else {
             self.min0 = 0
             self.max0 = 0
@@ -322,65 +326,85 @@ final class BiomeTreeNode {
             self.max5 = 0
             self.min6 = 0
             self.max6 = 0
+            self.offsetContainsZero = true
         }
     }
 
     @inline(__always)
     func getResultingNode(point: BiomeSearchPoint, alternative: BiomeTreeNode) -> BiomeTreeNode {
-        if self.value != nil { return self }
-        var ret = alternative
-        var retDistance = alternative.value != nil ? alternative.squaredDistance(to: point) : Int64.max
+        var bestNode = alternative
+        var bestDistance = alternative.value != nil ? alternative.squaredDistance(to: point) : Int64.max
+        self.updateBestNode(point: point, bestNode: &bestNode, bestDistance: &bestDistance)
+        return bestNode
+    }
+
+    @inline(__always)
+    private func updateBestNode(
+        point: BiomeSearchPoint,
+        bestNode: inout BiomeTreeNode,
+        bestDistance: inout Int64
+    ) {
+        if self.isLeaf { return }
         for child in self.children {
-            let distance = child.squaredDistanceBounded(to: point, maxDistance: retDistance)
-            if retDistance < distance { continue }
-            let endNode = child.getResultingNode(point: point, alternative: ret)
-            guard endNode.value != nil else {
-                continue
+            let distance = child.squaredDistanceBounded(to: point, maxDistance: bestDistance)
+            if bestDistance < distance { continue }
+            if child.isLeaf {
+                bestNode = child
+                bestDistance = distance
+            } else {
+                child.updateBestNode(point: point, bestNode: &bestNode, bestDistance: &bestDistance)
             }
-            let endDistance = endNode.value == child.value
-                ? distance
-                : endNode.squaredDistanceBounded(to: point, maxDistance: retDistance)
-            if retDistance < endDistance { continue }
-            retDistance = endDistance
-            ret = endNode
+            if bestDistance == 0 {
+                return
+            }
         }
-        return ret
     }
 
     @inline(__always)
     fileprivate func squaredDistance(to point: BiomeSearchPoint) -> Int64 {
-        let d0 = distance(point.temperature, self.min0, self.max0)
-        let d1 = distance(point.humidity, self.min1, self.max1)
         let d2 = distance(point.continentalness, self.min2, self.max2)
         let d3 = distance(point.erosion, self.min3, self.max3)
-        let d4 = distance(point.depth, self.min4, self.max4)
         let d5 = distance(point.weirdness, self.min5, self.max5)
-        let d6 = distance(point.offset, self.min6, self.max6)
-        return d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3 + d4 * d4 + d5 * d5 + d6 * d6
+        let d4 = distance(point.depth, self.min4, self.max4)
+        let d0 = distance(point.temperature, self.min0, self.max0)
+        let d1 = distance(point.humidity, self.min1, self.max1)
+        var out = d2 &* d2
+        out &+= d3 &* d3
+        out &+= d5 &* d5
+        out &+= d4 &* d4
+        out &+= d0 &* d0
+        out &+= d1 &* d1
+        if !self.offsetContainsZero {
+            let d6 = distance(point.offset, self.min6, self.max6)
+            out &+= d6 &* d6
+        }
+        return out
     }
 
     @inline(__always)
     fileprivate func squaredDistanceBounded(to point: BiomeSearchPoint, maxDistance: Int64) -> Int64 {
-        let d0 = distance(point.temperature, self.min0, self.max0)
-        var out = d0 * d0
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d1 = distance(point.humidity, self.min1, self.max1)
-        out += d1 * d1
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
         let d2 = distance(point.continentalness, self.min2, self.max2)
-        out += d2 * d2
+        var out = d2 &* d2
         if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
         let d3 = distance(point.erosion, self.min3, self.max3)
-        out += d3 * d3
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d4 = distance(point.depth, self.min4, self.max4)
-        out += d4 * d4
+        out &+= d3 &* d3
         if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
         let d5 = distance(point.weirdness, self.min5, self.max5)
-        out += d5 * d5
+        out &+= d5 &* d5
         if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d6 = distance(point.offset, self.min6, self.max6)
-        out += d6 * d6
+        let d4 = distance(point.depth, self.min4, self.max4)
+        out &+= d4 &* d4
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d0 = distance(point.temperature, self.min0, self.max0)
+        out &+= d0 &* d0
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d1 = distance(point.humidity, self.min1, self.max1)
+        out &+= d1 &* d1
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        if !self.offsetContainsZero {
+            let d6 = distance(point.offset, self.min6, self.max6)
+            out &+= d6 &* d6
+        }
         return out
     }
 
