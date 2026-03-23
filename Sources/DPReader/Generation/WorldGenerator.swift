@@ -466,26 +466,16 @@ private struct VoronoiBiomeSubsampler {
         return PosInt3D(x: bestX, y: bestY, z: bestZ)
     }
 
-    func sectionBiomeLatticeMap(
-        chunkStartX: Int32,
-        sectionStartY: Int32,
-        chunkStartZ: Int32
-    ) -> SectionBiomeLatticeMap {
+    func sectionAxisData(chunkStartX: Int32, chunkStartZ: Int32) -> VoronoiSectionAxisData {
         var pxs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
-        var pys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         var pzs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         var dxs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
-        var dys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         var dzs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
-
         let startX = chunkStartX &- 2
-        let startY = sectionStartY &- 2
         let startZ = chunkStartZ &- 2
         var minPX = Int32.max
-        var minPY = Int32.max
-        var minPZ = Int32.max
         var maxPX = Int32.min
-        var maxPY = Int32.min
+        var minPZ = Int32.max
         var maxPZ = Int32.min
 
         for localX in 0..<ProtoChunkSection.sideLength {
@@ -496,14 +486,6 @@ private struct VoronoiBiomeSubsampler {
             minPX = min(minPX, pX)
             maxPX = max(maxPX, pX)
         }
-        for localY in 0..<ProtoChunkSection.sideLength {
-            let y = startY &+ Int32(localY)
-            let pY = y >> 2
-            pys[localY] = pY
-            dys[localY] = (y & 3) &* 10_240
-            minPY = min(minPY, pY)
-            maxPY = max(maxPY, pY)
-        }
         for localZ in 0..<ProtoChunkSection.sideLength {
             let z = startZ &+ Int32(localZ)
             let pZ = z >> 2
@@ -513,9 +495,38 @@ private struct VoronoiBiomeSubsampler {
             maxPZ = max(maxPZ, pZ)
         }
 
-        let offsetCountX = Int(maxPX - minPX + 2)
+        return VoronoiSectionAxisData(
+            pxs: pxs,
+            pzs: pzs,
+            dxs: dxs,
+            dzs: dzs,
+            minPX: minPX,
+            maxPX: maxPX,
+            minPZ: minPZ,
+            maxPZ: maxPZ
+        )
+    }
+
+    func sectionBiomeLatticeMap(
+        axisData: VoronoiSectionAxisData,
+        sectionStartY: Int32,
+    ) -> SectionBiomeLatticeMap {
+        var pys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
+        var dys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
+        let startY = sectionStartY &- 2
+        var minPY = Int32.max
+        var maxPY = Int32.min
+        for localY in 0..<ProtoChunkSection.sideLength {
+            let y = startY &+ Int32(localY)
+            let pY = y >> 2
+            pys[localY] = pY
+            dys[localY] = (y & 3) &* 10_240
+            minPY = min(minPY, pY)
+            maxPY = max(maxPY, pY)
+        }
+        let offsetCountX = Int(axisData.maxPX - axisData.minPX + 2)
         let offsetCountY = Int(maxPY - minPY + 2)
-        let offsetCountZ = Int(maxPZ - minPZ + 2)
+        let offsetCountZ = Int(axisData.maxPZ - axisData.minPZ + 2)
         var offsets = [PosInt3D](repeating: PosInt3D(x: 0, y: 0, z: 0), count: offsetCountX * offsetCountY * offsetCountZ)
         var uniqueIndicesByCell = [Int16](repeating: -1, count: offsetCountX * offsetCountY * offsetCountZ)
 
@@ -527,9 +538,9 @@ private struct VoronoiBiomeSubsampler {
         for offsetY in 0..<offsetCountY {
             let cellY = minPY &+ Int32(offsetY)
             for offsetZ in 0..<offsetCountZ {
-                let cellZ = minPZ &+ Int32(offsetZ)
+                let cellZ = axisData.minPZ &+ Int32(offsetZ)
                 for offsetX in 0..<offsetCountX {
-                    let cellX = minPX &+ Int32(offsetX)
+                    let cellX = axisData.minPX &+ Int32(offsetX)
                     offsets[offsetIndex(offsetX, offsetY, offsetZ)] = self.cellOffset(at: PosInt3D(x: cellX, y: cellY, z: cellZ))
                 }
             }
@@ -543,13 +554,13 @@ private struct VoronoiBiomeSubsampler {
             let dy = dys[localY]
             let offsetY = Int(pY - minPY)
             for localZ in 0..<ProtoChunkSection.sideLength {
-                let pZ = pzs[localZ]
-                let dz = dzs[localZ]
-                let offsetZ = Int(pZ - minPZ)
+                let pZ = axisData.pzs[localZ]
+                let dz = axisData.dzs[localZ]
+                let offsetZ = Int(pZ - axisData.minPZ)
                 for localX in 0..<ProtoChunkSection.sideLength {
-                    let pX = pxs[localX]
-                    let dx = dxs[localX]
-                    let offsetX = Int(pX - minPX)
+                    let pX = axisData.pxs[localX]
+                    let dx = axisData.dxs[localX]
+                    let offsetX = Int(pX - axisData.minPX)
                     let blockIndex = (localY << 8) | (localZ << 4) | localX
                     var bestX: Int32 = 0
                     var bestY: Int32 = 0
@@ -567,7 +578,9 @@ private struct VoronoiBiomeSubsampler {
                             for cornerX in 0...1 {
                                 let cellX = pX &+ Int32(cornerX)
                                 let cellOffset = offsets[offsetIndex(offsetX + cornerX, cornerOffsetY, cornerOffsetZ)]
-                                let rx = Int64(cellOffset.x &+ dx &- 40_960 &* Int32(cornerX))
+                                let rxBase = cellOffset.x &+ dx
+                                let rxShift = 40_960 &* Int32(cornerX)
+                                let rx = Int64(rxBase &- rxShift)
                                 let ry = Int64(cellOffset.y) &+ ryBase
                                 let rz = Int64(cellOffset.z) &+ rzBase
                                 let distance = UInt64(rx &* rx) &+ UInt64(ry &* ry) &+ UInt64(rz &* rz)
@@ -582,7 +595,7 @@ private struct VoronoiBiomeSubsampler {
                     }
 
                     let latticePosition = BiomeLatticePosition(PosInt3D(x: bestX, y: bestY, z: bestZ))
-                    let uniqueIndex = offsetIndex(Int(bestX - minPX), Int(bestY - minPY), Int(bestZ - minPZ))
+                    let uniqueIndex = offsetIndex(Int(bestX - axisData.minPX), Int(bestY - minPY), Int(bestZ - axisData.minPZ))
                     let existingIndex = uniqueIndicesByCell[uniqueIndex]
                     if existingIndex >= 0 {
                         blockToUniqueIndex[blockIndex] = UInt16(existingIndex)
@@ -1471,6 +1484,17 @@ private struct SectionBiomeLatticeMap {
     let samplingOrder: [UInt16]
 }
 
+private struct VoronoiSectionAxisData {
+    let pxs: [Int32]
+    let pzs: [Int32]
+    let dxs: [Int32]
+    let dzs: [Int32]
+    let minPX: Int32
+    let maxPX: Int32
+    let minPZ: Int32
+    let maxPZ: Int32
+}
+
 private struct BiomeLatticePosition: Hashable {
     let x: Int32
     let y: Int32
@@ -1696,6 +1720,7 @@ public final class WorldGenerator {
         let quartZs = [chunkStartZ, chunkStartZ + 4, chunkStartZ + 8, chunkStartZ + 12]
         let biomeHeight = chunk.biomeHeight
         let lookupState = searchTree.makeReusableLookupState()
+        let sectionAxisData = self.biomeSubsampler.sectionAxisData(chunkStartX: chunkStartX, chunkStartZ: chunkStartZ)
         let minSampleBiomeX = biomeCoord(fromBlock: chunkStartX &- 2)
         let maxSampleBiomeX = biomeCoord(fromBlock: chunkStartX &+ Int32(ProtoChunk.sideLength - 1) &- 2) &+ 1
         let minSampleBiomeY = biomeCoord(fromBlock: minY &- 2)
@@ -1781,9 +1806,8 @@ public final class WorldGenerator {
                 let section = chunk.sectionUnchecked(at: sectionIndex)
                 let sectionStartY = minY + Int32(sectionIndex * ProtoChunk.sectionHeight)
                 let latticeMap = self.biomeSubsampler.sectionBiomeLatticeMap(
-                    chunkStartX: chunkStartX,
-                    sectionStartY: sectionStartY,
-                    chunkStartZ: chunkStartZ
+                    axisData: sectionAxisData,
+                    sectionStartY: sectionStartY
                 )
                 let sectionBiomes = sampledSectionBiomes(for: latticeMap)
                 for blockIndex in 0..<ProtoChunkSection.blockCount {
