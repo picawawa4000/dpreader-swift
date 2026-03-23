@@ -5,11 +5,79 @@ import Testing
 private enum TerrainTestErrors: Error {
     case noVanillaDataFound
     case invalidEmbeddedTerrainBitset
+    case unexpectedDensityFunctionType
 }
 
 private let vanillaTerrainMinY: Int32 = -64
 private let vanillaTerrainHeight: Int32 = 384
 private let vanillaTerrainSampleCount = ProtoChunk.sideLength * ProtoChunk.sideLength * Int(vanillaTerrainHeight)
+private let vanillaLODOrigin = PosInt3D(x: 16, y: 96, z: 240)
+private let vanillaLODRadius: Int32 = 12
+private let vanillaLODSurfaceBandCounts = [
+    [
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64]
+    ],
+    [
+        [64, 64, 64, 64, 64, 61, 47],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64]
+    ],
+    [
+        [64, 64, 64, 64, 57, 26, 12],
+        [64, 64, 64, 64, 64, 63, 56],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64]
+    ],
+    [
+        [26, 21, 18, 10, 0, 0, 0],
+        [44, 44, 43, 36, 22, 3, 0],
+        [58, 64, 64, 64, 57, 30, 13],
+        [64, 64, 64, 64, 64, 59, 48],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64],
+        [64, 64, 64, 64, 64, 64, 64]
+    ],
+    [
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 6, 4, 1, 0, 0],
+        [8, 13, 20, 22, 16, 1, 0],
+        [29, 26, 33, 39, 38, 22, 12],
+        [30, 34, 48, 55, 60, 52, 40],
+        [17, 32, 52, 64, 64, 64, 64]
+    ],
+    [
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 8, 14, 16]
+    ],
+    [
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0]
+    ]
+]
 private let vanillaTerrainEncodedBitset = """
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -350,6 +418,53 @@ private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bo
     }
 }
 
+@Test func testSampleLODUsesGenerationCellSizeAndCountsTerrain() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:lod_constant")
+    pack.noiseSettingsRegistry.register(
+        makeNoiseSettings(
+            minY: -8,
+            height: 16,
+            finalDensity: ConstantDensityFunction(value: 1.0)
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 5,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+
+    let sampled = try worldGenerator.sampleLOD(from: PosInt3D(x: 5, y: 1, z: -3), radius: 5)
+
+    #expect(sampled.cellWidth == 4)
+    #expect(sampled.cellDepth == 4)
+    #expect(sampled.verticalResolution == 4)
+    #expect(sampled.minX == 0)
+    #expect(sampled.maxXExclusive == 12)
+    #expect(sampled.minY == -8)
+    #expect(sampled.maxYExclusive == 8)
+    #expect(sampled.minZ == -8)
+    #expect(sampled.maxZExclusive == 4)
+    #expect(sampled.sampleCountX == 3)
+    #expect(sampled.sampleCountZ == 3)
+    #expect(sampled.verticalSampleCount == 4)
+    #expect(sampled.columns.count == 9)
+
+    for column in sampled.columns {
+        #expect(column.width == 4)
+        #expect(column.depth == 4)
+        #expect(column.samples.count == 4)
+
+        for sample in column.samples {
+            #expect(sample.height == 4)
+            #expect(sample.solidBlockCount == 64)
+            #expect(sample.containsTerrain)
+        }
+    }
+}
+
 @Test func testGenerateIntoIsStableAcrossConcurrentCalls() async throws {
     let pack = try loadNoiseSettingsPack()
     let worldGenerator = try WorldGenerator(
@@ -464,6 +579,101 @@ private final class LockedOptional<Value>: @unchecked Sendable {
         }
     }
     #expect(mismatchCount == 0)
+}
+
+@Test func testSampleLODMatchesCubiomesVanillaTerrain() async throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    if !FileManager.default.fileExists(atPath: vanillaDataPath.path) {
+        throw TerrainTestErrors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 123_456_789,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+
+    let sampled = try worldGenerator.sampleLOD(from: vanillaLODOrigin, radius: vanillaLODRadius)
+
+    #expect(sampled.originX == vanillaLODOrigin.x)
+    #expect(sampled.originY == vanillaLODOrigin.y)
+    #expect(sampled.originZ == vanillaLODOrigin.z)
+    #expect(sampled.radius == vanillaLODRadius)
+    #expect(sampled.cellWidth == 4)
+    #expect(sampled.cellDepth == 4)
+    #expect(sampled.verticalResolution == 4)
+    #expect(sampled.minX == 4)
+    #expect(sampled.maxXExclusive == 32)
+    #expect(sampled.minY == -64)
+    #expect(sampled.maxYExclusive == 320)
+    #expect(sampled.minZ == 228)
+    #expect(sampled.maxZExclusive == 256)
+    #expect(sampled.sampleCountX == 7)
+    #expect(sampled.sampleCountZ == 7)
+    #expect(sampled.verticalSampleCount == 96)
+    #expect(sampled.columns.count == sampled.sampleCountX * sampled.sampleCountZ)
+
+    let bandStartIndex = Int((84 - sampled.minY) / sampled.verticalResolution)
+    #expect(bandStartIndex == 37)
+
+    var columnIndex = 0
+    for zIndex in 0..<sampled.sampleCountZ {
+        for xIndex in 0..<sampled.sampleCountX {
+            let column = sampled.columns[columnIndex]
+            #expect(column.x == sampled.minX + Int32(xIndex) * sampled.cellWidth)
+            #expect(column.z == sampled.minZ + Int32(zIndex) * sampled.cellDepth)
+            #expect(column.width == sampled.cellWidth)
+            #expect(column.depth == sampled.cellDepth)
+            #expect(column.samples.count == sampled.verticalSampleCount)
+            #expect(column.samples.first?.y == sampled.minY)
+            #expect(column.samples.last?.y == sampled.maxYExclusive - sampled.verticalResolution)
+
+            for yIndex in 0..<vanillaLODSurfaceBandCounts.count {
+                let expectedSolidCount = vanillaLODSurfaceBandCounts[yIndex][zIndex][xIndex]
+                let sample = column.samples[bandStartIndex + yIndex]
+
+                #expect(sample.y == 84 + Int32(yIndex) * sampled.verticalResolution)
+                #expect(sample.height == sampled.verticalResolution)
+                #expect(sample.solidBlockCount == expectedSolidCount)
+                #expect(sample.containsTerrain == (expectedSolidCount > 0))
+            }
+
+            columnIndex += 1
+        }
+    }
+}
+
+@Test func testChunkNoiseRouterBakeReusesSharedCachesAcrossTerrainAndBiomeRoots() async throws {
+    let shared = CacheMarker(type: .flatCache, wrapping: ConstantDensityFunction(value: 1.0))
+    let zero = ConstantDensityFunction(value: 0.0)
+    let chunkSampler = VanillaChunkTerrainSampler(
+        chunkPos: PosInt2D(x: 0, z: 0),
+        minY: 0,
+        height: 16,
+        sizeHorizontal: 1,
+        sizeVertical: 2
+    )
+    let terrainDensity = try chunkSampler.bakeDensityFunction(
+        BinaryDensityFunction(firstOperand: shared, secondOperand: zero, type: .ADD)
+    )
+    let temperature = try chunkSampler.bakeDensityFunction(shared)
+    guard let bakedFinalDensity = terrainDensity as? BinaryDensityFunction else {
+        throw TerrainTestErrors.unexpectedDensityFunctionType
+    }
+    guard type(of: bakedFinalDensity.firstOperand) is AnyObject.Type else {
+        throw TerrainTestErrors.unexpectedDensityFunctionType
+    }
+    guard type(of: temperature) is AnyObject.Type else {
+        throw TerrainTestErrors.unexpectedDensityFunctionType
+    }
+
+    let terrainCache = ObjectIdentifier(bakedFinalDensity.firstOperand as AnyObject)
+    let biomeCache = ObjectIdentifier(temperature as AnyObject)
+    #expect(terrainCache == biomeCache)
 }
 
 @Test func testGenerateIntoAlsoPopulatesChunkBiomes() async throws {
@@ -653,6 +863,51 @@ private final class LockedOptional<Value>: @unchecked Sendable {
         end - start,
         "ns",
         "(\((end - start) / 1_000_000)ms)"
+    )
+}
+
+@Test func benchmarkVanillaTerrainChunkGenerationComponents() async throws {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
+    _ = try worldGenerator.benchmarkChunkGenerationComponents(at: PosInt2D(x: 0, z: 0))
+
+    var configureNanos: UInt64 = 0
+    var samplerInitNanos: UInt64 = 0
+    var sharedBakeNanos: UInt64 = 0
+    var terrainOnlyNanos: UInt64 = 0
+    var quartBiomesOnlyNanos: UInt64 = 0
+    var blockBiomesOnlyNanos: UInt64 = 0
+    var fullGenerateIntoNanos: UInt64 = 0
+
+    for chunkX in 0..<8 {
+        for chunkZ in 0..<8 {
+            let benchmark = try worldGenerator.benchmarkChunkGenerationComponents(
+                at: PosInt2D(x: Int32(chunkX), z: Int32(chunkZ))
+            )
+            configureNanos &+= benchmark.configureNanos
+            samplerInitNanos &+= benchmark.samplerInitNanos
+            sharedBakeNanos &+= benchmark.sharedBakeNanos
+            terrainOnlyNanos &+= benchmark.terrainOnlyNanos
+            quartBiomesOnlyNanos &+= benchmark.quartBiomesOnlyNanos
+            blockBiomesOnlyNanos &+= benchmark.blockBiomesOnlyNanos
+            fullGenerateIntoNanos &+= benchmark.fullGenerateIntoNanos
+        }
+    }
+
+    let chunkCount: UInt64 = 64
+    func average(_ total: UInt64) -> UInt64 {
+        return total / chunkCount
+    }
+
+    print(
+        "benchmarkVanillaTerrainChunkGenerationComponents:",
+        "64 chunks;",
+        "configure", configureNanos, "ns total", "(\(average(configureNanos))ns/chunk);",
+        "sampler init", samplerInitNanos, "ns total", "(\(average(samplerInitNanos))ns/chunk);",
+        "shared bake", sharedBakeNanos, "ns total", "(\(average(sharedBakeNanos))ns/chunk);",
+        "terrain only", terrainOnlyNanos, "ns total", "(\(average(terrainOnlyNanos))ns/chunk);",
+        "quart biomes only", quartBiomesOnlyNanos, "ns total", "(\(average(quartBiomesOnlyNanos))ns/chunk);",
+        "exact block biomes only", blockBiomesOnlyNanos, "ns total", "(\(average(blockBiomesOnlyNanos))ns/chunk);",
+        "full generateInto body", fullGenerateIntoNanos, "ns total", "(\(average(fullGenerateIntoNanos))ns/chunk)"
     )
 }
 

@@ -76,7 +76,7 @@ enum Identifiers: Codable, Equatable {
 }
 
 /// A 3D position, represented by ints. Usually used for blocks.
-public struct PosInt3D {
+public struct PosInt3D: Sendable {
     let x, y, z: Int32
 
     public init(x: Int32, y: Int32, z: Int32) {
@@ -87,7 +87,7 @@ public struct PosInt3D {
 }
 
 /// A 3D position, represented by doubles.
-public struct PosDouble3D {
+public struct PosDouble3D: Sendable {
     let x, y, z: Double
 
     public init(x: Double, y: Double, z: Double) {
@@ -98,7 +98,7 @@ public struct PosDouble3D {
 }
 
 /// A 2D position, represented by ints. Usually used for chunks.
-public struct PosInt2D {
+public struct PosInt2D: Sendable {
     let x, z: Int32
 
     public init(x: Int32, z: Int32) {
