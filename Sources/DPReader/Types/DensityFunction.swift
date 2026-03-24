@@ -58,6 +58,11 @@ extension DensityFunction where Self: DensityFunctionWrapperIntrospectable {
     }
 }
 
+private func sameDensityFunctionInstance(_ lhs: any DensityFunction, _ rhs: any DensityFunction) -> Bool {
+    guard type(of: lhs) is AnyObject.Type, type(of: rhs) is AnyObject.Type else { return false }
+    return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
+}
+
 @inline(__always) private func boundsForUnary(_ operation: UnaryDensityFunction.OperationType, inputLower: Double, inputUpper: Double) -> (Double, Double) {
     switch operation {
     case .ABS:
@@ -599,6 +604,12 @@ public struct DensityFunctionSimplexNoise {
     private let inputChoice: any DensityFunction
     private let whenInRange: any DensityFunction
     private let whenOutOfRange: any DensityFunction
+    private let inputChoiceLowerBound: Double
+    private let inputChoiceUpperBound: Double
+    private let whenInRangeLowerBound: Double
+    private let whenInRangeUpperBound: Double
+    private let whenOutOfRangeLowerBound: Double
+    private let whenOutOfRangeUpperBound: Double
 
     public init(inputChoice: DensityFunction, minInclusive: Double, maxExclusive: Double, whenInRange: DensityFunction, whenOutOfRange: DensityFunction) {
         self.minInclusive = minInclusive
@@ -606,6 +617,12 @@ public struct DensityFunctionSimplexNoise {
         self.inputChoice = inputChoice
         self.whenInRange = whenInRange
         self.whenOutOfRange = whenOutOfRange
+        self.inputChoiceLowerBound = inputChoice.lowerBoundValue()
+        self.inputChoiceUpperBound = inputChoice.upperBoundValue()
+        self.whenInRangeLowerBound = whenInRange.lowerBoundValue()
+        self.whenInRangeUpperBound = whenInRange.upperBoundValue()
+        self.whenOutOfRangeLowerBound = whenOutOfRange.lowerBoundValue()
+        self.whenOutOfRangeUpperBound = whenOutOfRange.upperBoundValue()
     }
 
     public init(from decoder: Decoder) throws {
@@ -615,6 +632,12 @@ public struct DensityFunctionSimplexNoise {
         self.inputChoice = try container.decode(DensityFunctionInitializer.self, forKey: .inputChoice).value
         self.whenInRange = try container.decode(DensityFunctionInitializer.self, forKey: .whenInRange).value
         self.whenOutOfRange = try container.decode(DensityFunctionInitializer.self, forKey: .whenOutOfRange).value
+        self.inputChoiceLowerBound = self.inputChoice.lowerBoundValue()
+        self.inputChoiceUpperBound = self.inputChoice.upperBoundValue()
+        self.whenInRangeLowerBound = self.whenInRange.lowerBoundValue()
+        self.whenInRangeUpperBound = self.whenInRange.upperBoundValue()
+        self.whenOutOfRangeLowerBound = self.whenOutOfRange.lowerBoundValue()
+        self.whenOutOfRangeUpperBound = self.whenOutOfRange.upperBoundValue()
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -630,17 +653,17 @@ public struct DensityFunctionSimplexNoise {
     public func sample(at pos: PosInt3D) -> Double {
         let x = self.inputChoice.sample(at: pos)
         if (self.minInclusive <= x && x < self.maxExclusive) {
-            return self.whenInRange.sample(at: pos)
+            return self.sampleBranch(self.whenInRange, inputValue: x, at: pos)
         }
-        return self.whenOutOfRange.sample(at: pos)
+        return self.sampleBranch(self.whenOutOfRange, inputValue: x, at: pos)
     }
 
     public func lowerBoundValue() -> Double {
-        return min(self.whenInRange.lowerBoundValue(), self.whenOutOfRange.lowerBoundValue())
+        return min(self.whenInRangeLowerBound, self.whenOutOfRangeLowerBound)
     }
 
     public func upperBoundValue() -> Double {
-        return max(self.whenInRange.upperBoundValue(), self.whenOutOfRange.upperBoundValue())
+        return max(self.whenInRangeUpperBound, self.whenOutOfRangeUpperBound)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -665,6 +688,14 @@ public struct DensityFunctionSimplexNoise {
         return self.inputChoice
     }
 
+    var inputLowerBoundValue: Double {
+        return self.inputChoiceLowerBound
+    }
+
+    var inputUpperBoundValue: Double {
+        return self.inputChoiceUpperBound
+    }
+
     var minimumInclusive: Double {
         return self.minInclusive
     }
@@ -680,6 +711,81 @@ public struct DensityFunctionSimplexNoise {
         case whenInRange = "when_in_range"
         case whenOutOfRange = "when_out_of_range"
         case type = "type"
+    }
+
+    private func sampleBranch(
+        _ branch: any DensityFunction,
+        inputValue: Double,
+        at pos: PosInt3D
+    ) -> Double {
+        if sameDensityFunctionInstance(branch, self.inputChoice) {
+            return inputValue
+        }
+        if let constant = branch as? ConstantDensityFunction {
+            return constant.constantValue
+        }
+        if let unary = branch as? UnaryDensityFunction, sameDensityFunctionInstance(unary.inputOperand, self.inputChoice) {
+            switch unary.operationType {
+            case .ABS:
+                return abs(inputValue)
+            case .SQUARE:
+                return inputValue * inputValue
+            case .CUBE:
+                return inputValue * inputValue * inputValue
+            case .HALF_NEGATIVE:
+                return inputValue < 0.0 ? inputValue / 2.0 : inputValue
+            case .QUARTER_NEGATIVE:
+                return inputValue < 0.0 ? inputValue / 4.0 : inputValue
+            case .SQUEEZE:
+                let clampedValue = clamp(value: inputValue, lowerBound: -1.0, upperBound: 1.0)
+                return clampedValue / 2.0 - clampedValue * clampedValue * clampedValue / 24.0
+            case .INVERT:
+                return 1.0 / inputValue
+            }
+        }
+        if let clampFunction = branch as? ClampDensityFunction, sameDensityFunctionInstance(clampFunction.clampedInput, self.inputChoice) {
+            return clamp(value: inputValue, lowerBound: clampFunction.minimumValue, upperBound: clampFunction.maximumValue)
+        }
+        if let binary = branch as? BinaryDensityFunction {
+            let leftIsInput = sameDensityFunctionInstance(binary.firstOperand, self.inputChoice)
+            let rightIsInput = sameDensityFunctionInstance(binary.secondOperand, self.inputChoice)
+            if leftIsInput || rightIsInput {
+                let other = leftIsInput ? binary.secondOperand : binary.firstOperand
+                if let constant = other as? ConstantDensityFunction {
+                    let otherValue = constant.constantValue
+                    switch binary.operationType {
+                    case .ADD:
+                        return inputValue + otherValue
+                    case .MULTIPLY:
+                        return inputValue * otherValue
+                    case .MINIMUM:
+                        return min(inputValue, otherValue)
+                    case .MAXIMUM:
+                        return max(inputValue, otherValue)
+                    }
+                }
+
+                let otherLowerBound = other.lowerBoundValue()
+                let otherUpperBound = other.upperBoundValue()
+                switch binary.operationType {
+                case .ADD:
+                    return inputValue + other.sample(at: pos)
+                case .MULTIPLY:
+                    return inputValue == 0.0 ? 0.0 : inputValue * other.sample(at: pos)
+                case .MINIMUM:
+                    if inputValue < otherLowerBound {
+                        return inputValue
+                    }
+                    return min(inputValue, other.sample(at: pos))
+                case .MAXIMUM:
+                    if inputValue > otherUpperBound {
+                        return inputValue
+                    }
+                    return max(inputValue, other.sample(at: pos))
+                }
+            }
+        }
+        return branch.sample(at: pos)
     }
 }
 
