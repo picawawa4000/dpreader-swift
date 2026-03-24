@@ -997,7 +997,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                 densities[i] = first * self.sampleAtCurrentPos(function.secondOperand)
             }
         case .MINIMUM:
-            let secondLowerBound = densityFunctionLowerBound(function.secondOperand)
+            let secondLowerBound = function.secondOperand.lowerBoundValue()
             for i in densities.indices {
                 if densities[i] < secondLowerBound {
                     continue
@@ -1006,7 +1006,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                 densities[i] = min(densities[i], self.sampleAtCurrentPos(function.secondOperand))
             }
         case .MAXIMUM:
-            let secondUpperBound = densityFunctionUpperBound(function.secondOperand)
+            let secondUpperBound = function.secondOperand.upperBoundValue()
             for i in densities.indices {
                 if densities[i] > secondUpperBound {
                     continue
@@ -1030,8 +1030,8 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             return
         }
 
-        let inputLowerBound = densityFunctionLowerBound(function.inputChoiceFunction)
-        let inputUpperBound = densityFunctionUpperBound(function.inputChoiceFunction)
+        let inputLowerBound = function.inputChoiceFunction.lowerBoundValue()
+        let inputUpperBound = function.inputChoiceFunction.upperBoundValue()
         if inputLowerBound >= function.minimumInclusive && inputUpperBound < function.maximumExclusive {
             self.fill(into: &densities, using: function.whenInRangeOutput, mode: mode)
             return
@@ -1143,15 +1143,22 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
 
         if let constant = function as? ConstantDensityFunction {
-            densities = [Double](repeating: constant.constantValue, count: densities.count)
+            let value = constant.constantValue
+            for i in densities.indices {
+                densities[i] = value
+            }
             return
         }
         if function is BlendAlpha {
-            densities = [Double](repeating: 1.0, count: densities.count)
+            for i in densities.indices {
+                densities[i] = 1.0
+            }
             return
         }
         if function is BlendOffset {
-            densities = [Double](repeating: 0.0, count: densities.count)
+            for i in densities.indices {
+                densities[i] = 0.0
+            }
             return
         }
         if mode == .interpolationColumn, let noiseDensity = function as? NoiseDensityFunction {
@@ -1451,7 +1458,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             return FindTopSurface(
                 density: self.strippedTerrainSamplingFunction(from: topSurface.densityFunction),
                 upperBound: self.strippedTerrainSamplingFunction(from: topSurface.upperBoundFunction),
-                lowerBound: topSurface.lowerBoundValue,
+                lowerBound: topSurface.lowerBoundHeight,
                 cellHeight: topSurface.cellHeightValue
             )
         }

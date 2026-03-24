@@ -9,8 +9,22 @@ public protocol DensityFunction: Codable {
     /// This function is not particularly supported on raw density functions for a variety of reasons.
     /// It is best to use `bake` instead before sampling.
     func sample(at: PosInt3D) -> Double
+    /// The minimum value this density function can return.
+    func lowerBoundValue() -> Double
+    /// The maximum value this density function can return.
+    func upperBoundValue() -> Double
     /// "Bake" this density function to prepare it for repeated usage.
     func bake(withBaker: DensityFunctionBaker) throws -> DensityFunction
+}
+
+public extension DensityFunction {
+    func lowerBoundValue() -> Double {
+        return -Double.infinity
+    }
+
+    func upperBoundValue() -> Double {
+        return Double.infinity
+    }
 }
 
 /// "Bakes" a density function; that is, prepares it for proper usage.
@@ -32,6 +46,16 @@ public protocol DensityFunctionBaker {
 /// Allows wrappers to expose their delegate for bound propagation.
 protocol DensityFunctionWrapperIntrospectable {
     var wrappedDensityFunction: any DensityFunction { get }
+}
+
+extension DensityFunction where Self: DensityFunctionWrapperIntrospectable {
+    func lowerBoundValue() -> Double {
+        return self.wrappedDensityFunction.lowerBoundValue()
+    }
+
+    func upperBoundValue() -> Double {
+        return self.wrappedDensityFunction.upperBoundValue()
+    }
 }
 
 @inline(__always) private func boundsForUnary(_ operation: UnaryDensityFunction.OperationType, inputLower: Double, inputUpper: Double) -> (Double, Double) {
@@ -99,72 +123,6 @@ protocol DensityFunctionWrapperIntrospectable {
     case .MAXIMUM:
         return (max(firstLower, secondLower), max(firstUpper, secondUpper))
     }
-}
-
-private func densityFunctionBounds(_ function: any DensityFunction) -> (Double, Double) {
-    if let wrapper = function as? any DensityFunctionWrapperIntrospectable {
-        return densityFunctionBounds(wrapper.wrappedDensityFunction)
-    }
-    if let cacheMarker = function as? CacheMarker {
-        return densityFunctionBounds(cacheMarker.argument)
-    }
-    if let constant = function as? ConstantDensityFunction {
-        let value = constant.constantValue
-        return (value, value)
-    }
-    if function is BlendAlpha {
-        return (1.0, 1.0)
-    }
-    if function is BlendOffset || function is BeardifierMarker {
-        return (0.0, 0.0)
-    }
-    if let unary = function as? UnaryDensityFunction {
-        let (lower, upper) = densityFunctionBounds(unary.inputOperand)
-        return boundsForUnary(unary.operationType, inputLower: lower, inputUpper: upper)
-    }
-    if let binary = function as? BinaryDensityFunction {
-        let (firstLower, firstUpper) = densityFunctionBounds(binary.firstOperand)
-        let (secondLower, secondUpper) = densityFunctionBounds(binary.secondOperand)
-        return boundsForBinary(
-            binary.operationType,
-            firstLower: firstLower,
-            firstUpper: firstUpper,
-            secondLower: secondLower,
-            secondUpper: secondUpper
-        )
-    }
-    if let clampFunction = function as? ClampDensityFunction {
-        let (inputLower, inputUpper) = densityFunctionBounds(clampFunction.clampedInput)
-        return (
-            clamp(value: inputLower, lowerBound: clampFunction.minimumValue, upperBound: clampFunction.maximumValue),
-            clamp(value: inputUpper, lowerBound: clampFunction.minimumValue, upperBound: clampFunction.maximumValue)
-        )
-    }
-    if let gradient = function as? YClampedGradient {
-        return (
-            min(gradient.minimumOutputValue, gradient.maximumOutputValue),
-            max(gradient.minimumOutputValue, gradient.maximumOutputValue)
-        )
-    }
-    if let rangeChoice = function as? RangeChoice {
-        let (inLower, inUpper) = densityFunctionBounds(rangeChoice.whenInRangeOutput)
-        let (outLower, outUpper) = densityFunctionBounds(rangeChoice.whenOutOfRangeOutput)
-        return (min(inLower, outLower), max(inUpper, outUpper))
-    }
-    if let blendDensity = function as? BlendDensity {
-        _ = blendDensity
-        return (-Double.infinity, Double.infinity)
-    }
-
-    return (-Double.infinity, Double.infinity)
-}
-
-@inline(__always) func densityFunctionLowerBound(_ function: any DensityFunction) -> Double {
-    return densityFunctionBounds(function).0
-}
-
-@inline(__always) func densityFunctionUpperBound(_ function: any DensityFunction) -> Double {
-    return densityFunctionBounds(function).1
 }
 
 /// Represents a noise within a density function.
@@ -304,6 +262,14 @@ public struct DensityFunctionSimplexNoise {
         return self.value
     }
 
+    public func lowerBoundValue() -> Double {
+        return self.value
+    }
+
+    public func upperBoundValue() -> Double {
+        return self.value
+    }
+
     public func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
         return self
     }
@@ -351,6 +317,18 @@ public struct DensityFunctionSimplexNoise {
         }
     }
 
+    public func lowerBoundValue() -> Double {
+        let inputLower = self.operand.lowerBoundValue()
+        let inputUpper = self.operand.upperBoundValue()
+        return boundsForUnary(self.operation, inputLower: inputLower, inputUpper: inputUpper).0
+    }
+
+    public func upperBoundValue() -> Double {
+        let inputLower = self.operand.lowerBoundValue()
+        let inputUpper = self.operand.upperBoundValue()
+        return boundsForUnary(self.operation, inputLower: inputLower, inputUpper: inputUpper).1
+    }
+
     private static func squeeze(_ x: Double) -> Double {
         let e = clamp(value: x, lowerBound: -1.0, upperBound: 1.0)
         return e / 2.0 - e * e * e / 24.0
@@ -390,11 +368,15 @@ public struct DensityFunctionSimplexNoise {
     private let first: any DensityFunction
     private let second: any DensityFunction
     private let operation: OperationType
+    private let secondLowerBound: Double
+    private let secondUpperBound: Double
 
     public init(firstOperand first: DensityFunction, secondOperand second: DensityFunction, type: OperationType) {
         self.first = first
         self.second = second
         self.operation = type
+        self.secondLowerBound = second.lowerBoundValue()
+        self.secondUpperBound = second.upperBoundValue()
     }
 
     public init(from decoder: Decoder) throws {
@@ -402,6 +384,8 @@ public struct DensityFunctionSimplexNoise {
         self.first = try container.decode(DensityFunctionInitializer.self, forKey: .first).value
         self.second = try container.decode(DensityFunctionInitializer.self, forKey: .second).value
         self.operation = try container.decode(OperationType.self, forKey: .operation)
+        self.secondLowerBound = self.second.lowerBoundValue()
+        self.secondUpperBound = self.second.upperBoundValue()
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -419,18 +403,36 @@ public struct DensityFunctionSimplexNoise {
         case .MULTIPLY:
             return firstValue == 0.0 ? 0.0 : firstValue * self.second.sample(at: pos)
         case .MAXIMUM:
-            let secondUpperBound = densityFunctionUpperBound(self.second)
-            if firstValue > secondUpperBound {
+            if firstValue > self.secondUpperBound {
                 return firstValue
             }
             return max(firstValue, self.second.sample(at: pos))
         case .MINIMUM:
-            let secondLowerBound = densityFunctionLowerBound(self.second)
-            if firstValue < secondLowerBound {
+            if firstValue < self.secondLowerBound {
                 return firstValue
             }
             return min(firstValue, self.second.sample(at: pos))
         }
+    }
+
+    public func lowerBoundValue() -> Double {
+        return boundsForBinary(
+            self.operation,
+            firstLower: self.first.lowerBoundValue(),
+            firstUpper: self.first.upperBoundValue(),
+            secondLower: self.secondLowerBound,
+            secondUpper: self.secondUpperBound
+        ).0
+    }
+
+    public func upperBoundValue() -> Double {
+        return boundsForBinary(
+            self.operation,
+            firstLower: self.first.lowerBoundValue(),
+            firstUpper: self.first.upperBoundValue(),
+            secondLower: self.secondLowerBound,
+            secondUpper: self.secondUpperBound
+        ).1
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -494,6 +496,14 @@ public struct DensityFunctionSimplexNoise {
         return clamp(value: self.input.sample(at: pos), lowerBound: self.lowerBound, upperBound: self.upperBound)
     }
 
+    public func lowerBoundValue() -> Double {
+        return clamp(value: self.input.lowerBoundValue(), lowerBound: self.lowerBound, upperBound: self.upperBound)
+    }
+
+    public func upperBoundValue() -> Double {
+        return clamp(value: self.input.upperBoundValue(), lowerBound: self.lowerBound, upperBound: self.upperBound)
+    }
+
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return ClampDensityFunction(input: try self.input.bake(withBaker: baker), lowerBound: self.lowerBound, upperBound: self.upperBound)
     }
@@ -551,6 +561,14 @@ public struct DensityFunctionSimplexNoise {
 
     public func sample(at pos: PosInt3D) -> Double {
         return clampedMap(value: Double(pos.y), oldStart: Double(self.fromY), oldEnd: Double(self.toY), newStart: self.fromValue, newEnd: self.toValue)
+    }
+
+    public func lowerBoundValue() -> Double {
+        return min(self.minimumOutputValue, self.maximumOutputValue)
+    }
+
+    public func upperBoundValue() -> Double {
+        return max(self.minimumOutputValue, self.maximumOutputValue)
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) -> any DensityFunction {
@@ -615,6 +633,14 @@ public struct DensityFunctionSimplexNoise {
             return self.whenInRange.sample(at: pos)
         }
         return self.whenOutOfRange.sample(at: pos)
+    }
+
+    public func lowerBoundValue() -> Double {
+        return min(self.whenInRange.lowerBoundValue(), self.whenOutOfRange.lowerBoundValue())
+    }
+
+    public func upperBoundValue() -> Double {
+        return max(self.whenInRange.upperBoundValue(), self.whenOutOfRange.upperBoundValue())
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -913,6 +939,14 @@ public struct DensityFunctionSimplexNoise {
         return self.argument.sample(at: pos)
     }
 
+    public func lowerBoundValue() -> Double {
+        return self.argument.lowerBoundValue()
+    }
+
+    public func upperBoundValue() -> Double {
+        return self.argument.upperBoundValue()
+    }
+
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return try baker.bake(cacheMarker: self)
     }
@@ -946,6 +980,14 @@ public struct DensityFunctionSimplexNoise {
         return 1.0
     }
 
+    public func lowerBoundValue() -> Double {
+        return 1.0
+    }
+
+    public func upperBoundValue() -> Double {
+        return 1.0
+    }
+
     public func bake(withBaker: any DensityFunctionBaker) throws -> any DensityFunction {
         return self
     }
@@ -967,6 +1009,14 @@ public struct DensityFunctionSimplexNoise {
     }
 
     public func sample(at: PosInt3D) -> Double {
+        return 0.0
+    }
+
+    public func lowerBoundValue() -> Double {
+        return 0.0
+    }
+
+    public func upperBoundValue() -> Double {
         return 0.0
     }
 
@@ -1002,6 +1052,14 @@ public struct DensityFunctionSimplexNoise {
         return self.argument.sample(at: pos)
     }
 
+    public func lowerBoundValue() -> Double {
+        return -Double.infinity
+    }
+
+    public func upperBoundValue() -> Double {
+        return Double.infinity
+    }
+
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return BlendDensity(wrapping: try self.argument.bake(withBaker: baker))
     }
@@ -1030,6 +1088,14 @@ public struct DensityFunctionSimplexNoise {
     }
 
     public func sample(at: PosInt3D) -> Double {
+        return 0.0
+    }
+
+    public func lowerBoundValue() -> Double {
+        return 0.0
+    }
+
+    public func upperBoundValue() -> Double {
         return 0.0
     }
 
@@ -1305,7 +1371,7 @@ public struct DensityFunctionSimplexNoise {
         return self.upperBound
     }
 
-    var lowerBoundValue: Int {
+    var lowerBoundHeight: Int {
         return self.lowerBound
     }
 
