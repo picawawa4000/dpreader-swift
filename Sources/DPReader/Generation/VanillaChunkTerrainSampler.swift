@@ -125,7 +125,12 @@ private enum RangeChoiceBranchStrategy {
     case constant(Double)
     case unary(UnaryDensityFunction.OperationType)
     case clamp(lower: Double, upper: Double)
-    case binary(operation: BinaryDensityFunction.OperationType, other: any DensityFunction)
+    case binary(
+        operation: BinaryDensityFunction.OperationType,
+        other: any DensityFunction,
+        otherLowerBound: Double,
+        otherUpperBound: Double
+    )
     case binaryConstant(operation: BinaryDensityFunction.OperationType, other: Double)
 }
 
@@ -921,7 +926,12 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                 if let constant = otherOperand as? ConstantDensityFunction {
                     return .binaryConstant(operation: binary.operationType, other: constant.constantValue)
                 }
-                return .binary(operation: binary.operationType, other: otherOperand)
+                return .binary(
+                    operation: binary.operationType,
+                    other: otherOperand,
+                    otherLowerBound: otherOperand.lowerBoundValue(),
+                    otherUpperBound: otherOperand.upperBoundValue()
+                )
             }
         }
         return .unsupported
@@ -969,16 +979,25 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             }
         case .clamp(let lower, let upper):
             return clamp(value: inputValue, lowerBound: lower, upperBound: upper)
-        case .binary(let operation, let otherOperand):
-            let otherValue = self.sampleAtCurrentPos(otherOperand)
+        case .binary(let operation, let otherOperand, let otherLowerBound, let otherUpperBound):
             switch operation {
             case .ADD:
+                let otherValue = self.sampleAtCurrentPos(otherOperand)
                 return inputValue + otherValue
             case .MULTIPLY:
+                let otherValue = self.sampleAtCurrentPos(otherOperand)
                 return inputValue == 0.0 ? 0.0 : inputValue * otherValue
             case .MINIMUM:
+                if inputValue < otherLowerBound {
+                    return inputValue
+                }
+                let otherValue = self.sampleAtCurrentPos(otherOperand)
                 return min(inputValue, otherValue)
             case .MAXIMUM:
+                if inputValue > otherUpperBound {
+                    return inputValue
+                }
+                let otherValue = self.sampleAtCurrentPos(otherOperand)
                 return max(inputValue, otherValue)
             }
         case .binaryConstant(let operation, let otherValue):
@@ -1121,8 +1140,8 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             return
         }
 
-        let inputLowerBound = function.inputChoiceFunction.lowerBoundValue()
-        let inputUpperBound = function.inputChoiceFunction.upperBoundValue()
+        let inputLowerBound = function.inputLowerBoundValue
+        let inputUpperBound = function.inputUpperBoundValue
         if inputLowerBound >= function.minimumInclusive && inputUpperBound < function.maximumExclusive {
             self.fill(into: &densities, using: function.whenInRangeOutput, mode: mode)
             return

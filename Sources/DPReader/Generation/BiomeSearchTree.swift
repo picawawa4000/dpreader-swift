@@ -7,6 +7,9 @@ public enum BiomeSearchTreeError: Error {
 
 public final class BiomeSearchTree {
     private let root: BiomeTreeNode
+    private let flatNodes: [FlatBiomeTreeNode]
+    private let flatChildIndices: [Int]
+    private let rootIndex: Int
 
     public init(entries: [(NoiseHypercube, RegistryKey<Biome>)]) throws {
         guard !entries.isEmpty else {
@@ -18,16 +21,31 @@ public final class BiomeSearchTree {
             converted.append(BiomeTreeNode(parameters: entry.0.toList(), value: entry.1, children: []))
         }
         self.root = try BiomeTreeNode.createNode(from: converted)
+        var flatNodes: [FlatBiomeTreeNode] = []
+        flatNodes.reserveCapacity(converted.count * 2)
+        var flatChildIndices: [Int] = []
+        flatChildIndices.reserveCapacity(converted.count * 2)
+        self.rootIndex = flattenBiomeTree(
+            node: self.root,
+            into: &flatNodes,
+            childIndices: &flatChildIndices
+        )
+        self.flatNodes = flatNodes
+        self.flatChildIndices = flatChildIndices
     }
 
     public func get(_ point: NoisePoint) throws -> RegistryKey<Biome> {
         let state = self.lookupStateForCurrentThread()
         self.updateScratchPoint(from: point, into: &state.scratchPoint)
-        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
-        guard let value = result.value else {
+        let resultIndex = self.getResultingNodeIndex(point: state.scratchPoint, alternativeIndex: state.lastResultIndex)
+        guard resultIndex >= 0 else {
             throw BiomeSearchTreeError.emptyEntries
         }
-        state.lastResult = result
+        let value = self.flatNodes[resultIndex].value
+        guard let value else {
+            throw BiomeSearchTreeError.emptyEntries
+        }
+        state.lastResultIndex = resultIndex
         return value
     }
 
@@ -35,11 +53,12 @@ public final class BiomeSearchTree {
     func getUnchecked(_ point: NoisePoint) -> RegistryKey<Biome> {
         let state = self.lookupStateForCurrentThread()
         self.updateScratchPoint(from: point, into: &state.scratchPoint)
-        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
-        precondition(result.value != nil, "BiomeSearchTree returned an empty result node")
-        let value = result.value!
-        state.lastResult = result
-        return value
+        let resultIndex = self.getResultingNodeIndex(point: state.scratchPoint, alternativeIndex: state.lastResultIndex)
+        precondition(resultIndex >= 0, "BiomeSearchTree returned an empty result node")
+        let value = self.flatNodes[resultIndex].value
+        precondition(value != nil, "BiomeSearchTree returned an empty result node")
+        state.lastResultIndex = resultIndex
+        return value!
     }
 
     @inline(__always)
@@ -61,15 +80,16 @@ public final class BiomeSearchTree {
             depth: depth,
             into: &state.scratchPoint
         )
-        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
-        precondition(result.value != nil, "BiomeSearchTree returned an empty result node")
-        let value = result.value!
-        state.lastResult = result
-        return value
+        let resultIndex = self.getResultingNodeIndex(point: state.scratchPoint, alternativeIndex: state.lastResultIndex)
+        precondition(resultIndex >= 0, "BiomeSearchTree returned an empty result node")
+        let value = self.flatNodes[resultIndex].value
+        precondition(value != nil, "BiomeSearchTree returned an empty result node")
+        state.lastResultIndex = resultIndex
+        return value!
     }
 
     func makeReusableLookupState() -> BiomeSearchLookupState {
-        return BiomeSearchLookupState(lastResult: self.makeEmptyNode(), scratchPoint: BiomeSearchPoint())
+        return BiomeSearchLookupState(lastResultIndex: -1, scratchPoint: BiomeSearchPoint())
     }
 
     @inline(__always)
@@ -91,25 +111,26 @@ public final class BiomeSearchTree {
             depth: depth,
             into: &state.scratchPoint
         )
-        let result = self.root.getResultingNode(point: state.scratchPoint, alternative: state.lastResult)
-        precondition(result.value != nil, "BiomeSearchTree returned an empty result node")
-        let value = result.value!
-        state.lastResult = result
-        return value
+        let resultIndex = self.getResultingNodeIndex(point: state.scratchPoint, alternativeIndex: state.lastResultIndex)
+        precondition(resultIndex >= 0, "BiomeSearchTree returned an empty result node")
+        let value = self.flatNodes[resultIndex].value
+        precondition(value != nil, "BiomeSearchTree returned an empty result node")
+        state.lastResultIndex = resultIndex
+        return value!
     }
 
     /// Resets the tree's internal "alternative".
     /// Useful for deterministic results, but will result in a massive performance hit.
     public func resetAlternative() {
-        self.lookupStateForCurrentThread().lastResult = self.makeEmptyNode()
+        self.lookupStateForCurrentThread().lastResultIndex = -1
     }
 
     // Internal helper for diagnostics.
     func lastResultDistance(to point: NoisePoint) -> Int64? {
         let state = self.lookupStateForCurrentThread()
-        guard state.lastResult.value != nil else { return nil }
+        guard state.lastResultIndex >= 0 else { return nil }
         self.updateScratchPoint(from: point, into: &state.scratchPoint)
-        return state.lastResult.squaredDistance(to: state.scratchPoint)
+        return self.flatNodes[state.lastResultIndex].squaredDistance(to: state.scratchPoint)
     }
 
     private func updateScratchPoint(from point: NoisePoint, into scratchPoint: inout BiomeSearchPoint) {
@@ -148,7 +169,7 @@ public final class BiomeSearchTree {
         if let existing = Thread.current.threadDictionary[key] as? BiomeSearchLookupState {
             return existing
         }
-        let state = BiomeSearchLookupState(lastResult: self.makeEmptyNode(), scratchPoint: BiomeSearchPoint())
+        let state = BiomeSearchLookupState(lastResultIndex: -1, scratchPoint: BiomeSearchPoint())
         Thread.current.threadDictionary[key] = state
         return state
     }
@@ -163,17 +184,58 @@ public final class BiomeSearchTree {
         return "BiomeSearchTree.lookupState.\(pointer)"
     }
 
-    private func makeEmptyNode() -> BiomeTreeNode {
-        return BiomeTreeNode(parameters: [], value: nil, children: [])
+    @inline(__always)
+    private func getResultingNodeIndex(point: BiomeSearchPoint, alternativeIndex: Int) -> Int {
+        var bestNodeIndex = alternativeIndex
+        var bestDistance = alternativeIndex >= 0 ? self.flatNodes[alternativeIndex].squaredDistance(to: point) : Int64.max
+        self.updateBestNode(
+            nodeIndex: self.rootIndex,
+            point: point,
+            bestNodeIndex: &bestNodeIndex,
+            bestDistance: &bestDistance
+        )
+        return bestNodeIndex
+    }
+
+    @inline(__always)
+    private func updateBestNode(
+        nodeIndex: Int,
+        point: BiomeSearchPoint,
+        bestNodeIndex: inout Int,
+        bestDistance: inout Int64
+    ) {
+        let node = self.flatNodes[nodeIndex]
+        if node.isLeaf { return }
+        let childEnd = node.childIndexStart + node.childCount
+        for childOffset in node.childIndexStart..<childEnd {
+            let childIndex = self.flatChildIndices[childOffset]
+            let child = self.flatNodes[childIndex]
+            let distance = child.squaredDistanceBounded(to: point, maxDistance: bestDistance)
+            if bestDistance < distance { continue }
+            if child.isLeaf {
+                bestNodeIndex = childIndex
+                bestDistance = distance
+            } else {
+                self.updateBestNode(
+                    nodeIndex: childIndex,
+                    point: point,
+                    bestNodeIndex: &bestNodeIndex,
+                    bestDistance: &bestDistance
+                )
+            }
+            if bestDistance == 0 {
+                return
+            }
+        }
     }
 }
 
 final class BiomeSearchLookupState {
-    var lastResult: BiomeTreeNode
+    var lastResultIndex: Int
     var scratchPoint: BiomeSearchPoint
 
-    init(lastResult: BiomeTreeNode, scratchPoint: BiomeSearchPoint) {
-        self.lastResult = lastResult
+    init(lastResultIndex: Int, scratchPoint: BiomeSearchPoint) {
+        self.lastResultIndex = lastResultIndex
         self.scratchPoint = scratchPoint
     }
 }
@@ -186,6 +248,117 @@ struct BiomeSearchPoint {
     var depth: Int64 = 0
     var weirdness: Int64 = 0
     var offset: Int64 = 0
+}
+
+private struct FlatBiomeTreeNode {
+    let value: RegistryKey<Biome>?
+    let isLeaf: Bool
+    var childIndexStart: Int
+    var childCount: Int
+    let offsetContainsZero: Bool
+    let min0: Int64
+    let max0: Int64
+    let min1: Int64
+    let max1: Int64
+    let min2: Int64
+    let max2: Int64
+    let min3: Int64
+    let max3: Int64
+    let min4: Int64
+    let max4: Int64
+    let min5: Int64
+    let max5: Int64
+    let min6: Int64
+    let max6: Int64
+
+    init(node: BiomeTreeNode, childIndexStart: Int = 0, childCount: Int = 0) {
+        self.value = node.value
+        self.isLeaf = node.value != nil
+        self.childIndexStart = childIndexStart
+        self.childCount = childCount
+        self.min0 = node.min0Value
+        self.max0 = node.max0Value
+        self.min1 = node.min1Value
+        self.max1 = node.max1Value
+        self.min2 = node.min2Value
+        self.max2 = node.max2Value
+        self.min3 = node.min3Value
+        self.max3 = node.max3Value
+        self.min4 = node.min4Value
+        self.max4 = node.max4Value
+        self.min5 = node.min5Value
+        self.max5 = node.max5Value
+        self.min6 = node.min6Value
+        self.max6 = node.max6Value
+        self.offsetContainsZero = self.min6 <= 0 && self.max6 >= 0
+    }
+
+    @inline(__always)
+    func squaredDistance(to point: BiomeSearchPoint) -> Int64 {
+        let d2 = distance(point.continentalness, self.min2, self.max2)
+        let d3 = distance(point.erosion, self.min3, self.max3)
+        let d5 = distance(point.weirdness, self.min5, self.max5)
+        let d4 = distance(point.depth, self.min4, self.max4)
+        let d0 = distance(point.temperature, self.min0, self.max0)
+        let d1 = distance(point.humidity, self.min1, self.max1)
+        var out = d2 &* d2
+        out &+= d3 &* d3
+        out &+= d5 &* d5
+        out &+= d4 &* d4
+        out &+= d0 &* d0
+        out &+= d1 &* d1
+        if !self.offsetContainsZero {
+            let d6 = distance(point.offset, self.min6, self.max6)
+            out &+= d6 &* d6
+        }
+        return out
+    }
+
+    @inline(__always)
+    func squaredDistanceBounded(to point: BiomeSearchPoint, maxDistance: Int64) -> Int64 {
+        let d2 = distance(point.continentalness, self.min2, self.max2)
+        var out = d2 &* d2
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d3 = distance(point.erosion, self.min3, self.max3)
+        out &+= d3 &* d3
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d5 = distance(point.weirdness, self.min5, self.max5)
+        out &+= d5 &* d5
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d4 = distance(point.depth, self.min4, self.max4)
+        out &+= d4 &* d4
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d0 = distance(point.temperature, self.min0, self.max0)
+        out &+= d0 &* d0
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        let d1 = distance(point.humidity, self.min1, self.max1)
+        out &+= d1 &* d1
+        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+        if !self.offsetContainsZero {
+            let d6 = distance(point.offset, self.min6, self.max6)
+            out &+= d6 &* d6
+        }
+        return out
+    }
+}
+
+private func flattenBiomeTree(
+    node: BiomeTreeNode,
+    into nodes: inout [FlatBiomeTreeNode],
+    childIndices: inout [Int]
+) -> Int {
+    let nodeIndex = nodes.count
+    nodes.append(FlatBiomeTreeNode(node: node))
+    var flattenedChildren: [Int] = []
+    flattenedChildren.reserveCapacity(node.children.count)
+    for child in node.children {
+        flattenedChildren.append(flattenBiomeTree(node: child, into: &nodes, childIndices: &childIndices))
+    }
+    let childIndexStart = childIndices.count
+    childIndices.append(contentsOf: flattenedChildren)
+    nodes[nodeIndex].childIndexStart = childIndexStart
+    nodes[nodeIndex].childCount = flattenedChildren.count
+    return nodeIndex
 }
 
 public func buildBiomeSearchTree(from biomeRegistry: Registry<Biome>, entries: [MultiNoiseBiomeSourceBiome]) throws -> BiomeSearchTree {
@@ -330,84 +503,6 @@ final class BiomeTreeNode {
         }
     }
 
-    @inline(__always)
-    func getResultingNode(point: BiomeSearchPoint, alternative: BiomeTreeNode) -> BiomeTreeNode {
-        var bestNode = alternative
-        var bestDistance = alternative.value != nil ? alternative.squaredDistance(to: point) : Int64.max
-        self.updateBestNode(point: point, bestNode: &bestNode, bestDistance: &bestDistance)
-        return bestNode
-    }
-
-    @inline(__always)
-    private func updateBestNode(
-        point: BiomeSearchPoint,
-        bestNode: inout BiomeTreeNode,
-        bestDistance: inout Int64
-    ) {
-        if self.isLeaf { return }
-        for child in self.children {
-            let distance = child.squaredDistanceBounded(to: point, maxDistance: bestDistance)
-            if bestDistance < distance { continue }
-            if child.isLeaf {
-                bestNode = child
-                bestDistance = distance
-            } else {
-                child.updateBestNode(point: point, bestNode: &bestNode, bestDistance: &bestDistance)
-            }
-            if bestDistance == 0 {
-                return
-            }
-        }
-    }
-
-    @inline(__always)
-    fileprivate func squaredDistance(to point: BiomeSearchPoint) -> Int64 {
-        let d2 = distance(point.continentalness, self.min2, self.max2)
-        let d3 = distance(point.erosion, self.min3, self.max3)
-        let d5 = distance(point.weirdness, self.min5, self.max5)
-        let d4 = distance(point.depth, self.min4, self.max4)
-        let d0 = distance(point.temperature, self.min0, self.max0)
-        let d1 = distance(point.humidity, self.min1, self.max1)
-        var out = d2 &* d2
-        out &+= d3 &* d3
-        out &+= d5 &* d5
-        out &+= d4 &* d4
-        out &+= d0 &* d0
-        out &+= d1 &* d1
-        if !self.offsetContainsZero {
-            let d6 = distance(point.offset, self.min6, self.max6)
-            out &+= d6 &* d6
-        }
-        return out
-    }
-
-    @inline(__always)
-    fileprivate func squaredDistanceBounded(to point: BiomeSearchPoint, maxDistance: Int64) -> Int64 {
-        let d2 = distance(point.continentalness, self.min2, self.max2)
-        var out = d2 &* d2
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d3 = distance(point.erosion, self.min3, self.max3)
-        out &+= d3 &* d3
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d5 = distance(point.weirdness, self.min5, self.max5)
-        out &+= d5 &* d5
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d4 = distance(point.depth, self.min4, self.max4)
-        out &+= d4 &* d4
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d0 = distance(point.temperature, self.min0, self.max0)
-        out &+= d0 &* d0
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        let d1 = distance(point.humidity, self.min1, self.max1)
-        out &+= d1 &* d1
-        if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
-        if !self.offsetContainsZero {
-            let d6 = distance(point.offset, self.min6, self.max6)
-            out &+= d6 &* d6
-        }
-        return out
-    }
-
     func nodes(with biome: RegistryKey<Biome>) -> [BiomeTreeNode] {
         var matches: [BiomeTreeNode] = []
         if self.value == biome {
@@ -457,6 +552,21 @@ final class BiomeTreeNode {
         }
         return BiomeTreeNode(parameters: enclosingParameters(from: retChildren), value: nil, children: retChildren)
     }
+
+    var min0Value: Int64 { self.min0 }
+    var max0Value: Int64 { self.max0 }
+    var min1Value: Int64 { self.min1 }
+    var max1Value: Int64 { self.max1 }
+    var min2Value: Int64 { self.min2 }
+    var max2Value: Int64 { self.max2 }
+    var min3Value: Int64 { self.min3 }
+    var max3Value: Int64 { self.max3 }
+    var min4Value: Int64 { self.min4 }
+    var max4Value: Int64 { self.max4 }
+    var min5Value: Int64 { self.min5 }
+    var max5Value: Int64 { self.max5 }
+    var min6Value: Int64 { self.min6 }
+    var max6Value: Int64 { self.max6 }
 }
 
 @inline(__always)

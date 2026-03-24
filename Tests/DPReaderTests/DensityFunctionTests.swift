@@ -9,6 +9,44 @@ fileprivate enum TestingError: Error {
     case splineValueNotNumberError
 }
 
+fileprivate final class CountingDensityFunction: DensityFunction {
+    let value: Double
+    let lowerBound: Double
+    let upperBound: Double
+    var sampleCount = 0
+
+    init(value: Double, lowerBound: Double? = nil, upperBound: Double? = nil) {
+        self.value = value
+        self.lowerBound = lowerBound ?? value
+        self.upperBound = upperBound ?? value
+    }
+
+    required init(from decoder: any Decoder) throws {
+        fatalError("CountingDensityFunction decoding is unsupported in tests")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        fatalError("CountingDensityFunction encoding is unsupported in tests")
+    }
+
+    func sample(at pos: PosInt3D) -> Double {
+        self.sampleCount += 1
+        return self.value
+    }
+
+    func lowerBoundValue() -> Double {
+        return self.lowerBound
+    }
+
+    func upperBoundValue() -> Double {
+        return self.upperBound
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+}
+
 // ----- SERIALIZATION (ENCODING) TESTS -----
 
 @Test func testEncodingForReference() async throws {
@@ -885,6 +923,38 @@ private func squeeze(_ x: Double) -> Double {
     let inputOutside = ConstantDensityFunction(value: -5.0)
     let rcOutside = RangeChoice(inputChoice: inputOutside, minInclusive: 0.0, maxExclusive: 1.0, whenInRange: inRange, whenOutOfRange: outRange)
     #expect(rcOutside.sample(at: PosInt3D(x: 0, y: 0, z: 0)) == -10.0)
+}
+
+@Test func testRangeChoiceShortCircuitsBinaryMinMaxBranches() async throws {
+    let pos = PosInt3D(x: 0, y: 0, z: 0)
+
+    let minInput = CountingDensityFunction(value: 0.25)
+    let minOther = CountingDensityFunction(value: 10.0, lowerBound: 5.0, upperBound: 10.0)
+    let minBranch = BinaryDensityFunction(firstOperand: minInput, secondOperand: minOther, type: .MINIMUM)
+    let minChoice = RangeChoice(
+        inputChoice: minInput,
+        minInclusive: 0.0,
+        maxExclusive: 1.0,
+        whenInRange: minBranch,
+        whenOutOfRange: ConstantDensityFunction(value: -1.0)
+    )
+    #expect(minChoice.sample(at: pos) == 0.25)
+    #expect(minInput.sampleCount == 1)
+    #expect(minOther.sampleCount == 0)
+
+    let maxInput = CountingDensityFunction(value: 9.0)
+    let maxOther = CountingDensityFunction(value: -3.0, lowerBound: -5.0, upperBound: 4.0)
+    let maxBranch = BinaryDensityFunction(firstOperand: maxOther, secondOperand: maxInput, type: .MAXIMUM)
+    let maxChoice = RangeChoice(
+        inputChoice: maxInput,
+        minInclusive: 0.0,
+        maxExclusive: 10.0,
+        whenInRange: maxBranch,
+        whenOutOfRange: ConstantDensityFunction(value: -1.0)
+    )
+    #expect(maxChoice.sample(at: pos) == 9.0)
+    #expect(maxInput.sampleCount == 1)
+    #expect(maxOther.sampleCount == 0)
 }
 
 // Helper deterministic noise for Shift / ShiftedNoise tests.
