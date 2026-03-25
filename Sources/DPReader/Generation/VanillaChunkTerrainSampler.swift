@@ -547,21 +547,27 @@ private final class VanillaChunkTerrainInterpolator {
         self.sampler.startBlockX = blockX
         self.sampler.cellBlockX = 0
 
-        for localCellZ in 0...self.horizontalCellCount {
-            let blockZ = self.columnSampleBlockZs[localCellZ]
-            let baseIndex = localCellZ * self.strideY
-            self.sampler.startBlockZ = blockZ
-            self.sampler.cellBlockZ = 0
-            self.sampler.cacheOnceUniqueIndex += 1
+        buffer.withUnsafeMutableBufferPointer { bufferPointer in
+            let bufferBase = bufferPointer.baseAddress!
+            for localCellZ in 0...self.horizontalCellCount {
+                let blockZ = self.columnSampleBlockZs[localCellZ]
+                let baseIndex = localCellZ * self.strideY
+                self.sampler.startBlockZ = blockZ
+                self.sampler.cellBlockZ = 0
+                self.sampler.cacheOnceUniqueIndex += 1
 
-            if self.profilingEnabled {
-                let sampleStart = DispatchTime.now().uptimeNanoseconds
-                self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
-                self.columnSampleEvaluationNanos &+= DispatchTime.now().uptimeNanoseconds - sampleStart
-            } else {
-                self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
+                if self.profilingEnabled {
+                    let sampleStart = DispatchTime.now().uptimeNanoseconds
+                    self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
+                    self.columnSampleEvaluationNanos &+= DispatchTime.now().uptimeNanoseconds - sampleStart
+                } else {
+                    self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
+                }
+
+                for index in 0..<self.strideY {
+                    bufferBase[baseIndex + index] = self.columnScratch[index]
+                }
             }
-            buffer.replaceSubrange(baseIndex..<(baseIndex + self.strideY), with: self.columnScratch)
         }
 
         self.sampler.cacheOnceUniqueIndex += 1
@@ -1189,21 +1195,82 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
         let inRangeStrategy = self.rangeChoiceBranchStrategy(for: function.whenInRangeOutput, inputChoice: function.inputChoiceFunction)
         let outOfRangeStrategy = self.rangeChoiceBranchStrategy(for: function.whenOutOfRangeOutput, inputChoice: function.inputChoiceFunction)
+        let inRangeNeedsSamplerPos = self.rangeChoiceBranchStrategyNeedsSamplerPos(inRangeStrategy)
+        let outOfRangeNeedsSamplerPos = self.rangeChoiceBranchStrategyNeedsSamplerPos(outOfRangeStrategy)
+
+        if inRangeNeedsSamplerPos {
+            if outOfRangeNeedsSamplerPos {
+                for i in densities.indices {
+                    let input = densities[i]
+                    if input >= function.minimumInclusive && input < function.maximumExclusive {
+                        self.setSamplerPosForFillIndex(i, mode: mode)
+                        if let sampled = self.sampleRangeChoiceBranch(inRangeStrategy, inputValue: input) {
+                            densities[i] = sampled
+                        } else {
+                            densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
+                        }
+                    } else {
+                        self.setSamplerPosForFillIndex(i, mode: mode)
+                        if let sampled = self.sampleRangeChoiceBranch(outOfRangeStrategy, inputValue: input) {
+                            densities[i] = sampled
+                        } else {
+                            densities[i] = self.sampleAtCurrentPos(function.whenOutOfRangeOutput)
+                        }
+                    }
+                }
+                return
+            }
+
+            for i in densities.indices {
+                let input = densities[i]
+                if input >= function.minimumInclusive && input < function.maximumExclusive {
+                    self.setSamplerPosForFillIndex(i, mode: mode)
+                    if let sampled = self.sampleRangeChoiceBranch(inRangeStrategy, inputValue: input) {
+                        densities[i] = sampled
+                    } else {
+                        densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
+                    }
+                } else {
+                    if let sampled = self.sampleRangeChoiceBranch(outOfRangeStrategy, inputValue: input) {
+                        densities[i] = sampled
+                    } else {
+                        densities[i] = self.sampleAtCurrentPos(function.whenOutOfRangeOutput)
+                    }
+                }
+            }
+            return
+        }
+
+        if outOfRangeNeedsSamplerPos {
+            for i in densities.indices {
+                let input = densities[i]
+                if input >= function.minimumInclusive && input < function.maximumExclusive {
+                    if let sampled = self.sampleRangeChoiceBranch(inRangeStrategy, inputValue: input) {
+                        densities[i] = sampled
+                    } else {
+                        densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
+                    }
+                } else {
+                    self.setSamplerPosForFillIndex(i, mode: mode)
+                    if let sampled = self.sampleRangeChoiceBranch(outOfRangeStrategy, inputValue: input) {
+                        densities[i] = sampled
+                    } else {
+                        densities[i] = self.sampleAtCurrentPos(function.whenOutOfRangeOutput)
+                    }
+                }
+            }
+            return
+        }
+
         for i in densities.indices {
             let input = densities[i]
             if input >= function.minimumInclusive && input < function.maximumExclusive {
-                if self.rangeChoiceBranchStrategyNeedsSamplerPos(inRangeStrategy) {
-                    self.setSamplerPosForFillIndex(i, mode: mode)
-                }
                 if let sampled = self.sampleRangeChoiceBranch(inRangeStrategy, inputValue: input) {
                     densities[i] = sampled
                 } else {
                     densities[i] = self.sampleAtCurrentPos(function.whenInRangeOutput)
                 }
             } else {
-                if self.rangeChoiceBranchStrategyNeedsSamplerPos(outOfRangeStrategy) {
-                    self.setSamplerPosForFillIndex(i, mode: mode)
-                }
                 if let sampled = self.sampleRangeChoiceBranch(outOfRangeStrategy, inputValue: input) {
                     densities[i] = sampled
                 } else {
