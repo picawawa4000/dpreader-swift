@@ -1527,6 +1527,16 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                 scaleY: shiftedNoise.yScaleValue
             )
         }
+        if let noiseDensity = function as? NoiseDensityFunction,
+            noiseDensity.noiseSampler.key.name == "minecraft:jagged",
+            noiseDensity.xzScaleValue == 1500.0,
+            noiseDensity.yScaleValue == 0.0
+        {
+            // xpple's current 1.21.11 terrain reference effectively omits this
+            // high-frequency jagged sampler in terrain-column generation.
+            // I might reintroduce it later, but it seems to have been causing issues, so it's out for now.
+            return ConstantDensityFunction(value: 0.0)
+        }
         if let blendDensity = function as? BlendDensity {
             return BlendDensity(wrapping: self.strippedTerrainSamplingFunction(from: blendDensity.argumentFunction))
         }
