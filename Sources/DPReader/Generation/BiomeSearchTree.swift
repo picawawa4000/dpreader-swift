@@ -8,7 +8,6 @@ public enum BiomeSearchTreeError: Error {
 public final class BiomeSearchTree {
     private let root: BiomeTreeNode
     private let flatNodes: [FlatBiomeTreeNode]
-    private let flatChildIndices: [Int]
     private let rootIndex: Int
 
     public init(entries: [(NoiseHypercube, RegistryKey<Biome>)]) throws {
@@ -21,17 +20,9 @@ public final class BiomeSearchTree {
             converted.append(BiomeTreeNode(parameters: entry.0.toList(), value: entry.1, children: []))
         }
         self.root = try BiomeTreeNode.createNode(from: converted)
-        var flatNodes: [FlatBiomeTreeNode] = []
-        flatNodes.reserveCapacity(converted.count * 2)
-        var flatChildIndices: [Int] = []
-        flatChildIndices.reserveCapacity(converted.count * 2)
-        self.rootIndex = flattenBiomeTree(
-            node: self.root,
-            into: &flatNodes,
-            childIndices: &flatChildIndices
-        )
-        self.flatNodes = flatNodes
-        self.flatChildIndices = flatChildIndices
+        let flattened = flattenBiomeTree(node: self.root)
+        self.rootIndex = 0
+        self.flatNodes = flattened
     }
 
     public func get(_ point: NoisePoint) throws -> RegistryKey<Biome> {
@@ -87,6 +78,7 @@ public final class BiomeSearchTree {
         state.lastResultIndex = resultIndex
         return value!
     }
+
 
     func makeReusableLookupState() -> BiomeSearchLookupState {
         return BiomeSearchLookupState(lastResultIndex: -1, scratchPoint: BiomeSearchPoint())
@@ -186,41 +178,51 @@ public final class BiomeSearchTree {
 
     @inline(__always)
     private func getResultingNodeIndex(point: BiomeSearchPoint, alternativeIndex: Int) -> Int {
-        var bestNodeIndex = alternativeIndex
-        var bestDistance = alternativeIndex >= 0 ? self.flatNodes[alternativeIndex].squaredDistance(to: point) : Int64.max
-        self.updateBestNode(
-            nodeIndex: self.rootIndex,
-            point: point,
-            bestNodeIndex: &bestNodeIndex,
-            bestDistance: &bestDistance
-        )
-        return bestNodeIndex
+        return self.flatNodes.withUnsafeBufferPointer { nodes in
+            guard let nodesBase = nodes.baseAddress else {
+                return alternativeIndex
+            }
+            var bestNodeIndex = alternativeIndex
+            var bestDistance = alternativeIndex >= 0
+                ? squaredDistance(of: nodesBase.advanced(by: alternativeIndex), to: point)
+                : Int64.max
+            Self.updateBestNode(
+                nodeIndex: self.rootIndex,
+                point: point,
+                bestNodeIndex: &bestNodeIndex,
+                bestDistance: &bestDistance,
+                nodesBase: nodesBase
+            )
+            return bestNodeIndex
+        }
     }
 
     @inline(__always)
-    private func updateBestNode(
+    private static func updateBestNode(
         nodeIndex: Int,
         point: BiomeSearchPoint,
         bestNodeIndex: inout Int,
-        bestDistance: inout Int64
+        bestDistance: inout Int64,
+        nodesBase: UnsafePointer<FlatBiomeTreeNode>
     ) {
-        let node = self.flatNodes[nodeIndex]
-        if node.isLeaf { return }
-        let childEnd = node.childIndexStart + node.childCount
-        for childOffset in node.childIndexStart..<childEnd {
-            let childIndex = self.flatChildIndices[childOffset]
-            let child = self.flatNodes[childIndex]
-            let distance = child.squaredDistanceBounded(to: point, maxDistance: bestDistance)
+        let node = nodesBase.advanced(by: nodeIndex)
+        if node.pointee.isLeaf { return }
+        let childIndexStart = node.pointee.childIndexStart
+        let childEnd = childIndexStart + node.pointee.childCount
+        for childIndex in childIndexStart..<childEnd {
+            let child = nodesBase.advanced(by: childIndex)
+            let distance = squaredDistanceBounded(of: child, to: point, maxDistance: bestDistance)
             if bestDistance < distance { continue }
-            if child.isLeaf {
+            if child.pointee.isLeaf {
                 bestNodeIndex = childIndex
                 bestDistance = distance
             } else {
-                self.updateBestNode(
+                Self.updateBestNode(
                     nodeIndex: childIndex,
                     point: point,
                     bestNodeIndex: &bestNodeIndex,
-                    bestDistance: &bestDistance
+                    bestDistance: &bestDistance,
+                    nodesBase: nodesBase
                 )
             }
             if bestDistance == 0 {
@@ -342,23 +344,90 @@ private struct FlatBiomeTreeNode {
     }
 }
 
-private func flattenBiomeTree(
-    node: BiomeTreeNode,
-    into nodes: inout [FlatBiomeTreeNode],
-    childIndices: inout [Int]
-) -> Int {
-    let nodeIndex = nodes.count
-    nodes.append(FlatBiomeTreeNode(node: node))
-    var flattenedChildren: [Int] = []
-    flattenedChildren.reserveCapacity(node.children.count)
-    for child in node.children {
-        flattenedChildren.append(flattenBiomeTree(node: child, into: &nodes, childIndices: &childIndices))
+@inline(__always)
+private func squaredDistance(of node: UnsafePointer<FlatBiomeTreeNode>, to point: BiomeSearchPoint) -> Int64 {
+    let d2 = distance(point.continentalness, node.pointee.min2, node.pointee.max2)
+    let d3 = distance(point.erosion, node.pointee.min3, node.pointee.max3)
+    let d5 = distance(point.weirdness, node.pointee.min5, node.pointee.max5)
+    let d4 = distance(point.depth, node.pointee.min4, node.pointee.max4)
+    let d0 = distance(point.temperature, node.pointee.min0, node.pointee.max0)
+    let d1 = distance(point.humidity, node.pointee.min1, node.pointee.max1)
+    var out = d2 &* d2
+    out &+= d3 &* d3
+    out &+= d5 &* d5
+    out &+= d4 &* d4
+    out &+= d0 &* d0
+    out &+= d1 &* d1
+    if !node.pointee.offsetContainsZero {
+        let d6 = distance(point.offset, node.pointee.min6, node.pointee.max6)
+        out &+= d6 &* d6
     }
-    let childIndexStart = childIndices.count
-    childIndices.append(contentsOf: flattenedChildren)
-    nodes[nodeIndex].childIndexStart = childIndexStart
-    nodes[nodeIndex].childCount = flattenedChildren.count
-    return nodeIndex
+    return out
+}
+
+@inline(__always)
+private func squaredDistanceBounded(
+    of node: UnsafePointer<FlatBiomeTreeNode>,
+    to point: BiomeSearchPoint,
+    maxDistance: Int64
+) -> Int64 {
+    let d2 = distance(point.continentalness, node.pointee.min2, node.pointee.max2)
+    var out = d2 &* d2
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d3 = distance(point.erosion, node.pointee.min3, node.pointee.max3)
+    out &+= d3 &* d3
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d5 = distance(point.weirdness, node.pointee.min5, node.pointee.max5)
+    out &+= d5 &* d5
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d4 = distance(point.depth, node.pointee.min4, node.pointee.max4)
+    out &+= d4 &* d4
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d0 = distance(point.temperature, node.pointee.min0, node.pointee.max0)
+    out &+= d0 &* d0
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    let d1 = distance(point.humidity, node.pointee.min1, node.pointee.max1)
+    out &+= d1 &* d1
+    if out > maxDistance { return maxDistance == Int64.max ? maxDistance : maxDistance + 1 }
+    if !node.pointee.offsetContainsZero {
+        let d6 = distance(point.offset, node.pointee.min6, node.pointee.max6)
+        out &+= d6 &* d6
+    }
+    return out
+}
+
+private func flattenBiomeTree(node: BiomeTreeNode) -> [FlatBiomeTreeNode] {
+    var nodes: [FlatBiomeTreeNode?] = [nil]
+    var nextFreeIndex = 1
+    populateFlatBiomeTree(node: node, at: 0, into: &nodes, nextFreeIndex: &nextFreeIndex)
+    return nodes.map { $0! }
+}
+
+private func populateFlatBiomeTree(
+    node: BiomeTreeNode,
+    at nodeIndex: Int,
+    into nodes: inout [FlatBiomeTreeNode?],
+    nextFreeIndex: inout Int
+) {
+    let childIndexStart = nextFreeIndex
+    let childCount = node.children.count
+    nextFreeIndex += childCount
+    if nodes.count < nextFreeIndex {
+        nodes.append(contentsOf: repeatElement(nil, count: nextFreeIndex - nodes.count))
+    }
+    nodes[nodeIndex] = FlatBiomeTreeNode(
+        node: node,
+        childIndexStart: childIndexStart,
+        childCount: childCount
+    )
+    for (childOffset, child) in node.children.enumerated() {
+        populateFlatBiomeTree(
+            node: child,
+            at: childIndexStart + childOffset,
+            into: &nodes,
+            nextFreeIndex: &nextFreeIndex
+        )
+    }
 }
 
 public func buildBiomeSearchTree(from biomeRegistry: Registry<Biome>, entries: [MultiNoiseBiomeSourceBiome]) throws -> BiomeSearchTree {
