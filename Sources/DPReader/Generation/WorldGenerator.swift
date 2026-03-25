@@ -450,8 +450,6 @@ private struct VoronoiBiomeSubsampler {
         }
 
         return VoronoiSectionAxisData(
-            pxs: pxs,
-            pzs: pzs,
             dxs: dxs,
             dzs: dzs,
             xRuns: voronoiAxisRuns(from: pxs),
@@ -468,20 +466,10 @@ private struct VoronoiBiomeSubsampler {
         sectionStartY: Int32,
         voronoiSHA: UInt64
     ) -> SectionBiomeLatticeMap {
-        var pys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
-        var dys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         let startY = sectionStartY &- 2
-        var minPY = Int32.max
-        var maxPY = Int32.min
-        for localY in 0..<ProtoChunkSection.sideLength {
-            let y = startY &+ Int32(localY)
-            let pY = y >> 2
-            pys[localY] = pY
-            dys[localY] = (y & 3) &* 10_240
-            minPY = min(minPY, pY)
-            maxPY = max(maxPY, pY)
-        }
-        let yRuns = voronoiAxisRuns(from: pys)
+        let yPattern = VoronoiYAxisPattern.byStartRemainder[Int(startY & 3)]
+        let minPY = startY >> 2
+        let maxPY = minPY &+ yPattern.maxCellOffset
         let offsetCountX = Int(axisData.maxPX - axisData.minPX + 2)
         let offsetCountY = Int(maxPY - minPY + 2)
         let offsetCountZ = Int(axisData.maxPZ - axisData.minPZ + 2)
@@ -514,6 +502,8 @@ private struct VoronoiBiomeSubsampler {
         var uniquePositions: [BiomeLatticePosition] = []
         uniquePositions.reserveCapacity(1024)
         var blockToUniqueIndex = [UInt16](repeating: 0, count: ProtoChunkSection.blockCount)
+        var samplingOrder: [UInt16] = []
+        samplingOrder.reserveCapacity(1024)
         let cornerXBits = [0, 0, 0, 0, 1, 1, 1, 1]
         let cornerYBits = [0, 0, 1, 1, 0, 0, 1, 1]
         let cornerZBits = [0, 1, 0, 1, 0, 1, 0, 1]
@@ -522,12 +512,13 @@ private struct VoronoiBiomeSubsampler {
         var yTerms = [UInt64](repeating: 0, count: ProtoChunkSection.sideLength * 8)
         var zTerms = [UInt64](repeating: 0, count: ProtoChunkSection.sideLength * 8)
 
-        for yRun in yRuns {
-            let offsetY = Int(yRun.p - minPY)
+        for yRun in yPattern.runs {
+            let offsetY = Int(yRun.p)
             for zRun in axisData.zRuns {
                 let offsetZ = Int(zRun.p - axisData.minPZ)
                 for xRun in axisData.xRuns {
                     let offsetX = Int(xRun.p - axisData.minPX)
+                    let yRunP = minPY &+ yRun.p
 
                     for cornerIndex in 0..<8 {
                         let bx = cornerXBits[cornerIndex]
@@ -544,7 +535,7 @@ private struct VoronoiBiomeSubsampler {
                             xTerms[termBase + localX] = UInt64(rx &* rx)
                         }
                         for localY in yRun.start..<yRun.endExclusive {
-                            let ry = Int64(yBase &+ dys[localY])
+                            let ry = Int64(yBase &+ yPattern.dys[localY])
                             yTerms[termBase + localY] = UInt64(ry &* ry)
                         }
                         for localZ in zRun.start..<zRun.endExclusive {
@@ -586,7 +577,7 @@ private struct VoronoiBiomeSubsampler {
                                         BiomeLatticePosition(
                                             PosInt3D(
                                                 x: xRun.p &+ Int32(bx),
-                                                y: yRun.p &+ Int32(by),
+                                                y: yRunP &+ Int32(by),
                                                 z: zRun.p &+ Int32(bz)
                                             )
                                         )
@@ -601,8 +592,6 @@ private struct VoronoiBiomeSubsampler {
             }
         }
 
-        var samplingOrder: [UInt16] = []
-        samplingOrder.reserveCapacity(uniquePositions.count)
         for offsetZ in 0..<offsetCountZ {
             for offsetX in 0..<offsetCountX {
                 for offsetY in 0..<offsetCountY {
@@ -1486,8 +1475,6 @@ private struct SectionBiomeLatticeMap {
 }
 
 private struct VoronoiSectionAxisData {
-    let pxs: [Int32]
-    let pzs: [Int32]
     let dxs: [Int32]
     let dzs: [Int32]
     let xRuns: [VoronoiAxisRun]
@@ -1502,6 +1489,27 @@ private struct VoronoiAxisRun {
     let start: Int
     let endExclusive: Int
     let p: Int32
+}
+
+private struct VoronoiYAxisPattern {
+    let dys: [Int32]
+    let runs: [VoronoiAxisRun]
+    let maxCellOffset: Int32
+
+    static let byStartRemainder: [VoronoiYAxisPattern] = (0..<4).map { startRemainder in
+        var pys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
+        var dys = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
+        for localY in 0..<ProtoChunkSection.sideLength {
+            let y = startRemainder + localY
+            pys[localY] = Int32(y >> 2)
+            dys[localY] = Int32(y & 3) &* 10_240
+        }
+        return VoronoiYAxisPattern(
+            dys: dys,
+            runs: voronoiAxisRuns(from: pys),
+            maxCellOffset: pys.last ?? 0
+        )
+    }
 }
 
 private func voronoiAxisRuns(from positions: [Int32]) -> [VoronoiAxisRun] {
@@ -1912,17 +1920,21 @@ public final class WorldGenerator {
         }
 
         if mode != .blockOnly {
-            for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
-                let biomeZ = quartBiomeStartZ &+ Int32(localBiomeZ)
-                for localBiomeX in 0..<ProtoChunk.biomeSideLength {
-                    let biomeX = quartBiomeStartX &+ Int32(localBiomeX)
-                    let sectionBiomeXZ = (localBiomeZ << 2) | localBiomeX
-                    for localBiomeY in 0..<biomeHeight {
-                        let biomeY = quartBiomeStartY &+ Int32(localBiomeY)
-                        let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
-                        let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
-                        let biome = cachedBiomeFast(x: biomeX, y: biomeY, z: biomeZ)
-                        section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
+            for sectionIndex in 0..<chunk.sectionCount {
+                let section = chunk.sectionUnchecked(at: sectionIndex)
+                let sectionBiomeStartY = quartBiomeStartY &+ Int32(sectionIndex * ProtoChunkSection.biomeSideLength)
+                for localBiomeY in 0..<ProtoChunkSection.biomeSideLength {
+                    let biomeY = sectionBiomeStartY &+ Int32(localBiomeY)
+                    let sectionBiomeY = localBiomeY << 4
+                    for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
+                        let biomeZ = quartBiomeStartZ &+ Int32(localBiomeZ)
+                        let sectionBiomeZ = localBiomeZ << 2
+                        for localBiomeX in 0..<ProtoChunk.biomeSideLength {
+                            let biomeX = quartBiomeStartX &+ Int32(localBiomeX)
+                            let sectionBiomeIndex = sectionBiomeY | sectionBiomeZ | localBiomeX
+                            let biome = cachedBiomeFast(x: biomeX, y: biomeY, z: biomeZ)
+                            section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
+                        }
                     }
                 }
             }
