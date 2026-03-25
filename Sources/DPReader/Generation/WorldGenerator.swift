@@ -420,7 +420,6 @@ private struct VoronoiBiomeSubsampler {
     ]
     private static let stepMultiplier: UInt64 = 6_364_136_223_846_793_005
     private static let stepIncrement: UInt64 = 1_442_695_040_888_963_407
-
     func sectionAxisData(chunkStartX: Int32, chunkStartZ: Int32) -> VoronoiSectionAxisData {
         var pxs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
         var pzs = [Int32](repeating: 0, count: ProtoChunkSection.sideLength)
@@ -1198,6 +1197,15 @@ public final class ProtoChunkSection {
         self.blockBiomes[blockIndex] = biome
     }
 
+    @inline(__always) func setBiomesUnchecked(_ biomes: [RegistryKey<Biome>], using blockToBiomeIndex: [UInt16]) {
+        self.blockBiomes.withUnsafeMutableBufferPointer { blockBiomes in
+            let blockBase = blockBiomes.baseAddress!
+            for blockIndex in 0..<Self.blockCount {
+                blockBase[blockIndex] = biomes[Int(blockToBiomeIndex[blockIndex])]
+            }
+        }
+    }
+
     @inline(__always) func setBiome(_ biome: RegistryKey<Biome>, at pos: PosInt3D) {
         precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x biome position out of range")
         precondition(pos.y >= 0 && pos.y < Int32(Self.sideLength), "y biome position out of range")
@@ -1731,17 +1739,29 @@ public final class WorldGenerator {
 
     private func bakeChunkGenerationDensityFunctions(
         from noiseRouter: NoiseRouter,
-        with chunkSampler: VanillaChunkTerrainSampler
+        with chunkSampler: VanillaChunkTerrainSampler,
+        chunkPos: PosInt2D,
+        minY: Int32,
+        height: Int32,
+        sizeHorizontal: Int,
+        sizeVertical: Int
     ) throws -> ChunkGenerationDensityFunctions {
+        let biomeBaker = ChunkDensityFunctionBaker(
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: sizeHorizontal,
+            sizeVertical: sizeVertical
+        )
         return ChunkGenerationDensityFunctions(
             terrainDensity: try chunkSampler.bakeDensityFunction(noiseRouter.finalDensity),
             biomeDensityFunctions: ChunkBiomeDensityFunctions(
-                temperature: try chunkSampler.bakeDensityFunction(noiseRouter.temperature),
-                humidity: try chunkSampler.bakeDensityFunction(noiseRouter.humidity),
-                continentalness: try chunkSampler.bakeDensityFunction(noiseRouter.continents),
-                erosion: try chunkSampler.bakeDensityFunction(noiseRouter.erosion),
-                weirdness: try chunkSampler.bakeDensityFunction(noiseRouter.weirdness),
-                depth: try chunkSampler.bakeDensityFunction(noiseRouter.depth)
+                temperature: try biomeBaker.bakeDensityFunction(noiseRouter.temperature),
+                humidity: try biomeBaker.bakeDensityFunction(noiseRouter.humidity),
+                continentalness: try biomeBaker.bakeDensityFunction(noiseRouter.continents),
+                erosion: try biomeBaker.bakeDensityFunction(noiseRouter.erosion),
+                weirdness: try biomeBaker.bakeDensityFunction(noiseRouter.weirdness),
+                depth: try biomeBaker.bakeDensityFunction(noiseRouter.depth)
             )
         )
     }
@@ -1774,11 +1794,12 @@ public final class WorldGenerator {
     ) {
         let chunkStartX = chunkPos.x &* Int32(ProtoChunk.sideLength)
         let chunkStartZ = chunkPos.z &* Int32(ProtoChunk.sideLength)
-        let quartXs = [chunkStartX, chunkStartX + 4, chunkStartX + 8, chunkStartX + 12]
-        let quartZs = [chunkStartZ, chunkStartZ + 4, chunkStartZ + 8, chunkStartZ + 12]
         let biomeHeight = chunk.biomeHeight
         let lookupState = searchTree.makeReusableLookupState()
         let sectionAxisData = self.biomeSubsampler.sectionAxisData(chunkStartX: chunkStartX, chunkStartZ: chunkStartZ)
+        let quartBiomeStartX = biomeCoord(fromBlock: chunkStartX)
+        let quartBiomeStartY = biomeCoord(fromBlock: minY)
+        let quartBiomeStartZ = biomeCoord(fromBlock: chunkStartZ)
         let minSampleBiomeX = biomeCoord(fromBlock: chunkStartX &- 2)
         let maxSampleBiomeX = biomeCoord(fromBlock: chunkStartX &+ Int32(ProtoChunk.sideLength - 1) &- 2) &+ 1
         let minSampleBiomeY = biomeCoord(fromBlock: minY &- 2)
@@ -1830,34 +1851,77 @@ public final class WorldGenerator {
         }
 
         @inline(__always)
-        func sampledSectionBiomes(for latticeMap: SectionBiomeLatticeMap) -> [RegistryKey<Biome>?] {
-            var sectionBiomes = [RegistryKey<Biome>?](repeating: nil, count: latticeMap.uniquePositions.count)
-            for uniqueIndex in latticeMap.samplingOrder {
-                let index = Int(uniqueIndex)
-                let latticePos = latticeMap.uniquePositions[index]
-                sectionBiomes[index] = cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
+        func sampledSectionBiomes(for latticeMap: SectionBiomeLatticeMap) -> [RegistryKey<Biome>] {
+            if latticeMap.uniquePositions.isEmpty {
+                return []
             }
-            return sectionBiomes
+            return Array(unsafeUninitializedCapacity: latticeMap.uniquePositions.count) { buffer, initializedCount in
+                let base = buffer.baseAddress!
+                for uniqueIndex in latticeMap.samplingOrder {
+                    let index = Int(uniqueIndex)
+                    let latticePos = latticeMap.uniquePositions[index]
+                    base.advanced(by: index).initialize(
+                        to: cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
+                    )
+                }
+                initializedCount = latticeMap.uniquePositions.count
+            }
+        }
+
+        @inline(__always)
+        func cachedBiomeFast(x: Int32, y: Int32, z: Int32) -> RegistryKey<Biome> {
+            let sampledIndex = sampledBiomeIndex(x: x, y: y, z: z)
+            if let cached = sampledBiomes[sampledIndex] {
+                return cached
+            }
+
+            let pos = PosInt3D(
+                x: blockCoord(fromBiome: x),
+                y: blockCoord(fromBiome: y),
+                z: blockCoord(fromBiome: z)
+            )
+            let biome = searchTree.getUnchecked(
+                temperature: functions.temperature.sample(at: pos),
+                humidity: functions.humidity.sample(at: pos),
+                continentalness: functions.continentalness.sample(at: pos),
+                erosion: functions.erosion.sample(at: pos),
+                weirdness: functions.weirdness.sample(at: pos),
+                depth: functions.depth.sample(at: pos),
+                using: lookupState
+            )
+            sampledBiomes[sampledIndex] = biome
+            return biome
+        }
+
+        @inline(__always)
+        func sampledSectionBiomesFast(for latticeMap: SectionBiomeLatticeMap) -> [RegistryKey<Biome>] {
+            if latticeMap.uniquePositions.isEmpty {
+                return []
+            }
+            return Array(unsafeUninitializedCapacity: latticeMap.uniquePositions.count) { buffer, initializedCount in
+                let base = buffer.baseAddress!
+                for uniqueIndex in latticeMap.samplingOrder {
+                    let index = Int(uniqueIndex)
+                    let latticePos = latticeMap.uniquePositions[index]
+                    base.advanced(by: index).initialize(
+                        to: cachedBiomeFast(x: latticePos.x, y: latticePos.y, z: latticePos.z)
+                    )
+                }
+                initializedCount = latticeMap.uniquePositions.count
+            }
         }
 
         if mode != .blockOnly {
             for localBiomeZ in 0..<ProtoChunk.biomeSideLength {
-                let worldZ = quartZs[localBiomeZ]
+                let biomeZ = quartBiomeStartZ &+ Int32(localBiomeZ)
                 for localBiomeX in 0..<ProtoChunk.biomeSideLength {
-                    let worldX = quartXs[localBiomeX]
+                    let biomeX = quartBiomeStartX &+ Int32(localBiomeX)
                     let sectionBiomeXZ = (localBiomeZ << 2) | localBiomeX
                     for localBiomeY in 0..<biomeHeight {
-                        let worldY = minY + Int32(localBiomeY * ProtoChunk.biomeScale)
+                        let biomeY = quartBiomeStartY &+ Int32(localBiomeY)
                         let section = chunk.sectionUnchecked(at: localBiomeY >> 2)
                         let sectionBiomeIndex = ((localBiomeY & 3) << 4) | sectionBiomeXZ
-                        let latticePos = BiomeLatticePosition(
-                            PosInt3D(
-                                x: biomeCoord(fromBlock: worldX),
-                                y: biomeCoord(fromBlock: worldY),
-                                z: biomeCoord(fromBlock: worldZ)
-                            )
-                        )
-                        let biome = cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
+                        let biome = cachedBiomeFast(x: biomeX, y: biomeY, z: biomeZ)
                         section.setBiomeUnchecked(biome, biomeIndex: sectionBiomeIndex)
                     }
                 }
@@ -1873,11 +1937,8 @@ public final class WorldGenerator {
                     sectionStartY: sectionStartY,
                     voronoiSHA: self.voronoiSHA
                 )
-                let sectionBiomes = sampledSectionBiomes(for: latticeMap)
-                for blockIndex in 0..<ProtoChunkSection.blockCount {
-                    let biome = sectionBiomes[Int(latticeMap.blockToUniqueIndex[blockIndex])]!
-                    section.setBiomeUnchecked(biome, blockIndex: blockIndex)
-                }
+                let sectionBiomes = sampledSectionBiomesFast(for: latticeMap)
+                section.setBiomesUnchecked(sectionBiomes, using: latticeMap.blockToUniqueIndex)
             }
         }
     }
@@ -2103,7 +2164,15 @@ public final class WorldGenerator {
             sizeVertical: config.sizeVertical
         )
 
-        let chunkGenerationFunctions = try self.bakeChunkGenerationDensityFunctions(from: config.noiseRouter, with: chunkSampler)
+        let chunkGenerationFunctions = try self.bakeChunkGenerationDensityFunctions(
+            from: config.noiseRouter,
+            with: chunkSampler,
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
         if let searchTree = self.configuredChunkBiomeSearchTree() {
             self.generateBiomesIntoChunk(
                 chunk,
@@ -2144,7 +2213,15 @@ public final class WorldGenerator {
             let samplerInitEnd = DispatchTime.now().uptimeNanoseconds
 
             let bakeStart = DispatchTime.now().uptimeNanoseconds
-            let densityFunctions = try self.bakeChunkGenerationDensityFunctions(from: config.noiseRouter, with: chunkSampler)
+            let densityFunctions = try self.bakeChunkGenerationDensityFunctions(
+                from: config.noiseRouter,
+                with: chunkSampler,
+                chunkPos: chunkPos,
+                minY: minY,
+                height: height,
+                sizeHorizontal: config.sizeHorizontal,
+                sizeVertical: config.sizeVertical
+            )
             let bakeEnd = DispatchTime.now().uptimeNanoseconds
 
             return (
