@@ -86,6 +86,24 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(biomeSource.preset == "minecraft:overworld")
 }
 
+@Test func testLoadingForTags() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/Tags/tags")
+    let dataPack = try DataPack(
+        fromRootPath: packURL,
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructures, .noStructureSets]
+    )
+
+    guard let blockTag = dataPack.tagRegistry.get(RegistryKey(referencing: "test:block/mineable/pickaxe")) else {
+        throw Errors.structureNotFound("test:block/mineable/pickaxe")
+    }
+    #expect(blockTag.values == [.rawID("test:ore"), .tagID("test:common/tools")])
+
+    guard let biomeTag = dataPack.tagRegistry.get(RegistryKey(referencing: "test:worldgen/biome/has_structure/example")) else {
+        throw Errors.structureNotFound("test:worldgen/biome/has_structure/example")
+    }
+    #expect(biomeTag.values == [.rawID("test:plains"), .tagID("test:is_special")])
+}
+
 @Test func testLoadingForStructures() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Structures/structures")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructureSets])

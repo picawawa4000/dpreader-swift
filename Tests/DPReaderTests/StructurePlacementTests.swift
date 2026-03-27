@@ -2,6 +2,27 @@ import Foundation
 import Testing
 @testable import DPReader
 
+private struct CubiomesNetherComplexReference: Decodable {
+    let seed: UInt64
+    let entries: [Entry]
+
+    struct Entry: Decodable {
+        let regionX: Int32
+        let regionZ: Int32
+        let chunkX: Int32
+        let chunkZ: Int32
+        let structure: String
+
+        private enum CodingKeys: String, CodingKey {
+            case regionX = "region_x"
+            case regionZ = "region_z"
+            case chunkX = "chunk_x"
+            case chunkZ = "chunk_z"
+            case structure
+        }
+    }
+}
+
 private func vanillaStructurePlacementPackURL() throws -> URL {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
@@ -11,6 +32,13 @@ private func vanillaStructurePlacementPackURL() throws -> URL {
         throw Errors.noVanillaDataFound
     }
     return vanillaDataPath
+}
+
+private func cubiomesNetherComplexReferenceURL() -> URL {
+    return URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Tests/Resources/Cubiomes/nether_complexes_seed_503815372.json")
 }
 
 @Test func testVanillaRandomSpreadStructurePlacementSamples() async throws {
@@ -108,6 +136,94 @@ private func vanillaStructurePlacementPackURL() throws -> URL {
     } catch StructurePlacementSampler.Errors.unsupportedStructurePlacement(let key) {
         #expect(key == "minecraft:strongholds")
     }
+}
+
+@Test func testVanillaStructureResolutionMatchesBiomeTags() async throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 503815372, usingDataPacks: [pack])
+
+    let villages = try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        biome: RegistryKey(referencing: "minecraft:plains"),
+        for: RegistryKey(referencing: "minecraft:villages")
+    )
+    #expect(villages?.structureKey == RegistryKey(referencing: "minecraft:village_plains"))
+
+    let mineshafts = try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: -14, z: 7),
+        biome: RegistryKey(referencing: "minecraft:badlands"),
+        for: RegistryKey(referencing: "minecraft:mineshafts")
+    )
+    #expect(mineshafts?.structureKey == RegistryKey(referencing: "minecraft:mineshaft_mesa"))
+
+    let shipwrecks = try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        biome: RegistryKey(referencing: "minecraft:beach"),
+        for: RegistryKey(referencing: "minecraft:shipwrecks")
+    )
+    #expect(shipwrecks?.structureKey == RegistryKey(referencing: "minecraft:shipwreck_beached"))
+
+    let noVillage = try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        biome: RegistryKey(referencing: "minecraft:nether_wastes"),
+        for: RegistryKey(referencing: "minecraft:villages")
+    )
+    #expect(noVillage == nil)
+}
+
+@Test func testVanillaNetherComplexResolutionMatchesCubiomesReference() async throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let referenceData = try Data(contentsOf: cubiomesNetherComplexReferenceURL())
+    let reference = try JSONDecoder().decode(CubiomesNetherComplexReference.self, from: referenceData)
+    #expect(reference.seed == 503815372)
+    let sampler = StructurePlacementSampler(withWorldSeed: reference.seed, usingDataPacks: [pack])
+
+    for entry in reference.entries {
+        let resolved = try sampler.resolveStructureSet(
+            inRegion: PosInt2D(x: entry.regionX, z: entry.regionZ),
+            biome: RegistryKey(referencing: "minecraft:nether_wastes"),
+            for: RegistryKey(referencing: "minecraft:nether_complexes")
+        )
+        #expect(resolved != nil, "Expected a nether complex at region (\(entry.regionX), \(entry.regionZ))")
+        #expect(
+            resolved!.chunkPos == PosInt2D(x: entry.chunkX, z: entry.chunkZ),
+            "Chunk mismatch at region (\(entry.regionX), \(entry.regionZ))"
+        )
+        #expect(
+            resolved!.structureKey == RegistryKey(referencing: entry.structure),
+            "Structure mismatch at region (\(entry.regionX), \(entry.regionZ))"
+        )
+    }
+
+    let basaltDeltas = try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        biome: RegistryKey(referencing: "minecraft:basalt_deltas"),
+        for: RegistryKey(referencing: "minecraft:nether_complexes")
+    )
+    #expect(basaltDeltas?.structureKey == RegistryKey(referencing: "minecraft:fortress"))
+}
+
+@Test func testOverlappingStructureResolutionUsesWeightedSelection() async throws {
+    let pack = try DataPack(
+        fromRootPath: URL(filePath: "Tests/Resources/Datapacks/StructureResolution/ambiguous"),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 503815372, usingDataPacks: [pack])
+
+    let resolved = try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        biome: RegistryKey(referencing: "test:plains"),
+        for: RegistryKey(referencing: "test:overlap")
+    )
+    #expect(resolved != nil)
+    #expect(resolved!.chunkPos == PosInt2D(x: 0, z: 0))
+    #expect(resolved!.structureKey == RegistryKey(referencing: "test:second"))
 }
 
 private enum Errors: Error {

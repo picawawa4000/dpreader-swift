@@ -37,6 +37,7 @@ public final class DataPack {
     public let noiseSettingsRegistry = Registry<NoiseSettings>()
     public let dimensionsRegistry = Registry<Dimension>()
     public let biomeRegistry = Registry<Biome>()
+    public let tagRegistry = Registry<TagDefinition>()
     public let structureRegistry = Registry<Structure>()
     public let structureSetRegistry = Registry<StructureSet>()
 
@@ -58,6 +59,7 @@ public final class DataPack {
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
             let namespace = namespaceURL.lastPathComponent
 
+            try self.loadTags(fromNamespaceURL: namespaceURL, withNamespace: namespace)
             if !options.contains(.noDimensions) { try self.loadDimensions(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
 
             let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
@@ -152,6 +154,26 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("biome")
+        }
+    }
+
+    private func loadTags(fromNamespaceURL namespaceURL: URL, withNamespace namespace: String) throws {
+        let root = namespaceURL.appendingDirectory(path: "tags")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
+
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if filepath.isDirectory { continue }
+                let data = try Data(contentsOf: filepath)
+                let tag = try decoder.decode(TagDefinition.self, from: data)
+                let id = RegistryKey<TagDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                self.tagRegistry.register(tag, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("tags")
         }
     }
 

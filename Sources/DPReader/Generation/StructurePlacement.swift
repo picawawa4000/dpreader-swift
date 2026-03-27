@@ -16,19 +16,85 @@ public struct StructurePlacementSample {
     }
 }
 
+public struct ResolvedStructurePlacementSample {
+    public let structureSetKey: RegistryKey<StructureSet>
+    public let structureKey: RegistryKey<Structure>
+    public let regionPos: PosInt2D
+    public let chunkPos: PosInt2D
+    public let blockPos: PosInt2D
+
+    init(
+        structureSetKey: RegistryKey<StructureSet>,
+        structureKey: RegistryKey<Structure>,
+        regionPos: PosInt2D,
+        chunkPos: PosInt2D,
+        blockPos: PosInt2D
+    ) {
+        self.structureSetKey = structureSetKey
+        self.structureKey = structureKey
+        self.regionPos = regionPos
+        self.chunkPos = chunkPos
+        self.blockPos = blockPos
+    }
+}
+
 public final class StructurePlacementSampler {
     private let worldSeed: WorldSeed
+    private let structureRegistry = Registry<Structure>()
     private let structureSetRegistry = Registry<StructureSet>()
+    private var tagRegistry: [String: TagDefinition] = [:]
 
     public init(withWorldSeed worldSeed: WorldSeed, usingDataPacks dataPacks: [DataPack]) {
         self.worldSeed = worldSeed
         for pack in dataPacks {
+            self.structureRegistry.mergeDown(with: pack.structureRegistry)
             self.structureSetRegistry.mergeDown(with: pack.structureSetRegistry)
+            pack.tagRegistry.forEach { (key, value) in
+                self.mergeTag(value, forKey: key.name)
+            }
         }
     }
 
     public func sampleStructureSet(inRegion regionPos: PosInt2D, for structureSetKey: RegistryKey<StructureSet>) throws -> StructurePlacementSample? {
         return try self.sampleStructureSet(inRegion: regionPos, for: structureSetKey, visitedKeys: [])
+    }
+
+    public func resolveStructureSet(
+        inRegion regionPos: PosInt2D,
+        biome: RegistryKey<Biome>,
+        for structureSetKey: RegistryKey<StructureSet>
+    ) throws -> ResolvedStructurePlacementSample? {
+        guard let sample = try self.sampleStructureSet(inRegion: regionPos, for: structureSetKey) else {
+            return nil
+        }
+        guard let structureKey = try self.resolveStructure(for: sample, biome: biome) else {
+            return nil
+        }
+        return ResolvedStructurePlacementSample(
+            structureSetKey: sample.structureSetKey,
+            structureKey: structureKey,
+            regionPos: sample.regionPos,
+            chunkPos: sample.chunkPos,
+            blockPos: sample.blockPos
+        )
+    }
+
+    public func resolveStructure(for sample: StructurePlacementSample, biome: RegistryKey<Biome>) throws -> RegistryKey<Structure>? {
+        var matchingStructures: [WeightedStructure] = []
+        for weightedStructure in sample.structures {
+            let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
+            guard let structure = self.structureRegistry.get(structureKey) else {
+                throw Errors.structureNotFound(weightedStructure.structure)
+            }
+            if try self.registryEntry(biome.name, matches: structure.biomes, in: "worldgen/biome") {
+                matchingStructures.append(weightedStructure)
+            }
+        }
+
+        if matchingStructures.isEmpty {
+            return nil
+        }
+        return self.selectStructure(from: matchingStructures, atChunk: sample.chunkPos)
     }
 
     private func sampleStructureSet(inRegion regionPos: PosInt2D, for structureSetKey: RegistryKey<StructureSet>, visitedKeys: Set<String>) throws -> StructurePlacementSample? {
@@ -144,6 +210,76 @@ public final class StructurePlacementSampler {
         return true
     }
 
+    private func registryEntry(_ entryName: String, matches identifiers: Identifiers, in registryPath: String) throws -> Bool {
+        switch identifiers {
+        case .rawID(let id):
+            return entryName == id
+        case .tagID(let tag):
+            return try self.registryEntry(entryName, isInTag: tag, in: registryPath, visitedTags: [])
+        case .idList(let ids):
+            return ids.contains(entryName)
+        }
+    }
+
+    private func registryEntry(_ entryName: String, isInTag tag: String, in registryPath: String, visitedTags: Set<String>) throws -> Bool {
+        if visitedTags.contains(tag) {
+            throw Errors.circularTag(tag)
+        }
+        let tagKey = structurePlacementTagKey(forRegistryPath: registryPath, tagName: tag)
+        guard let tagDefinition = self.tagRegistry[tagKey] else {
+            return false
+        }
+
+        var nextVisitedTags = visitedTags
+        nextVisitedTags.insert(tag)
+        for value in tagDefinition.values {
+            switch value {
+            case .rawID(let id):
+                if entryName == id {
+                    return true
+                }
+            case .tagID(let nestedTag):
+                if try self.registryEntry(entryName, isInTag: nestedTag, in: registryPath, visitedTags: nextVisitedTags) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func selectStructure(from matchingStructures: [WeightedStructure], atChunk chunkPos: PosInt2D) -> RegistryKey<Structure> {
+        precondition(!matchingStructures.isEmpty, "Cannot select a structure from an empty structure list")
+
+        let totalWeight = matchingStructures.reduce(into: 0) { partialResult, structure in
+            partialResult += structure.weight
+        }
+        precondition(totalWeight > 0, "Structure weights must sum to a positive value")
+
+        var random = checkedRandomForChunkGeneration(worldSeed: self.worldSeed, chunkX: chunkPos.x, chunkZ: chunkPos.z)
+        var choice = Int(random.next(bound: UInt32(totalWeight)))
+        for structure in matchingStructures {
+            choice -= structure.weight
+            if choice < 0 {
+                return RegistryKey(referencing: structure.structure)
+            }
+        }
+
+        return RegistryKey(referencing: matchingStructures.last!.structure)
+    }
+
+    private func mergeTag(_ tag: TagDefinition, forKey key: String) {
+        if tag.replace || self.tagRegistry[key] == nil {
+            self.tagRegistry[key] = tag
+            return
+        }
+
+        var mergedValues = self.tagRegistry[key]!.values
+        for value in tag.values where !mergedValues.contains(value) {
+            mergedValues.append(value)
+        }
+        self.tagRegistry[key] = TagDefinition(values: mergedValues)
+    }
+
     private func getRandomSpreadChunk(inRegion regionPos: PosInt2D, placement: RandomSpreadStructurePlacement) -> PosInt2D {
         let chunkRange = placement.spacing - placement.separation
         precondition(chunkRange > 0, "Invalid random spread placement: spacing must be greater than separation")
@@ -212,9 +348,11 @@ public final class StructurePlacementSampler {
 
     enum Errors: Error {
         case structureSetNotFound(String)
+        case structureNotFound(String)
         case unsupportedStructurePlacement(String)
         case unsupportedFrequencyReductionMethod(String)
         case circularExclusionZone(String)
+        case circularTag(String)
     }
 }
 
@@ -248,4 +386,11 @@ public final class StructurePlacementSampler {
     let high = Int64(Int32(bitPattern: random.next(bits: 32)))
     let low = Int64(Int32(bitPattern: random.next(bits: 32)))
     return UInt64(bitPattern: (high << 32) &+ low)
+}
+
+@inline(__always) private func structurePlacementTagKey(forRegistryPath registryPath: String, tagName: String) -> String {
+    let namespacedTag = addDefaultNamespace(tagName)
+    let pieces = namespacedTag.split(separator: ":", maxSplits: 1)
+    precondition(pieces.count == 2, "Tag names must be namespaced")
+    return "\(pieces[0]):\(registryPath)/\(pieces[1])"
 }
