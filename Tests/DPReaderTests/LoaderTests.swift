@@ -248,6 +248,26 @@ private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
     #expect(dataPack.structureSetRegistry.get(RegistryKey(referencing: "terralith:regular")) != nil)
 }
 
+@Test func testWorldGeneratorForVanillaPlusTerralith26() async throws {
+    let rootURL = repositoryRootURL()
+    let vanillaPack = try DataPack(fromRootPath: rootURL.appendingPathComponent("vanilla/1.21.11"))
+    let terralithPack = try DataPack(fromRootPath: rootURL.appendingPathComponent("vanilla/nonvanilla/Terralith_26"))
+
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 50123537021,
+        usingDataPacks: [vanillaPack, terralithPack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+
+    let noisePoint = worldGenerator.sampleNoisePoint(at: PosInt3D(x: 0, y: 0, z: 0))
+    #expect(noisePoint.temperature.isFinite)
+    #expect(noisePoint.depth.isFinite)
+
+    let biomeAtOrigin = try worldGenerator.sampleBiome(at: PosInt3D(x: 0, y: 0, z: 0), in: RegistryKey(referencing: "minecraft:overworld"))
+    let biome = try #require(biomeAtOrigin)
+    #expect(!biome.name.isEmpty)
+}
+
 // Testing loading for:
 // - Reference
 // - Constant

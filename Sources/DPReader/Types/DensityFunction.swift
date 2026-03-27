@@ -143,7 +143,7 @@ public final class UnbakedNoise: DensityFunctionNoise {
     var defaultNoiseRegistry: Registry<NoiseDefinition>? = nil
 
     public init(fromKey key: RegistryKey<NoiseDefinition>) {
-        self.key = key
+        self.key = RegistryKey(referencing: addDefaultNamespace(key.name))
     }
 
     public func setDefaultNoiseRegistry(_ registry: Registry<NoiseDefinition>) {
@@ -215,16 +215,16 @@ public struct DensityFunctionSimplexNoise {
     private var densityFunctionRegistry: Registry<DensityFunction>? = nil
 
     public init(target: String) {
-        self.targetKey = RegistryKey<DensityFunction>(referencing: target)
+        self.targetKey = RegistryKey<DensityFunction>(referencing: addDefaultNamespace(target))
     }
 
     public init(targetKey: RegistryKey<DensityFunction>) {
-        self.targetKey = targetKey
+        self.targetKey = RegistryKey<DensityFunction>(referencing: addDefaultNamespace(targetKey.name))
     }
 
     public init(from decoder: Decoder) throws {
         let singleValueContainer = try decoder.singleValueContainer()
-        self.targetKey = try RegistryKey<DensityFunction>(referencing: singleValueContainer.decode(String.self))
+        self.targetKey = try RegistryKey<DensityFunction>(referencing: addDefaultNamespace(singleValueContainer.decode(String.self)))
     }
 
     public func encode(to encoder: any Encoder) throws {
