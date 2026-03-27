@@ -1063,6 +1063,15 @@ public struct DensityFunctionSimplexNoise {
         case flatCache = "minecraft:flat_cache"
         case cacheAllInCell = "minecraft:cache_all_in_cell"
         case cacheOnce = "minecraft:cache_once"
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawType = addDefaultNamespace(try container.decode(String.self))
+            guard let cacheType = CacheType(rawValue: rawType) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot initialize CacheType from invalid String value \(rawType)")
+            }
+            self = cacheType
+        }
     }
 
     private enum CodingKeys: String, CodingKey {

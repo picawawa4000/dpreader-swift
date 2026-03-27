@@ -9,6 +9,12 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     return densityFunction is ConstantDensityFunction && (densityFunction as! ConstantDensityFunction).testingAttributes.value == expectedValue
 }
 
+private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
+    URL(fileURLWithPath: "\(filePath)")
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+}
+
 @Test func testNamespacedIDForAbsoluteFileURL() async throws {
     let rootURL = URL(filePath: "/tmp/data/minecraft/worldgen/noise_settings", directoryHint: .isDirectory)
     let fileURL = try #require(URL(string: "file:/tmp/data/minecraft/worldgen/noise_settings/overworld.json"))
@@ -226,6 +232,20 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(strongholdPlacement.distance == 32)
     #expect(strongholdPlacement.preferredBiomes == .tagID("test:stronghold_biased_to"))
     #expect(strongholdPlacement.spread == 3)
+}
+
+@Test func testLoadingForTerralith26() async throws {
+    let packURL = repositoryRootURL().appendingPathComponent("vanilla/nonvanilla/Terralith_26")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
+
+    #expect(dataPack.dimensionsRegistry.get(RegistryKey(referencing: "minecraft:overworld")) != nil)
+    #expect(dataPack.dimensionsRegistry.get(RegistryKey(referencing: "minecraft:funny_cave_meme")) == nil)
+
+    #expect(dataPack.tagRegistry.get(RegistryKey(referencing: "biome_tag_villagers:worldgen/biome/villager_jungle")) != nil)
+    #expect(dataPack.biomeRegistry.get(RegistryKey(referencing: "terralith:alpha_islands")) != nil)
+    #expect(dataPack.noiseSettingsRegistry.get(RegistryKey(referencing: "terralith:all_skylands")) != nil)
+    #expect(dataPack.structureRegistry.get(RegistryKey(referencing: "terralith:desert_outpost")) != nil)
+    #expect(dataPack.structureSetRegistry.get(RegistryKey(referencing: "terralith:regular")) != nil)
 }
 
 // Testing loading for:

@@ -28,7 +28,22 @@ public final class Structure: Codable {
         self.biomes = try container.decode(Identifiers.self, forKey: .biomes)
         self.spawnOverrides = (try? container.decode([String: StructureSpawnOverride].self, forKey: .spawnOverrides)) ?? [:]
         self.step = try container.decode(String.self, forKey: .step)
-        self.terrainAdaptation = try container.decodeIfPresent(StructureTerrainAdaptation.self, forKey: .terrainAdaptation)
+        if let terrainAdaptationRawValue = try container.decodeIfPresent(String.self, forKey: .terrainAdaptation) {
+            let normalizedTerrainAdaptation = terrainAdaptationRawValue.replacingOccurrences(of: "minecraft:", with: "")
+            if normalizedTerrainAdaptation == "none" {
+                self.terrainAdaptation = nil
+            } else if let terrainAdaptation = StructureTerrainAdaptation(rawValue: normalizedTerrainAdaptation) {
+                self.terrainAdaptation = terrainAdaptation
+            } else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .terrainAdaptation,
+                    in: container,
+                    debugDescription: "Unknown structure terrain adaptation: \(terrainAdaptationRawValue)"
+                )
+            }
+        } else {
+            self.terrainAdaptation = nil
+        }
         self.settings = try Structure.decodeSettings(forType: self.type, from: decoder)
     }
 

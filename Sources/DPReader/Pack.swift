@@ -94,12 +94,19 @@ public final class DataPack {
         return namespace + ":" + (relativePathWithExtension as NSString).deletingPathExtension
     }
 
+    private static func shouldDecodeFile(at filepath: URL) -> Bool {
+        !filepath.isDirectory && filepath.pathExtension.lowercased() == "json"
+    }
+
     private func loadDensityFunctions(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "density_function")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let densityFunction = try decoder.decode(DensityFunctionInitializer.self, from: data).value
                 self.densityFunctionRegistry.register(
@@ -114,10 +121,13 @@ public final class DataPack {
 
     private func loadNoises(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "noise")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let noise = try decoder.decode(NoiseDefinition.self, from: data)
                 let id = RegistryKey<NoiseDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
@@ -131,10 +141,13 @@ public final class DataPack {
 
     private func loadNoiseSettings(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "noise_settings")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let noiseSettings = try decoder.decode(NoiseSettings.self, from: data)
                 let id = RegistryKey<NoiseSettings>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
@@ -147,10 +160,13 @@ public final class DataPack {
 
     private func loadDimensions(fromNamespaceURL namespaceURL: URL, withNamespace namespace: String) throws {
         let root = namespaceURL.appendingDirectory(path: "dimension")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let dimension = try decoder.decode(Dimension.self, from: data)
                 let id = RegistryKey<Dimension>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
@@ -163,10 +179,13 @@ public final class DataPack {
 
     private func loadBiomes(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "biome")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let biome = try decoder.decode(Biome.self, from: data)
                 let id = RegistryKey<Biome>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
@@ -186,7 +205,7 @@ public final class DataPack {
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let tag = try decoder.decode(TagDefinition.self, from: data)
                 let id = RegistryKey<TagDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
@@ -199,10 +218,13 @@ public final class DataPack {
 
     private func loadStructures(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "structure")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let structure = try decoder.decode(Structure.self, from: data)
                 let id = RegistryKey<Structure>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
@@ -215,10 +237,13 @@ public final class DataPack {
 
     private func loadStructureSets(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "structure_set")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
         let decoder = JSONDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
-                if filepath.isDirectory { continue }
+                if !Self.shouldDecodeFile(at: filepath) { continue }
                 let data = try Data(contentsOf: filepath)
                 let structureSet = try decoder.decode(StructureSet.self, from: data)
                 let id = RegistryKey<StructureSet>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))

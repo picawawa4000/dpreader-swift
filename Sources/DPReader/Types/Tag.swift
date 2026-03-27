@@ -3,8 +3,15 @@ public enum TagValue: Codable, Equatable {
     case tagID(String)
 
     public init(from decoder: any Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let rawValue = try container.decode(String.self)
+        let rawValue: String
+
+        if let container = try? decoder.singleValueContainer(), let stringValue = try? container.decode(String.self) {
+            rawValue = stringValue
+        } else {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            rawValue = try container.decode(String.self, forKey: .id)
+        }
+
         if rawValue.first == "#" {
             self = .tagID(addDefaultNamespace(String(rawValue.dropFirst())))
         } else {
@@ -20,6 +27,10 @@ public enum TagValue: Codable, Equatable {
         case .tagID(let id):
             try container.encode("#" + id)
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
     }
 }
 
