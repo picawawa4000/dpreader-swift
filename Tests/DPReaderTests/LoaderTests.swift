@@ -86,6 +86,116 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     #expect(biomeSource.preset == "minecraft:overworld")
 }
 
+@Test func testLoadingForStructures() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/Structures/structures")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructureSets])
+
+    guard let desertPyramid = dataPack.structureRegistry.get(RegistryKey(referencing: "test:desert_pyramid")) else {
+        throw Errors.structureNotFound("test:desert_pyramid")
+    }
+    #expect(desertPyramid.type == "minecraft:desert_pyramid")
+    #expect(desertPyramid.biomes == .tagID("test:has_structure/desert_pyramid"))
+    #expect(desertPyramid.step == "surface_structures")
+
+    guard let mineshaftMesa = dataPack.structureRegistry.get(RegistryKey(referencing: "test:mineshaft_mesa")) else {
+        throw Errors.structureNotFound("test:mineshaft_mesa")
+    }
+    guard case .mineshaft(let mineshaftSettings) = mineshaftMesa.settings else {
+        throw Errors.structureWrongType("test:mineshaft_mesa -> MineshaftStructureSettings")
+    }
+    #expect(mineshaftSettings.mineshaftType == .mesa)
+
+    guard let netherFossil = dataPack.structureRegistry.get(RegistryKey(referencing: "test:nether_fossil")) else {
+        throw Errors.structureNotFound("test:nether_fossil")
+    }
+    guard case .netherFossil(let netherFossilSettings) = netherFossil.settings else {
+        throw Errors.structureWrongType("test:nether_fossil -> NetherFossilStructureSettings")
+    }
+    #expect(netherFossil.terrainAdaptation == .beardThin)
+    #expect(netherFossilSettings.height == .uniform(minInclusive: .absolute(32), maxInclusive: .belowTop(2)))
+
+    guard let ruinedPortal = dataPack.structureRegistry.get(RegistryKey(referencing: "test:ruined_portal")) else {
+        throw Errors.structureNotFound("test:ruined_portal")
+    }
+    guard case .ruinedPortal(let ruinedPortalSettings) = ruinedPortal.settings else {
+        throw Errors.structureWrongType("test:ruined_portal -> RuinedPortalStructureSettings")
+    }
+    #expect(ruinedPortalSettings.setups.count == 2)
+    #expect(ruinedPortalSettings.setups[0].placement == .underground)
+    #expect(ruinedPortalSettings.setups[1].placement == .onLandSurface)
+
+    guard let trialChambers = dataPack.structureRegistry.get(RegistryKey(referencing: "test:trial_chambers")) else {
+        throw Errors.structureNotFound("test:trial_chambers")
+    }
+    guard case .jigsaw(let jigsawSettings) = trialChambers.settings else {
+        throw Errors.structureWrongType("test:trial_chambers -> JigsawStructureSettings")
+    }
+    #expect(trialChambers.terrainAdaptation == .encapsulate)
+    #expect(jigsawSettings.dimensionPadding == 10)
+    #expect(jigsawSettings.liquidSettings == "ignore_waterlogging")
+    #expect(jigsawSettings.startPool == "test:trial_chambers/chamber/end")
+    #expect(jigsawSettings.startHeight == .uniform(minInclusive: .absolute(-40), maxInclusive: .absolute(-20)))
+    #expect(jigsawSettings.poolAliases?.count == 2)
+
+    guard let firstAlias = jigsawSettings.poolAliases?.first else {
+        throw Errors.structureWrongType("test:trial_chambers.pool_aliases[0]")
+    }
+    guard case .randomGroup(let randomGroup) = firstAlias else {
+        throw Errors.structureWrongType("test:trial_chambers.pool_aliases[0] -> RandomGroupStructurePoolAlias")
+    }
+    #expect(randomGroup.groups.count == 1)
+    #expect(randomGroup.groups[0].data.count == 2)
+
+    guard let secondAlias = jigsawSettings.poolAliases?.last else {
+        throw Errors.structureWrongType("test:trial_chambers.pool_aliases[1]")
+    }
+    guard case .random(let randomAlias) = secondAlias else {
+        throw Errors.structureWrongType("test:trial_chambers.pool_aliases[1] -> RandomStructurePoolAlias")
+    }
+    #expect(randomAlias.alias == "test:spawner/contents/melee")
+    #expect(randomAlias.targets.map(\.data) == ["test:spawner/melee/zombie", "test:spawner/melee/husk"])
+}
+
+@Test func testLoadingForStructureSets() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/StructureSets/structure_sets")
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructures])
+
+    guard let desertPyramids = dataPack.structureSetRegistry.get(RegistryKey(referencing: "test:desert_pyramids")) else {
+        throw Errors.structureSetNotFound("test:desert_pyramids")
+    }
+    guard case .randomSpread(let desertPlacement) = desertPyramids.placement else {
+        throw Errors.structurePlacementWrongType("test:desert_pyramids -> RandomSpreadStructurePlacement")
+    }
+    #expect(desertPlacement.salt == 14357617)
+    #expect(desertPlacement.spacing == 32)
+    #expect(desertPlacement.separation == 8)
+    #expect(desertPlacement.spreadType == .linear)
+    #expect(desertPyramids.structures.map(\.structure) == ["test:desert_pyramid"])
+
+    guard let pillagerOutposts = dataPack.structureSetRegistry.get(RegistryKey(referencing: "test:pillager_outposts")) else {
+        throw Errors.structureSetNotFound("test:pillager_outposts")
+    }
+    guard case .randomSpread(let outpostPlacement) = pillagerOutposts.placement else {
+        throw Errors.structurePlacementWrongType("test:pillager_outposts -> RandomSpreadStructurePlacement")
+    }
+    #expect(outpostPlacement.frequency == 0.2)
+    #expect(outpostPlacement.frequencyReductionMethod == .legacyType1)
+    #expect(outpostPlacement.locateOffset == PosInt3D(x: 9, y: 0, z: 9))
+    #expect(outpostPlacement.exclusionZone?.chunkCount == 10)
+    #expect(outpostPlacement.exclusionZone?.otherSet == "test:villages")
+
+    guard let strongholds = dataPack.structureSetRegistry.get(RegistryKey(referencing: "test:strongholds")) else {
+        throw Errors.structureSetNotFound("test:strongholds")
+    }
+    guard case .concentricRings(let strongholdPlacement) = strongholds.placement else {
+        throw Errors.structurePlacementWrongType("test:strongholds -> ConcentricRingsStructurePlacement")
+    }
+    #expect(strongholdPlacement.count == 128)
+    #expect(strongholdPlacement.distance == 32)
+    #expect(strongholdPlacement.preferredBiomes == .tagID("test:stronghold_biased_to"))
+    #expect(strongholdPlacement.spread == 3)
+}
+
 // Testing loading for:
 // - Reference
 // - Constant
@@ -460,6 +570,10 @@ fileprivate enum Errors: Error {
     case biomeNotFound(String)
     case dimensionNotFound(String)
     case dimensionWrongType(String)
+    case structureNotFound(String)
+    case structureWrongType(String)
+    case structureSetNotFound(String)
+    case structurePlacementWrongType(String)
 
     case splineNotAnObjectError
     case splineValueNotNumberError

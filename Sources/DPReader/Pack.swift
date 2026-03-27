@@ -26,6 +26,8 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
     public static let noNoiseSettings = DataPackRegistryLoadingOptions(rawValue: 1 << 2)
     public static let noDimensions = DataPackRegistryLoadingOptions(rawValue: 1 << 3)
     public static let noBiomes = DataPackRegistryLoadingOptions(rawValue: 1 << 4)
+    public static let noStructures = DataPackRegistryLoadingOptions(rawValue: 1 << 5)
+    public static let noStructureSets = DataPackRegistryLoadingOptions(rawValue: 1 << 6)
 }
 
 /// Represents a data pack.
@@ -35,6 +37,8 @@ public final class DataPack {
     public let noiseSettingsRegistry = Registry<NoiseSettings>()
     public let dimensionsRegistry = Registry<Dimension>()
     public let biomeRegistry = Registry<Biome>()
+    public let structureRegistry = Registry<Structure>()
+    public let structureSetRegistry = Registry<StructureSet>()
 
     /// Loads a data pack from the given path. All loading options are turned off by default.
     /// - Parameter rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
@@ -62,6 +66,8 @@ public final class DataPack {
             if !options.contains(.noNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoiseSettings) { try self.loadNoiseSettings(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noBiomes) { try self.loadBiomes(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noStructures) { try self.loadStructures(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noStructureSets) { try self.loadStructureSets(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
     }
 
@@ -146,6 +152,38 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("biome")
+        }
+    }
+
+    private func loadStructures(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "structure")
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if filepath.isDirectory { continue }
+                let data = try Data(contentsOf: filepath)
+                let structure = try decoder.decode(Structure.self, from: data)
+                let id = RegistryKey<Structure>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                self.structureRegistry.register(structure, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("structure")
+        }
+    }
+
+    private func loadStructureSets(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "structure_set")
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if filepath.isDirectory { continue }
+                let data = try Data(contentsOf: filepath)
+                let structureSet = try decoder.decode(StructureSet.self, from: data)
+                let id = RegistryKey<StructureSet>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                self.structureSetRegistry.register(structureSet, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("structure_set")
         }
     }
 

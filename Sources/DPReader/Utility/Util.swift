@@ -64,25 +64,51 @@ enum Identifiers: Codable, Equatable {
             // is there a better way to check whether the type is either String or [String]?
             let stringValue = try value.decode(String.self)
             if (stringValue.first == "#") {
-                self = Identifiers.tagID(String(stringValue.dropFirst()))
+                self = Identifiers.tagID(addDefaultNamespace(String(stringValue.dropFirst())))
             } else {
-                self = Identifiers.rawID(stringValue)
+                self = Identifiers.rawID(addDefaultNamespace(stringValue))
             }
         } catch DecodingError.typeMismatch {
             let arrayValue = try value.decode([String].self)
-            self = Identifiers.idList(arrayValue)
+            self = Identifiers.idList(arrayValue.map(addDefaultNamespace))
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .rawID(let id):
+            try value.encode(id)
+        case .tagID(let id):
+            try value.encode("#" + id)
+        case .idList(let ids):
+            try value.encode(ids)
         }
     }
 }
 
 /// A 3D position, represented by ints. Usually used for blocks.
-public struct PosInt3D: Sendable {
+public struct PosInt3D: Sendable, Codable, Equatable {
     let x, y, z: Int32
 
     public init(x: Int32, y: Int32, z: Int32) {
         self.x = x
         self.y = y
         self.z = z
+    }
+
+    public init(from decoder: any Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        self.x = try container.decode(Int32.self)
+        self.y = try container.decode(Int32.self)
+        self.z = try container.decode(Int32.self)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(self.x)
+        try container.encode(self.y)
+        try container.encode(self.z)
     }
 }
 
