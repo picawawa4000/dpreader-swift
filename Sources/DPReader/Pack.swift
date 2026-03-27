@@ -73,8 +73,25 @@ public final class DataPack {
         }
     }
 
-    private static func namespacedID(fromNamespace namespace: String, withURL url: URL) -> String {
-        return namespace + ":" + (url.relativeString as NSString).deletingPathExtension
+    static func namespacedID(fromNamespace namespace: String, relativeTo rootURL: URL, withURL url: URL) -> String {
+        let relativePathWithExtension: String
+        let relativeString = url.relativeString
+
+        if !relativeString.hasPrefix("file:") && !relativeString.hasPrefix("/") {
+            relativePathWithExtension = relativeString
+        } else {
+            let standardizedRootPath = rootURL.standardizedFileURL.path
+            let rootPrefix = standardizedRootPath.hasSuffix("/") ? standardizedRootPath : standardizedRootPath + "/"
+            let standardizedFilePath = url.standardizedFileURL.path
+
+            if standardizedFilePath.hasPrefix(rootPrefix) {
+                relativePathWithExtension = String(standardizedFilePath.dropFirst(rootPrefix.count))
+            } else {
+                relativePathWithExtension = url.lastPathComponent
+            }
+        }
+
+        return namespace + ":" + (relativePathWithExtension as NSString).deletingPathExtension
     }
 
     private func loadDensityFunctions(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
@@ -85,7 +102,10 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let densityFunction = try decoder.decode(DensityFunctionInitializer.self, from: data).value
-                self.densityFunctionRegistry.register(densityFunction, forKey: RegistryKey(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath)))
+                self.densityFunctionRegistry.register(
+                    densityFunction,
+                    forKey: RegistryKey(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
+                )
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("density_function")
@@ -100,7 +120,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let noise = try decoder.decode(NoiseDefinition.self, from: data)
-                let id = RegistryKey<NoiseDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<NoiseDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 noise.initHashes(forID: id)
                 self.noiseRegistry.register(noise, forKey: id)
             }
@@ -117,7 +137,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let noiseSettings = try decoder.decode(NoiseSettings.self, from: data)
-                let id = RegistryKey<NoiseSettings>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<NoiseSettings>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.noiseSettingsRegistry.register(noiseSettings, forKey: id)
             }
         } else {
@@ -133,7 +153,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let dimension = try decoder.decode(Dimension.self, from: data)
-                let id = RegistryKey<Dimension>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<Dimension>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.dimensionsRegistry.register(dimension, forKey: id)
             }
         } else {
@@ -149,7 +169,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let biome = try decoder.decode(Biome.self, from: data)
-                let id = RegistryKey<Biome>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<Biome>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.biomeRegistry.register(biome, forKey: id)
             }
         } else {
@@ -169,7 +189,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let tag = try decoder.decode(TagDefinition.self, from: data)
-                let id = RegistryKey<TagDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<TagDefinition>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.tagRegistry.register(tag, forKey: id)
             }
         } else {
@@ -185,7 +205,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let structure = try decoder.decode(Structure.self, from: data)
-                let id = RegistryKey<Structure>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<Structure>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.structureRegistry.register(structure, forKey: id)
             }
         } else {
@@ -201,7 +221,7 @@ public final class DataPack {
                 if filepath.isDirectory { continue }
                 let data = try Data(contentsOf: filepath)
                 let structureSet = try decoder.decode(StructureSet.self, from: data)
-                let id = RegistryKey<StructureSet>(referencing: DataPack.namespacedID(fromNamespace: namespace, withURL: filepath))
+                let id = RegistryKey<StructureSet>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.structureSetRegistry.register(structureSet, forKey: id)
             }
         } else {

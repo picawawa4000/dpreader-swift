@@ -9,6 +9,20 @@ private func testConstant(densityFunction: DensityFunction, expectedValue: Doubl
     return densityFunction is ConstantDensityFunction && (densityFunction as! ConstantDensityFunction).testingAttributes.value == expectedValue
 }
 
+@Test func testNamespacedIDForAbsoluteFileURL() async throws {
+    let rootURL = URL(filePath: "/tmp/data/minecraft/worldgen/noise_settings", directoryHint: .isDirectory)
+    let fileURL = try #require(URL(string: "file:/tmp/data/minecraft/worldgen/noise_settings/overworld.json"))
+
+    #expect(DataPack.namespacedID(fromNamespace: "minecraft", relativeTo: rootURL, withURL: fileURL) == "minecraft:overworld")
+}
+
+@Test func testNamespacedIDForNestedRelativeURL() async throws {
+    let rootURL = URL(filePath: "/tmp/data/test/tags", directoryHint: .isDirectory)
+    let fileURL = URL(filePath: "worldgen/biome/has_structure/example.json", relativeTo: rootURL)
+
+    #expect(DataPack.namespacedID(fromNamespace: "test", relativeTo: rootURL, withURL: fileURL) == "test:worldgen/biome/has_structure/example")
+}
+
 @Test func testLoadingForNoises() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Noises/noises")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])

@@ -1,5 +1,5 @@
 /// TODO: should this be a struct or a class?
-public final class Block: Sendable {
+public final class Block: @unchecked Sendable {
     public let id: String
 
     /// It is recommended to use the `Blocks` interface to get vanilla block references,
@@ -22,7 +22,7 @@ public actor Blocks {
 }
 
 /// TODO: should this be a struct or a class?
-public struct BlockState {
+public struct BlockState: Sendable {
     public let type: Block
     public var properties: [String: String]? = nil
 
