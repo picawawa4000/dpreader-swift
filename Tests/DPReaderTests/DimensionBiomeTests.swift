@@ -135,7 +135,7 @@ private func makeVanillaDimensionBiomeWorldGenerator(seed: UInt64, settings: Str
     let dim = RegistryKey<DPReader.Dimension>(referencing: "minecraft:end")
 
     for entry in reference.entries {
-        let pos = PosInt3D(x: entry.biomeX, y: entry.biomeY * 4, z: entry.biomeZ)
+        let pos = PosInt3D(x: entry.biomeX * 4, y: entry.biomeY * 4, z: entry.biomeZ * 4)
         let biome = try world.sampleBiome(at: pos, in: dim)
         let expectedBiome = cubiomesDimensionBiome(for: entry.biomeID)
         #expect(

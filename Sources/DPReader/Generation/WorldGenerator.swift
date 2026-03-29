@@ -1857,13 +1857,15 @@ public final class WorldGenerator {
         biomeZ: Int32,
         erosionAtSectionCenter: Double
     ) -> RegistryKey<Biome> {
-        let centerDistance = Int64(biomeX) * Int64(biomeX) + Int64(biomeZ) * Int64(biomeZ)
+        let sectionX = floorDiv(biomeX, by: 4)
+        let sectionZ = floorDiv(biomeZ, by: 4)
+        let centerDistance = Int64(sectionX) * Int64(sectionX) + Int64(sectionZ) * Int64(sectionZ)
         if centerDistance <= 4096 {
             return hardcodedBiomeKey("minecraft:the_end")
         }
 
-        let hx = biomeX &* 2 &+ 1
-        let hz = biomeZ &* 2 &+ 1
+        let hx = sectionX &* 2 &+ 1
+        let hz = sectionZ &* 2 &+ 1
         let ringDistanceSquared = Int64(hx) * Int64(hx) + Int64(hz) * Int64(hz)
         if Int32(truncatingIfNeeded: ringDistanceSquared) < 0 {
             return hardcodedBiomeKey("minecraft:end_barrens")
@@ -2027,10 +2029,12 @@ public final class WorldGenerator {
         mode: ChunkBiomeGenerationMode = .quartAndBlock
     ) {
         self.generateBiomesIntoChunk(chunk, at: chunkPos, minY: minY, mode: mode) { biomeX, biomeY, biomeZ in
+            let sectionX = floorDiv(biomeX, by: 4)
+            let sectionZ = floorDiv(biomeZ, by: 4)
             let erosionSamplePos = PosInt3D(
-                x: (biomeX &* 2 &+ 1) &* 8,
+                x: (sectionX &* 2 &+ 1) &* 8,
                 y: blockCoord(fromBiome: biomeY),
-                z: (biomeZ &* 2 &+ 1) &* 8
+                z: (sectionZ &* 2 &+ 1) &* 8
             )
             return self.sampleTheEndBiome(
                 biomeX: biomeX,
@@ -2069,15 +2073,17 @@ public final class WorldGenerator {
         let biomeX = biomeCoord(fromBlock: pos.x)
         let biomeY = biomeCoord(fromBlock: pos.y)
         let biomeZ = biomeCoord(fromBlock: pos.z)
+        let sectionX = floorDiv(biomeX, by: 4)
+        let sectionZ = floorDiv(biomeZ, by: 4)
         return self.sampleTheEndBiome(
             biomeX: biomeX,
             biomeY: biomeY,
             biomeZ: biomeZ,
             erosionAtSectionCenter: config.noiseRouter.erosion.sample(
                 at: PosInt3D(
-                    x: (biomeX &* 2 &+ 1) &* 8,
+                    x: (sectionX &* 2 &+ 1) &* 8,
                     y: blockCoord(fromBiome: biomeY),
-                    z: (biomeZ &* 2 &+ 1) &* 8
+                    z: (sectionZ &* 2 &+ 1) &* 8
                 )
             )
         )
