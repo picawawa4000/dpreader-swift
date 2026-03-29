@@ -465,9 +465,9 @@ public class OctavePerlinNoise {
         var octaves = Array<Octave>()
         octaves.reserveCapacity(numOctaves)
         let lastOctave = firstOctave + numOctaves - 1
-        var amplitudeModifier = Double(1 << (numOctaves - 1)) / (Double(1 << numOctaves) - 1.0)
-        var lacunarity = 1.0 / Double(1 << -firstOctave)
         if useModernInitialization {
+            var amplitudeModifier = Double(1 << (numOctaves - 1)) / (Double(1 << numOctaves) - 1.0)
+            var lacunarity = 1.0 / Double(1 << -firstOctave)
             let splitter = rng.nextSplitter()
             for octaveIndex in 0..<numOctaves {
                 if amplitudes[octaveIndex] != 0.0 {
@@ -478,19 +478,21 @@ public class OctavePerlinNoise {
             }
         } else {
             let hasLastOctaveAtZero = lastOctave == 0
+            var persistence = 1.0 / (Double(1 << numOctaves) - 1.0)
+            var lacunarity = pow(2.0, Double(lastOctave))
             if hasLastOctaveAtZero {
-                octaves.append(Octave(noise: PerlinNoise(random: &rng), amplitude: amplitudes[lastOctave] * amplitudeModifier, lacunarity: lacunarity))
-                amplitudeModifier *= 0.5
-                lacunarity *= 2.0
+                octaves.append(Octave(noise: PerlinNoise(random: &rng), amplitude: amplitudes[0] * persistence, lacunarity: lacunarity))
+                persistence *= 2.0
+                lacunarity *= 0.5
             } else {
                 rng.skip(calls: UInt(lastOctave * -262))
             }
 
             let range = hasLastOctaveAtZero ? 1..<numOctaves : 0..<numOctaves
             for octaveIndex in range {
-                octaves.append(Octave(noise: PerlinNoise(random: &rng), amplitude: amplitudes[octaveIndex] * amplitudeModifier, lacunarity: lacunarity))
-                amplitudeModifier *= 0.5
-                lacunarity *= 2.0
+                octaves.append(Octave(noise: PerlinNoise(random: &rng), amplitude: amplitudes[octaveIndex] * persistence, lacunarity: lacunarity))
+                persistence *= 2.0
+                lacunarity *= 0.5
             }
         }
 

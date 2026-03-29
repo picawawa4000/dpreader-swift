@@ -41,6 +41,36 @@ public struct OceanMonumentPieceGraph {
     public let pieces: [OceanMonumentGraphPiece]
 }
 
+/// A room-grid coordinate within the monument's internal 5x3x5 room lattice.
+///
+/// This is independent of world orientation. It is the compact graph space that vanilla
+/// uses before block generation expands merged rooms into concrete pieces.
+struct OceanMonumentRoomCell: Hashable {
+    let x: Int
+    let y: Int
+    let z: Int
+}
+
+/// A test-facing snapshot of one room-derived monument piece.
+///
+/// `occupiedRoomCells` is the exact merged room footprint after the vanilla room-fitting pass.
+/// `connectedPieceRoomIndices` contains neighboring room-derived pieces that remain reachable
+/// through still-open room graph edges after random wall closure.
+struct OceanMonumentRoomPieceSnapshot {
+    let kind: OceanMonumentPieceKind
+    let roomIndex: Int
+    let occupiedRoomCells: Set<OceanMonumentRoomCell>
+    let connectedPieceRoomIndices: Set<Int>
+    let design: Int?
+}
+
+/// A test-facing projection of the merged room-piece graph.
+struct OceanMonumentRoomPieceGraphSnapshot {
+    let startChunk: PosInt2D
+    let orientation: OceanMonumentOrientation
+    let pieces: [OceanMonumentRoomPieceSnapshot]
+}
+
 /// One generated piece in the public graph view.
 public struct OceanMonumentGraphPiece {
     public let kind: OceanMonumentPieceKind
@@ -237,6 +267,12 @@ public enum OceanMonument {
         return pieceGraph(from: root, startChunk: startChunk)
     }
 
+    static func generateRoomPieceGraph(worldSeed: WorldSeed, startChunk: PosInt2D) -> OceanMonumentRoomPieceGraphSnapshot {
+        var random = monumentLargeFeatureRandom(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
+        let root = MonumentBuilding(startChunk: startChunk, random: &random)
+        return roomPieceGraph(from: root, startChunk: startChunk)
+    }
+
     public static func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -285,6 +321,65 @@ public enum OceanMonument {
             maxX: union.maxX + 5,
             maxY: union.maxY,
             maxZ: union.maxZ + 5
+        )
+    }
+
+    private static func roomPieceGraph(from root: MonumentBuilding, startChunk: PosInt2D) -> OceanMonumentRoomPieceGraphSnapshot {
+        let roomPieces = root.childPieces.filter { !$0.occupiedRooms.isEmpty }
+        var roomIndexToRepresentative: [Int: Int] = [:]
+        for piece in roomPieces {
+            guard let roomIndex = piece.roomDefinition?.index else { continue }
+            for room in piece.occupiedRooms where !room.isSpecial() {
+                roomIndexToRepresentative[room.index] = roomIndex
+            }
+        }
+
+        let pieces = roomPieces.compactMap { piece -> OceanMonumentRoomPieceSnapshot? in
+            guard let roomIndex = piece.roomDefinition?.index else {
+                return nil
+            }
+            let occupiedRoomCells = Set(
+                piece.occupiedRooms
+                    .filter { !$0.isSpecial() }
+                    .map { roomCell(forRoomIndex: $0.index) }
+            )
+            var connectedPieceRoomIndices: Set<Int> = []
+            for room in piece.occupiedRooms where !room.isSpecial() {
+                for directionIndex in 0..<room.hasOpening.count {
+                    guard room.hasOpening[directionIndex],
+                          let connectedRoom = room.connections[directionIndex],
+                          !connectedRoom.isSpecial(),
+                          let connectedPieceRoomIndex = roomIndexToRepresentative[connectedRoom.index],
+                          connectedPieceRoomIndex != roomIndex
+                    else {
+                        continue
+                    }
+                    connectedPieceRoomIndices.insert(connectedPieceRoomIndex)
+                }
+            }
+            return OceanMonumentRoomPieceSnapshot(
+                kind: piece.kind,
+                roomIndex: roomIndex,
+                occupiedRoomCells: occupiedRoomCells,
+                connectedPieceRoomIndices: connectedPieceRoomIndices,
+                design: piece.design
+            )
+        }
+
+        return OceanMonumentRoomPieceGraphSnapshot(
+            startChunk: startChunk,
+            orientation: root.orientation.publicValue,
+            pieces: pieces.sorted { left, right in
+                left.roomIndex < right.roomIndex
+            }
+        )
+    }
+
+    private static func roomCell(forRoomIndex roomIndex: Int) -> OceanMonumentRoomCell {
+        OceanMonumentRoomCell(
+            x: roomIndex % 5,
+            y: roomIndex / 25,
+            z: (roomIndex / 5) % 5
         )
     }
 }
@@ -690,13 +785,22 @@ private class PlacedPiece {
     let orientation: HorizontalDirection
     var boundingBox: MonumentBoundingBox
     let roomDefinition: RoomDefinition?
+    let occupiedRooms: [RoomDefinition]
     let design: Int?
 
-    init(kind: OceanMonumentPieceKind, orientation: HorizontalDirection, boundingBox: MonumentBoundingBox, roomDefinition: RoomDefinition? = nil, design: Int? = nil) {
+    init(
+        kind: OceanMonumentPieceKind,
+        orientation: HorizontalDirection,
+        boundingBox: MonumentBoundingBox,
+        roomDefinition: RoomDefinition? = nil,
+        occupiedRooms: [RoomDefinition] = [],
+        design: Int? = nil
+    ) {
         self.kind = kind
         self.orientation = orientation
         self.boundingBox = boundingBox
         self.roomDefinition = roomDefinition
+        self.occupiedRooms = occupiedRooms
         self.design = design
     }
 
@@ -704,6 +808,7 @@ private class PlacedPiece {
         kind: OceanMonumentPieceKind,
         orientation: HorizontalDirection,
         roomDefinition: RoomDefinition,
+        occupiedRooms: [RoomDefinition]? = nil,
         roomWidth: Int32,
         roomHeight: Int32,
         roomDepth: Int32,
@@ -719,6 +824,7 @@ private class PlacedPiece {
             roomDepth: roomDepth
         )
         self.roomDefinition = roomDefinition
+        self.occupiedRooms = occupiedRooms ?? [roomDefinition]
         self.design = design
     }
 
@@ -1431,7 +1537,27 @@ private final class MonumentBuilding: PlacedPiece {
 
 private final class OceanMonumentCoreRoom: PlacedPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .coreRoom, orientation: orientation, roomDefinition: definition, roomWidth: 2, roomHeight: 2, roomDepth: 2)
+        let east = definition.connections[MonumentDirection.east.rawValue]!
+        let north = definition.connections[MonumentDirection.north.rawValue]!
+        let up = definition.connections[MonumentDirection.up.rawValue]!
+        super.init(
+            kind: .coreRoom,
+            orientation: orientation,
+            roomDefinition: definition,
+            occupiedRooms: [
+                definition,
+                east,
+                north,
+                east.connections[MonumentDirection.north.rawValue]!,
+                up,
+                east.connections[MonumentDirection.up.rawValue]!,
+                north.connections[MonumentDirection.up.rawValue]!,
+                east.connections[MonumentDirection.north.rawValue]!.connections[MonumentDirection.up.rawValue]!
+            ],
+            roomWidth: 2,
+            roomHeight: 2,
+            roomDepth: 2
+        )
     }
 
     override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
@@ -1493,7 +1619,15 @@ private final class OceanMonumentCoreRoom: PlacedPiece {
 
 private final class OceanMonumentDoubleXRoom: PlacedPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .doubleXRoom, orientation: orientation, roomDefinition: definition, roomWidth: 2, roomHeight: 1, roomDepth: 1)
+        super.init(
+            kind: .doubleXRoom,
+            orientation: orientation,
+            roomDefinition: definition,
+            occupiedRooms: [definition, definition.connections[MonumentDirection.east.rawValue]!],
+            roomWidth: 2,
+            roomHeight: 1,
+            roomDepth: 1
+        )
     }
 
     override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
@@ -1537,7 +1671,21 @@ private final class OceanMonumentDoubleXRoom: PlacedPiece {
 
 private final class OceanMonumentDoubleXYRoom: PlacedPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .doubleXYRoom, orientation: orientation, roomDefinition: definition, roomWidth: 2, roomHeight: 2, roomDepth: 1)
+        let east = definition.connections[MonumentDirection.east.rawValue]!
+        super.init(
+            kind: .doubleXYRoom,
+            orientation: orientation,
+            roomDefinition: definition,
+            occupiedRooms: [
+                definition,
+                east,
+                definition.connections[MonumentDirection.up.rawValue]!,
+                east.connections[MonumentDirection.up.rawValue]!
+            ],
+            roomWidth: 2,
+            roomHeight: 2,
+            roomDepth: 1
+        )
     }
 
     override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
@@ -1602,7 +1750,15 @@ private final class OceanMonumentDoubleXYRoom: PlacedPiece {
 
 private final class OceanMonumentDoubleYRoom: PlacedPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .doubleYRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 2, roomDepth: 1)
+        super.init(
+            kind: .doubleYRoom,
+            orientation: orientation,
+            roomDefinition: definition,
+            occupiedRooms: [definition, definition.connections[MonumentDirection.up.rawValue]!],
+            roomWidth: 1,
+            roomHeight: 2,
+            roomDepth: 1
+        )
     }
 
     override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
@@ -1666,7 +1822,21 @@ private final class OceanMonumentDoubleYRoom: PlacedPiece {
 
 private final class OceanMonumentDoubleYZRoom: PlacedPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .doubleYZRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 2, roomDepth: 2)
+        let north = definition.connections[MonumentDirection.north.rawValue]!
+        super.init(
+            kind: .doubleYZRoom,
+            orientation: orientation,
+            roomDefinition: definition,
+            occupiedRooms: [
+                definition,
+                north,
+                definition.connections[MonumentDirection.up.rawValue]!,
+                north.connections[MonumentDirection.up.rawValue]!
+            ],
+            roomWidth: 1,
+            roomHeight: 2,
+            roomDepth: 2
+        )
     }
 
     override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
@@ -1732,7 +1902,15 @@ private final class OceanMonumentDoubleYZRoom: PlacedPiece {
 
 private final class OceanMonumentDoubleZRoom: PlacedPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .doubleZRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 2)
+        super.init(
+            kind: .doubleZRoom,
+            orientation: orientation,
+            roomDefinition: definition,
+            occupiedRooms: [definition, definition.connections[MonumentDirection.north.rawValue]!],
+            roomWidth: 1,
+            roomHeight: 1,
+            roomDepth: 2
+        )
     }
 
     override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {

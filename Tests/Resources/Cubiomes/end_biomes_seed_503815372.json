@@ -1,0 +1,27 @@
+{
+  "seed": "503815372",
+  "minecraftVersion": "1.21.11",
+  "dimension": "minecraft:the_end",
+  "entries": [
+    {"biome_x": 15, "biome_y": 75, "biome_z": 41, "biome_id": 9},
+    {"biome_x": 91, "biome_y": 42, "biome_z": 237, "biome_id": 9},
+    {"biome_x": -207, "biome_y": 21, "biome_z": -148, "biome_id": 9},
+    {"biome_x": 4, "biome_y": 32, "biome_z": 37, "biome_id": 9},
+    {"biome_x": -338622, "biome_y": 0, "biome_z": -265421, "biome_id": 43},
+    {"biome_x": 295124, "biome_y": 52, "biome_z": -218891, "biome_id": 43},
+    {"biome_x": 39342, "biome_y": 45, "biome_z": 232669, "biome_id": 41},
+    {"biome_x": 115560, "biome_y": 26, "biome_z": 288114, "biome_id": 43},
+    {"biome_x": -439623, "biome_y": 69, "biome_z": 325904, "biome_id": 41},
+    {"biome_x": -202813, "biome_y": 2, "biome_z": 381357, "biome_id": 43},
+    {"biome_x": -340834, "biome_y": 76, "biome_z": -275616, "biome_id": 42},
+    {"biome_x": -101682, "biome_y": 33, "biome_z": -363917, "biome_id": 41},
+    {"biome_x": 434616, "biome_y": 59, "biome_z": 297239, "biome_id": 42},
+    {"biome_x": 476572, "biome_y": 55, "biome_z": 411717, "biome_id": 42},
+    {"biome_x": 3195, "biome_y": 37, "biome_z": -499079, "biome_id": 40},
+    {"biome_x": -310295, "biome_y": 47, "biome_z": 383778, "biome_id": 40},
+    {"biome_x": -216984, "biome_y": 50, "biome_z": 402316, "biome_id": 41},
+    {"biome_x": 356896, "biome_y": 48, "biome_z": -220182, "biome_id": 40},
+    {"biome_x": -142225, "biome_y": 18, "biome_z": 237338, "biome_id": 40},
+    {"biome_x": -346756, "biome_y": 3, "biome_z": -266400, "biome_id": 42}
+  ]
+}

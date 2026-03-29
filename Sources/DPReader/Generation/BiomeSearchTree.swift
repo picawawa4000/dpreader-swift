@@ -703,8 +703,10 @@ private extension NoisePoint {
 
 public func getPredefinedBiomeSearchTreeData(for preset: String) -> [MultiNoiseBiomeSourceBiome]? {
     switch preset {
-    case "overworld":
+    case "overworld", "minecraft:overworld":
         return OverworldBiomeSearchTreeDataCache.cached
+    case "nether", "minecraft:nether":
+        return NetherBiomeSearchTreeDataCache.cached
     default:
         return nil
     }
@@ -1126,6 +1128,55 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
     return entries
 }
 
+private func buildNetherBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome] {
+    func parameters(
+        temperature: Double,
+        humidity: Double,
+        continentalness: Double = 0.0,
+        erosion: Double = 0.0,
+        depth: Double = 0.0,
+        weirdness: Double = 0.0,
+        offset: Double
+    ) -> MultiNoiseBiomeSourceParameters {
+        return MultiNoiseBiomeSourceParameters(
+            temperature: BiomeParameterRange(value: temperature),
+            humidity: BiomeParameterRange(value: humidity),
+            continentalness: BiomeParameterRange(value: continentalness),
+            erosion: BiomeParameterRange(value: erosion),
+            depth: BiomeParameterRange(value: depth),
+            weirdness: BiomeParameterRange(value: weirdness),
+            offset: BiomeParameterRange(value: offset)
+        )
+    }
+
+    return [
+        MultiNoiseBiomeSourceBiome(
+            biome: "minecraft:nether_wastes",
+            parameters: parameters(temperature: 0.0, humidity: 0.0, offset: 0.0)
+        ),
+        MultiNoiseBiomeSourceBiome(
+            biome: "minecraft:soul_sand_valley",
+            parameters: parameters(temperature: 0.0, humidity: -0.5, offset: 0.0)
+        ),
+        MultiNoiseBiomeSourceBiome(
+            biome: "minecraft:crimson_forest",
+            parameters: parameters(temperature: 0.4, humidity: 0.0, offset: 0.0)
+        ),
+        MultiNoiseBiomeSourceBiome(
+            biome: "minecraft:warped_forest",
+            parameters: parameters(temperature: 0.0, humidity: 0.5, offset: 0.375)
+        ),
+        MultiNoiseBiomeSourceBiome(
+            biome: "minecraft:basalt_deltas",
+            parameters: parameters(temperature: -0.5, humidity: 0.0, offset: 0.175)
+        )
+    ]
+}
+
 private enum OverworldBiomeSearchTreeDataCache {
     static let cached: [MultiNoiseBiomeSourceBiome] = buildOverworldBiomeSearchTreeData()
+}
+
+private enum NetherBiomeSearchTreeDataCache {
+    static let cached: [MultiNoiseBiomeSourceBiome] = buildNetherBiomeSearchTreeData()
 }

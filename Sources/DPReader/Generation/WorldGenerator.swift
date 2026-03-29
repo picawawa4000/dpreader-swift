@@ -10,6 +10,28 @@ final class WorldGenerationRegistries {
     var dimensionRegistry = Registry<Dimension>()
 }
 
+private enum ConfiguredBiomeSampler {
+    case searchTree(BiomeSearchTree)
+    case theEnd
+}
+
+@inline(__always)
+private func canonicalPredefinedBiomePreset(_ preset: String) -> String? {
+    switch preset {
+    case "overworld", "minecraft:overworld":
+        return "minecraft:overworld"
+    case "nether", "minecraft:nether":
+        return "minecraft:nether"
+    default:
+        return nil
+    }
+}
+
+@inline(__always)
+private func hardcodedBiomeKey(_ name: String) -> RegistryKey<Biome> {
+    return RegistryKey(referencing: name)
+}
+
 /// A density function baker that does all baking steps.
 final class FullDensityFunctionBaker: DensityFunctionBaker {
     fileprivate let registries: WorldGenerationRegistries
@@ -64,7 +86,6 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
 
     func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise {
         var random: any Random = CheckedRandom(seed: self.seed)
-        random.skip(calls: 17292)
         return DensityFunctionSimplexNoise(withRandom: &random)
     }
 
@@ -122,7 +143,7 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 
     private func createLegacyNoiseRandom(seed: UInt64) -> CheckedRandom {
-        return CheckedRandom(seed: seed &+ seed)
+        return CheckedRandom(seed: self.seed &+ seed)
     }
 
     private enum LegacyNoiseKeys {
@@ -1554,6 +1575,7 @@ public final class WorldGenerator {
     private var configuredDimensionKey: RegistryKey<Dimension>?
     private var registries = WorldGenerationRegistries()
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
+    private var endBiomeDimensions = Set<RegistryKey<Dimension>>()
     // Terrain generation walks a shared baked density-function graph composed of reference types.
     // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
     private let terrainGenerationLock = NSLock()
@@ -1614,28 +1636,40 @@ public final class WorldGenerator {
                 from: self.registries.biomeRegistry,
                 entries: getPredefinedBiomeSearchTreeData(for: "overworld")!
             )
+            self.searchTrees[RegistryKey(referencing: "minecraft:nether")] = try buildBiomeSearchTree(
+                from: self.registries.biomeRegistry,
+                entries: getPredefinedBiomeSearchTreeData(for: "nether")!
+            )
+            self.endBiomeDimensions.insert(RegistryKey(referencing: "minecraft:end"))
+            self.endBiomeDimensions.insert(RegistryKey(referencing: "minecraft:the_end"))
 
             try self.registries.dimensionRegistry.forEach { (key: RegistryKey<Dimension>, value: Dimension) in
-                if (value.generator is NoiseDimensionGenerator) && ((value.generator as! NoiseDimensionGenerator).biomeSource is MultiNoiseBiomeSource) {
-                    let biomeSource = (value.generator as! NoiseDimensionGenerator).biomeSource as! MultiNoiseBiomeSource
-                    if let preset = biomeSource.preset {
-                        if preset == "overworld" {
-                            self.searchTrees[key] = self.searchTrees[RegistryKey(referencing: "minecraft:overworld")]
-                        } else {
-                            /// TODO: add the nether
-                            throw WorldGenerationErrors.invalidMultiNoiseBiomeSourceParameterList(preset)
-                        }
-                    } else if let biomes = biomeSource.biomes {
-                        // Build search tree from biomes
-                        do {
-                            let tree = try buildBiomeSearchTree(from: self.registries.biomeRegistry, entries: biomes)
-                            self.searchTrees[key] = tree
-                        } catch {
-                            print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
-                        }
-                    } else {
-                        throw WorldGenerationErrors.noBiomesOrPresetsInMultiNoiseBiomeSource(key.name)
+                guard let generator = value.generator as? NoiseDimensionGenerator else {
+                    return
+                }
+                if generator.biomeSource is TheEndBiomeSource {
+                    self.endBiomeDimensions.insert(key)
+                    return
+                }
+                guard let biomeSource = generator.biomeSource as? MultiNoiseBiomeSource else {
+                    return
+                }
+
+                if let preset = biomeSource.preset {
+                    guard let canonicalPreset = canonicalPredefinedBiomePreset(preset) else {
+                        throw WorldGenerationErrors.invalidMultiNoiseBiomeSourceParameterList(preset)
                     }
+                    self.searchTrees[key] = self.searchTrees[RegistryKey(referencing: canonicalPreset)]
+                } else if let biomes = biomeSource.biomes {
+                    // Build search tree from biomes
+                    do {
+                        let tree = try buildBiomeSearchTree(from: self.registries.biomeRegistry, entries: biomes)
+                        self.searchTrees[key] = tree
+                    } catch {
+                        print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
+                    }
+                } else {
+                    throw WorldGenerationErrors.noBiomesOrPresetsInMultiNoiseBiomeSource(key.name)
                 }
             }
         }
@@ -1682,17 +1716,41 @@ public final class WorldGenerator {
         }
     }
 
-    private func configuredChunkBiomeSearchTree() -> BiomeSearchTree? {
-        if let configuredDimensionKey, let tree = self.searchTrees[configuredDimensionKey] {
-            return tree
+    private func usesTheEndBiomeGetter(for dim: RegistryKey<Dimension>) -> Bool {
+        return self.endBiomeDimensions.contains(dim)
+    }
+
+    private func configuredChunkBiomeSampler() -> ConfiguredBiomeSampler? {
+        if let configuredDimensionKey {
+            if self.usesTheEndBiomeGetter(for: configuredDimensionKey) {
+                return .theEnd
+            }
+            if let tree = self.searchTrees[configuredDimensionKey] {
+                return .searchTree(tree)
+            }
         }
-        if let configuredSettingsKeyName, let tree = self.searchTrees[RegistryKey(referencing: configuredSettingsKeyName)] {
-            return tree
+        if let configuredSettingsKeyName {
+            let key = RegistryKey<Dimension>(referencing: configuredSettingsKeyName)
+            if self.usesTheEndBiomeGetter(for: key) {
+                return .theEnd
+            }
+            if let tree = self.searchTrees[key] {
+                return .searchTree(tree)
+            }
         }
         if let overworld = self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] {
-            return overworld
+            return .searchTree(overworld)
         }
-        return self.searchTrees.first?.value
+        if let nether = self.searchTrees[RegistryKey(referencing: "minecraft:nether")] {
+            return .searchTree(nether)
+        }
+        if !self.endBiomeDimensions.isEmpty {
+            return .theEnd
+        }
+        if let tree = self.searchTrees.first?.value {
+            return .searchTree(tree)
+        }
+        return nil
     }
 
     @inline(__always)
@@ -1792,18 +1850,47 @@ public final class WorldGenerator {
         return chunk
     }
 
+    @inline(__always)
+    private func sampleTheEndBiome(
+        biomeX: Int32,
+        biomeY: Int32,
+        biomeZ: Int32,
+        erosionAtSectionCenter: Double
+    ) -> RegistryKey<Biome> {
+        let centerDistance = Int64(biomeX) * Int64(biomeX) + Int64(biomeZ) * Int64(biomeZ)
+        if centerDistance <= 4096 {
+            return hardcodedBiomeKey("minecraft:the_end")
+        }
+
+        let hx = biomeX &* 2 &+ 1
+        let hz = biomeZ &* 2 &+ 1
+        let ringDistanceSquared = Int64(hx) * Int64(hx) + Int64(hz) * Int64(hz)
+        if Int32(truncatingIfNeeded: ringDistanceSquared) < 0 {
+            return hardcodedBiomeKey("minecraft:end_barrens")
+        }
+
+        let _ = biomeY
+        if erosionAtSectionCenter > 0.25 {
+            return hardcodedBiomeKey("minecraft:end_highlands")
+        }
+        if erosionAtSectionCenter >= -0.0625 {
+            return hardcodedBiomeKey("minecraft:end_midlands")
+        }
+        if erosionAtSectionCenter >= -0.21875 {
+            return hardcodedBiomeKey("minecraft:end_barrens")
+        }
+        return hardcodedBiomeKey("minecraft:small_end_islands")
+    }
+
     private func generateBiomesIntoChunk(
         _ chunk: ProtoChunk,
         at chunkPos: PosInt2D,
         minY: Int32,
-        using searchTree: BiomeSearchTree,
-        with functions: ChunkBiomeDensityFunctions,
-        mode: ChunkBiomeGenerationMode = .quartAndBlock
+        mode: ChunkBiomeGenerationMode = .quartAndBlock,
+        sampledBiomeAt: (Int32, Int32, Int32) -> RegistryKey<Biome>
     ) {
         let chunkStartX = chunkPos.x &* Int32(ProtoChunk.sideLength)
         let chunkStartZ = chunkPos.z &* Int32(ProtoChunk.sideLength)
-        let biomeHeight = chunk.biomeHeight
-        let lookupState = searchTree.makeReusableLookupState()
         let sectionAxisData = self.biomeSubsampler.sectionAxisData(chunkStartX: chunkStartX, chunkStartZ: chunkStartZ)
         let quartBiomeStartX = biomeCoord(fromBlock: chunkStartX)
         let quartBiomeStartY = biomeCoord(fromBlock: minY)
@@ -1834,46 +1921,9 @@ public final class WorldGenerator {
                 return cached
             }
 
-            let pos = PosInt3D(
-                x: blockCoord(fromBiome: x),
-                y: blockCoord(fromBiome: y),
-                z: blockCoord(fromBiome: z)
-            )
-            let temperature = functions.temperature.sample(at: pos)
-            let humidity = functions.humidity.sample(at: pos)
-            let continentalness = functions.continentalness.sample(at: pos)
-            let erosion = functions.erosion.sample(at: pos)
-            let weirdness = functions.weirdness.sample(at: pos)
-            let depth = functions.depth.sample(at: pos)
-            let biome = searchTree.getUnchecked(
-                temperature: temperature,
-                humidity: humidity,
-                continentalness: continentalness,
-                erosion: erosion,
-                weirdness: weirdness,
-                depth: depth,
-                using: lookupState
-            )
+            let biome = sampledBiomeAt(x, y, z)
             sampledBiomes[sampledIndex] = biome
             return biome
-        }
-
-        @inline(__always)
-        func sampledSectionBiomes(for latticeMap: SectionBiomeLatticeMap) -> [RegistryKey<Biome>] {
-            if latticeMap.uniquePositions.isEmpty {
-                return []
-            }
-            return Array(unsafeUninitializedCapacity: latticeMap.uniquePositions.count) { buffer, initializedCount in
-                let base = buffer.baseAddress!
-                for uniqueIndex in latticeMap.samplingOrder {
-                    let index = Int(uniqueIndex)
-                    let latticePos = latticeMap.uniquePositions[index]
-                    base.advanced(by: index).initialize(
-                        to: cachedBiome(x: latticePos.x, y: latticePos.y, z: latticePos.z)
-                    )
-                }
-                initializedCount = latticeMap.uniquePositions.count
-            }
         }
 
         @inline(__always)
@@ -1883,20 +1933,7 @@ public final class WorldGenerator {
                 return cached
             }
 
-            let pos = PosInt3D(
-                x: blockCoord(fromBiome: x),
-                y: blockCoord(fromBiome: y),
-                z: blockCoord(fromBiome: z)
-            )
-            let biome = searchTree.getUnchecked(
-                temperature: functions.temperature.sample(at: pos),
-                humidity: functions.humidity.sample(at: pos),
-                continentalness: functions.continentalness.sample(at: pos),
-                erosion: functions.erosion.sample(at: pos),
-                weirdness: functions.weirdness.sample(at: pos),
-                depth: functions.depth.sample(at: pos),
-                using: lookupState
-            )
+            let biome = sampledBiomeAt(x, y, z)
             sampledBiomes[sampledIndex] = biome
             return biome
         }
@@ -1955,6 +1992,55 @@ public final class WorldGenerator {
         }
     }
 
+    private func generateBiomesIntoChunk(
+        _ chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        minY: Int32,
+        using searchTree: BiomeSearchTree,
+        with functions: ChunkBiomeDensityFunctions,
+        mode: ChunkBiomeGenerationMode = .quartAndBlock
+    ) {
+        let lookupState = searchTree.makeReusableLookupState()
+        self.generateBiomesIntoChunk(chunk, at: chunkPos, minY: minY, mode: mode) { biomeX, biomeY, biomeZ in
+            let pos = PosInt3D(
+                x: blockCoord(fromBiome: biomeX),
+                y: blockCoord(fromBiome: biomeY),
+                z: blockCoord(fromBiome: biomeZ)
+            )
+            return searchTree.getUnchecked(
+                temperature: functions.temperature.sample(at: pos),
+                humidity: functions.humidity.sample(at: pos),
+                continentalness: functions.continentalness.sample(at: pos),
+                erosion: functions.erosion.sample(at: pos),
+                weirdness: functions.weirdness.sample(at: pos),
+                depth: functions.depth.sample(at: pos),
+                using: lookupState
+            )
+        }
+    }
+
+    private func generateEndBiomesIntoChunk(
+        _ chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        minY: Int32,
+        with functions: ChunkBiomeDensityFunctions,
+        mode: ChunkBiomeGenerationMode = .quartAndBlock
+    ) {
+        self.generateBiomesIntoChunk(chunk, at: chunkPos, minY: minY, mode: mode) { biomeX, biomeY, biomeZ in
+            let erosionSamplePos = PosInt3D(
+                x: (biomeX &* 2 &+ 1) &* 8,
+                y: blockCoord(fromBiome: biomeY),
+                z: (biomeZ &* 2 &+ 1) &* 8
+            )
+            return self.sampleTheEndBiome(
+                biomeX: biomeX,
+                biomeY: biomeY,
+                biomeZ: biomeZ,
+                erosionAtSectionCenter: functions.erosion.sample(at: erosionSamplePos)
+            )
+        }
+    }
+
     /// Samples the configured climate noise router at a world position.
     /// Not concurrency-safe; the baked world-scale cache wrappers used here are mutable and require external synchronization.
     /// - Parameter pos: The world position to sample.
@@ -1974,6 +2060,29 @@ public final class WorldGenerator {
         )
     }
 
+    @inline(__always)
+    private func sampleTheEndBiome(at pos: PosInt3D) -> RegistryKey<Biome> {
+        guard let config = self.config else {
+            assertionFailure("WorldGenerator.sampleTheEndBiome(at:) called without configured noise settings")
+            return hardcodedBiomeKey("minecraft:the_end")
+        }
+        let biomeX = biomeCoord(fromBlock: pos.x)
+        let biomeY = biomeCoord(fromBlock: pos.y)
+        let biomeZ = biomeCoord(fromBlock: pos.z)
+        return self.sampleTheEndBiome(
+            biomeX: biomeX,
+            biomeY: biomeY,
+            biomeZ: biomeZ,
+            erosionAtSectionCenter: config.noiseRouter.erosion.sample(
+                at: PosInt3D(
+                    x: (biomeX &* 2 &+ 1) &* 8,
+                    y: blockCoord(fromBiome: biomeY),
+                    z: (biomeZ &* 2 &+ 1) &* 8
+                )
+            )
+        )
+    }
+
     /// Samples the biome selected by the configured biome search tree at a world position.
     /// Not concurrency-safe; this method delegates to `sampleNoisePoint(at:)` and shares its cache-mutation behavior.
     /// - Parameters:
@@ -1982,6 +2091,9 @@ public final class WorldGenerator {
     /// - Throws: Any error thrown by biome search tree lookup.
     /// - Returns: The selected biome key, or `nil` if no search tree is configured for `dim`.
     public func sampleBiome(at pos: PosInt3D, in dim: RegistryKey<Dimension>) throws -> RegistryKey<Biome>? {
+        if self.usesTheEndBiomeGetter(for: dim) {
+            return self.sampleTheEndBiome(at: pos)
+        }
         let point = self.sampleNoisePoint(at: pos)
         guard let searchTree = self.searchTrees[dim] else {
             assertionFailure("WorldGenerator.sampleBiome(at:in:) called without a search tree for \(dim.name)")
@@ -2027,9 +2139,9 @@ public final class WorldGenerator {
             throw WorldGenerationErrors.fromPosGreaterThanToPos
         }
 
-        // if the generation area is small, don't bake the functions
-        // if it's large, use a custom cache baker to speed up the process
-        guard let searchTree = self.searchTrees[dim] else {
+        let isTheEnd = self.usesTheEndBiomeGetter(for: dim)
+        let searchTree = self.searchTrees[dim]
+        if !isTheEnd && searchTree == nil {
             print("WARNING: No search tree for requested biome \(dim.name)!")
             return nil
         }
@@ -2058,8 +2170,10 @@ public final class WorldGenerator {
                     for _ in fromX..<toX {
                         let pos = PosInt3D(x: worldX, y: y, z: worldZ)
                         let biome: RegistryKey<Biome>
-                        if let noiseRouter = directNoiseRouter {
-                            biome = searchTree.getUnchecked(
+                        if isTheEnd {
+                            biome = self.sampleTheEndBiome(at: pos)
+                        } else if let noiseRouter = directNoiseRouter {
+                            biome = searchTree!.getUnchecked(
                                 temperature: noiseRouter.temperature.sample(at: pos),
                                 humidity: noiseRouter.humidity.sample(at: pos),
                                 continentalness: noiseRouter.continents.sample(at: pos),
@@ -2069,7 +2183,7 @@ public final class WorldGenerator {
                             )
                         } else {
                             let point = self.sampleNoisePoint(at: pos)
-                            biome = searchTree.getUnchecked(point)
+                            biome = searchTree!.getUnchecked(point)
                         }
                         biomes.append(biome)
                         worldX += scale
@@ -2082,8 +2196,10 @@ public final class WorldGenerator {
                     for x in fromPos.x..<toPos.x {
                         let pos = PosInt3D(x: x, y: y, z: z)
                         let biome: RegistryKey<Biome>
-                        if let noiseRouter = directNoiseRouter {
-                            biome = searchTree.getUnchecked(
+                        if isTheEnd {
+                            biome = self.sampleTheEndBiome(at: pos)
+                        } else if let noiseRouter = directNoiseRouter {
+                            biome = searchTree!.getUnchecked(
                                 temperature: noiseRouter.temperature.sample(at: pos),
                                 humidity: noiseRouter.humidity.sample(at: pos),
                                 continentalness: noiseRouter.continents.sample(at: pos),
@@ -2093,7 +2209,7 @@ public final class WorldGenerator {
                             )
                         } else {
                             let point = self.sampleNoisePoint(at: pos)
-                            biome = searchTree.getUnchecked(point)
+                            biome = searchTree!.getUnchecked(point)
                         }
                         biomes.append(biome)
                     }
@@ -2105,12 +2221,12 @@ public final class WorldGenerator {
         let baker = WorldScaleDensityFunctionBaker()
 
         let noiseRouter = self.config!.noiseRouter
-        let temperature = try baker.bakeDensityFunction(noiseRouter.temperature)
-        let humidity = try baker.bakeDensityFunction(noiseRouter.humidity)
-        let continentalness = try baker.bakeDensityFunction(noiseRouter.continents)
-        let erosion = try baker.bakeDensityFunction(noiseRouter.erosion)
-        let weirdness = try baker.bakeDensityFunction(noiseRouter.weirdness)
-        let depthFunc = try baker.bakeDensityFunction(noiseRouter.depth)
+        let erosion = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.erosion) : nil
+        let temperature = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.temperature) : nil
+        let humidity = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.humidity) : nil
+        let continentalness = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.continents) : nil
+        let weirdness = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.weirdness) : nil
+        let depthFunc = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.depth) : nil
 
         if useScale {
             let startWorldX = fromX * scale
@@ -2119,14 +2235,19 @@ public final class WorldGenerator {
                 var worldX = startWorldX
                 for _ in fromX..<toX {
                     let pos = PosInt3D(x: worldX, y: y, z: worldZ)
-                    let biome = searchTree.getUnchecked(
-                        temperature: temperature.sample(at: pos),
-                        humidity: humidity.sample(at: pos),
-                        continentalness: continentalness.sample(at: pos),
-                        erosion: erosion.sample(at: pos),
-                        weirdness: weirdness.sample(at: pos),
-                        depth: depthFunc.sample(at: pos)
-                    )
+                    let biome: RegistryKey<Biome>
+                    if isTheEnd {
+                        biome = self.sampleTheEndBiome(at: pos)
+                    } else {
+                        biome = searchTree!.getUnchecked(
+                            temperature: temperature!.sample(at: pos),
+                            humidity: humidity!.sample(at: pos),
+                            continentalness: continentalness!.sample(at: pos),
+                            erosion: erosion!.sample(at: pos),
+                            weirdness: weirdness!.sample(at: pos),
+                            depth: depthFunc!.sample(at: pos)
+                        )
+                    }
                     biomes.append(biome)
                     worldX += scale
                 }
@@ -2136,14 +2257,19 @@ public final class WorldGenerator {
             for z in fromPos.z..<toPos.z {
                 for x in fromPos.x..<toPos.x {
                     let pos = PosInt3D(x: x, y: y, z: z)
-                    let biome = searchTree.getUnchecked(
-                        temperature: temperature.sample(at: pos),
-                        humidity: humidity.sample(at: pos),
-                        continentalness: continentalness.sample(at: pos),
-                        erosion: erosion.sample(at: pos),
-                        weirdness: weirdness.sample(at: pos),
-                        depth: depthFunc.sample(at: pos)
-                    )
+                    let biome: RegistryKey<Biome>
+                    if isTheEnd {
+                        biome = self.sampleTheEndBiome(at: pos)
+                    } else {
+                        biome = searchTree!.getUnchecked(
+                            temperature: temperature!.sample(at: pos),
+                            humidity: humidity!.sample(at: pos),
+                            continentalness: continentalness!.sample(at: pos),
+                            erosion: erosion!.sample(at: pos),
+                            weirdness: weirdness!.sample(at: pos),
+                            depth: depthFunc!.sample(at: pos)
+                        )
+                    }
                     biomes.append(biome)
                 }
             }
@@ -2185,14 +2311,24 @@ public final class WorldGenerator {
             sizeHorizontal: config.sizeHorizontal,
             sizeVertical: config.sizeVertical
         )
-        if let searchTree = self.configuredChunkBiomeSearchTree() {
-            self.generateBiomesIntoChunk(
-                chunk,
-                at: chunkPos,
-                minY: minY,
-                using: searchTree,
-                with: chunkGenerationFunctions.biomeDensityFunctions
-            )
+        if let biomeSampler = self.configuredChunkBiomeSampler() {
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    chunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: chunkGenerationFunctions.biomeDensityFunctions
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    chunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: chunkGenerationFunctions.biomeDensityFunctions
+                )
+            }
         }
 
         chunkSampler.generateTerrain(into: chunk, with: chunkGenerationFunctions.terrainDensity)
@@ -2206,7 +2342,7 @@ public final class WorldGenerator {
         let config = try self.validatedTerrainConfig(for: "Terrain generation benchmarking")
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        let searchTree = self.configuredChunkBiomeSearchTree()
+        let biomeSampler = self.configuredChunkBiomeSampler()
 
         func makeContext() throws -> (ProtoChunk, VanillaChunkTerrainSampler, ChunkGenerationDensityFunctions, UInt64, UInt64, UInt64) {
             let chunk = ProtoChunk()
@@ -2255,42 +2391,74 @@ public final class WorldGenerator {
 
         var quartBiomesOnlyNanos: UInt64 = 0
         var blockBiomesOnlyNanos: UInt64 = 0
-        if let searchTree {
+        if let biomeSampler {
             let (quartChunk, _, quartFunctions, _, _, _) = try makeContext()
             let quartStart = DispatchTime.now().uptimeNanoseconds
-            self.generateBiomesIntoChunk(
-                quartChunk,
-                at: chunkPos,
-                minY: minY,
-                using: searchTree,
-                with: quartFunctions.biomeDensityFunctions,
-                mode: .quartOnly
-            )
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    quartChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: quartFunctions.biomeDensityFunctions,
+                    mode: .quartOnly
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    quartChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: quartFunctions.biomeDensityFunctions,
+                    mode: .quartOnly
+                )
+            }
             quartBiomesOnlyNanos = DispatchTime.now().uptimeNanoseconds - quartStart
 
             let (blockChunk, _, blockFunctions, _, _, _) = try makeContext()
             let blockStart = DispatchTime.now().uptimeNanoseconds
-            self.generateBiomesIntoChunk(
-                blockChunk,
-                at: chunkPos,
-                minY: minY,
-                using: searchTree,
-                with: blockFunctions.biomeDensityFunctions,
-                mode: .blockOnly
-            )
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    blockChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: blockFunctions.biomeDensityFunctions,
+                    mode: .blockOnly
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    blockChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: blockFunctions.biomeDensityFunctions,
+                    mode: .blockOnly
+                )
+            }
             blockBiomesOnlyNanos = DispatchTime.now().uptimeNanoseconds - blockStart
         }
 
         let (fullChunk, fullSampler, fullFunctions, _, _, _) = try makeContext()
         let fullStart = DispatchTime.now().uptimeNanoseconds
-        if let searchTree {
-            self.generateBiomesIntoChunk(
-                fullChunk,
-                at: chunkPos,
-                minY: minY,
-                using: searchTree,
-                with: fullFunctions.biomeDensityFunctions
-            )
+        if let biomeSampler {
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    fullChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: fullFunctions.biomeDensityFunctions
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    fullChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: fullFunctions.biomeDensityFunctions
+                )
+            }
         }
         fullSampler.generateTerrain(into: fullChunk, with: fullFunctions.terrainDensity)
         let fullGenerateIntoNanos = DispatchTime.now().uptimeNanoseconds - fullStart

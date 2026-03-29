@@ -30,7 +30,21 @@ private struct CubiomesNeighborhoodReference: Decodable {
     }
 }
 
+private struct CubiomesTerrainHashChunkReference: Decodable {
+    let x: Int32
+    let z: Int32
+    let terrainHash: String
+}
+
+private struct CubiomesTerrainHashReference: Decodable {
+    let seed: String
+    let minecraftVersion: String
+    let centerChunk: CubiomesNeighborhoodReference.CenterChunk
+    let chunks: [CubiomesTerrainHashChunkReference]
+}
+
 private let generateIntoNeighborhoodSeed: UInt64 = 8_608_349_533_057_813_284
+private let generateIntoTerrainHashSeed: UInt64 = 123_456_789
 private let generateIntoNeighborhoodTerrainByteCount = ProtoChunk.sideLength * ProtoChunk.sideLength * 384 / 8
 private let generateIntoNeighborhoodQuartBiomeByteCount = ProtoChunk.biomeSideLength * ProtoChunk.biomeSideLength * 96
 
@@ -49,7 +63,7 @@ private func cubiomesNeighborhoodBiome(for id: Int) -> RegistryKey<Biome>? {
     }
 }
 
-private func makeVanillaNeighborhoodWorldGenerator() throws -> WorldGenerator {
+private func makeVanillaNeighborhoodWorldGenerator(withSeed seed: UInt64 = generateIntoNeighborhoodSeed) throws -> WorldGenerator {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -60,7 +74,7 @@ private func makeVanillaNeighborhoodWorldGenerator() throws -> WorldGenerator {
 
     let pack = try DataPack(fromRootPath: vanillaDataPath)
     return try WorldGenerator(
-        withWorldSeed: generateIntoNeighborhoodSeed,
+        withWorldSeed: seed,
         usingDataPacks: [pack],
         usingSettings: RegistryKey(referencing: "minecraft:overworld")
     )
@@ -83,6 +97,24 @@ private func loadCubiomesNeighborhoodReference() throws -> CubiomesNeighborhoodR
     }
     for biomeId in reference.usedBiomeIds where cubiomesNeighborhoodBiome(for: biomeId) == nil {
         throw GenerateIntoNeighborhoodTestErrors.unknownCubiomesBiomeId(biomeId)
+    }
+    return reference
+}
+
+private func loadCubiomesTerrainHashReference() throws -> CubiomesTerrainHashReference {
+    let referencePath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Tests/Resources/Cubiomes/generate_into_chunk_1200_0_seed_123456789_17x17_hashes.json")
+
+    let data = try Data(contentsOf: referencePath)
+    let reference = try JSONDecoder().decode(CubiomesTerrainHashReference.self, from: data)
+    guard reference.seed == "123456789",
+          reference.minecraftVersion == "1.21.11",
+          reference.centerChunk.x == 1200,
+          reference.centerChunk.z == 0,
+          reference.chunks.count == 17 * 17 else {
+        throw GenerateIntoNeighborhoodTestErrors.invalidReferenceData
     }
     return reference
 }
@@ -113,6 +145,30 @@ private func referenceBiome(at index: Int, bytes: [UInt8]) throws -> RegistryKey
         throw GenerateIntoNeighborhoodTestErrors.unknownCubiomesBiomeId(biomeId)
     }
     return biome
+}
+
+private func terrainHash(for chunk: ProtoChunk) -> UInt64 {
+    var hash: UInt64 = 1_469_598_103_934_665_603
+    var currentByte: UInt8 = 0
+    var bitIndex = 0
+
+    for localY in 0..<Int(chunk.height) {
+        for localZ in 0..<ProtoChunk.sideLength {
+            for localX in 0..<ProtoChunk.sideLength {
+                if chunk.isTerrain(atLocal: PosInt3D(x: Int32(localX), y: Int32(localY), z: Int32(localZ))) {
+                    currentByte |= UInt8(1) << UInt8(bitIndex & 7)
+                }
+                bitIndex += 1
+                if (bitIndex & 7) == 0 {
+                    hash ^= UInt64(currentByte)
+                    hash &*= 1_099_511_628_211
+                    currentByte = 0
+                }
+            }
+        }
+    }
+
+    return hash
 }
 
 @Test func testGenerateIntoMatchesCubiomesTerrainForChunkNeighborhood3416() async throws {
@@ -229,5 +285,21 @@ private func referenceBiome(at index: Int, bytes: [UInt8]) throws -> RegistryKey
                 "Chunk (\(chunkReference.x), \(chunkReference.z)) block biome slice y=\(worldY) mismatches: \(mismatchCount). \(firstMismatch ?? "")"
             )
         }
+    }
+}
+
+@Test func testGenerateIntoMatchesCubiomesTerrainHashesForChunkSquareCenteredAt1200_0() async throws {
+    let world = try makeVanillaNeighborhoodWorldGenerator(withSeed: generateIntoTerrainHashSeed)
+    let reference = try loadCubiomesTerrainHashReference()
+
+    for chunkReference in reference.chunks {
+        let chunk = ProtoChunk()
+        try world.generateInto(chunk, at: PosInt2D(x: chunkReference.x, z: chunkReference.z))
+        let actualHash = terrainHash(for: chunk)
+        let expectedHash = try #require(UInt64(chunkReference.terrainHash))
+        #expect(
+            actualHash == expectedHash,
+            "Chunk (\(chunkReference.x), \(chunkReference.z)) terrain hash mismatch: expected \(expectedHash), got \(actualHash)"
+        )
     }
 }

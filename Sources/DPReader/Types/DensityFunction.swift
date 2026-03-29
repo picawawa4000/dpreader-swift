@@ -185,27 +185,110 @@ public final class BakedNoise: DensityFunctionNoise {
 
 /// Represents a simplex noise within a density function.
 /// Only relevant for `EndIslandsDensityFunction`.
+private struct EndIslandsSimplexNoise {
+    private static let sqrt3 = Double(3.0).squareRoot()
+    private static let skewFactor2D = 0.5 * (sqrt3 - 1.0)
+    private static let unskewFactor2D = (3.0 - sqrt3) / 6.0
+
+    private let permutation: [UInt8]
+
+    init<R: Random>(random: inout R) {
+        _ = random.nextDouble() * 256.0
+        _ = random.nextDouble() * 256.0
+        _ = random.nextDouble() * 256.0
+
+        var permutation = Array<UInt8>(0...255)
+        for i in 0...255 {
+            let j = Int(random.next(bound: UInt32(256 - i))) + i
+            permutation.swapAt(i, j)
+        }
+        self.permutation = permutation
+    }
+
+    @inline(__always)
+    func sample(x: Double, z: Double) -> Double {
+        let skew = (x + z) * Self.skewFactor2D
+        let skewedX = Int(floor(x + skew))
+        let skewedZ = Int(floor(z + skew))
+        let unskewedSum = Double(skewedX + skewedZ) * Self.unskewFactor2D
+        let x0 = x - (Double(skewedX) - unskewedSum)
+        let z0 = z - (Double(skewedZ) - unskewedSum)
+        let offsetX = x0 > z0 ? 1 : 0
+        let offsetZ = offsetX == 0 ? 1 : 0
+        let x1 = x0 - Double(offsetX) + Self.unskewFactor2D
+        let z1 = z0 - Double(offsetZ) + Self.unskewFactor2D
+        let x2 = x0 - 1.0 + 2.0 * Self.unskewFactor2D
+        let z2 = z0 - 1.0 + 2.0 * Self.unskewFactor2D
+
+        let gi0 = self.map(self.map(skewedZ) + skewedX)
+        let gi1 = self.map(self.map(skewedZ + offsetZ) + skewedX + offsetX)
+        let gi2 = self.map(self.map(skewedZ + 1) + skewedX + 1)
+
+        return 70.0 * (
+            self.simplexGrad(hash: gi0 % 12, x: x0, z: z0) +
+            self.simplexGrad(hash: gi1 % 12, x: x1, z: z1) +
+            self.simplexGrad(hash: gi2 % 12, x: x2, z: z2)
+        )
+    }
+
+    @inline(__always)
+    private func map(_ input: Int) -> Int {
+        return Int(self.permutation[input & 0xFF])
+    }
+
+    @inline(__always)
+    private func simplexGrad(hash: Int, x: Double, z: Double) -> Double {
+        let contribution = 0.5 - x * x - z * z
+        if contribution < 0.0 {
+            return 0.0
+        }
+        let attenuated = contribution * contribution
+        return attenuated * attenuated * self.indexedLerp(hash, x, z, 0.0)
+    }
+
+    @inline(__always)
+    private func indexedLerp(_ index: Int, _ a: Double, _ b: Double, _ c: Double) -> Double {
+        switch index & 0xF {
+        case 0: return a + b
+        case 1: return -a + b
+        case 2: return a - b
+        case 3: return -a - b
+        case 4: return a + c
+        case 5: return -a + c
+        case 6: return a - c
+        case 7: return -a - c
+        case 8: return b + c
+        case 9: return -b + c
+        case 10: return b - c
+        case 11: return -b - c
+        case 12: return a + b
+        case 13: return -b + c
+        case 14: return -a + b
+        default: return -b - c
+        }
+    }
+}
+
 public struct DensityFunctionSimplexNoise {
-    var noise: SimplexNoise
+    fileprivate var noise: EndIslandsSimplexNoise
     // For debugging.
     var isBaked: Bool
 
     init() {
-        // This is one of those weird cases where this is vanilla behaviour, although it's highly unexpected.
         var tempRandom = CheckedRandom(seed: 0)
-        self.noise = SimplexNoise(random: &tempRandom)
+        self.noise = EndIslandsSimplexNoise(random: &tempRandom)
         self.isBaked = false
     }
 
-    init(withRandom random: inout any Random) {
+    init<R: Random>(withRandom random: inout R) {
         random.skip(calls: 17292)
-        self.noise = SimplexNoise(random: &random)
+        self.noise = EndIslandsSimplexNoise(random: &random)
         self.isBaked = true
     }
 
     func sample(x: Double, y: Double) -> Double {
         if (!self.isBaked) { print("WARNING: Unbaked DensityFunctionSimplexNoise sampled!") }
-        return self.noise.sample(x: x, y: y)
+        return self.noise.sample(x: x, z: y)
     }
 }
 
@@ -1225,6 +1308,7 @@ public struct DensityFunctionSimplexNoise {
 
 /// Samples a specialised algorithm used for end islands.
 @TestVisible(property: "testingAttributes") public final class EndIslandsDensityFunction: DensityFunction {
+    private static let simplexCutoff = Double(Float(-0.9))
     private let sampler: DensityFunctionSimplexNoise
 
     public init() {
@@ -1262,13 +1346,11 @@ public struct DensityFunctionSimplexNoise {
                 let trialChunkZ = Int64(chunkZ + Int32(offsetZ))
                 let radiusSquared = trialChunkX * trialChunkX + trialChunkZ * trialChunkZ
                 let spx = self.sampler.sample(x: Double(trialChunkX), y: Double(trialChunkZ))
-                if (radiusSquared > 4096 && spx < -0.9) {
-                    let scaledChunkX = abs(Float(trialChunkX)) * 3439.0
-                    let scaledChunkZ = abs(Float(trialChunkZ)) * 147.0
-                    let sum = scaledChunkX + scaledChunkZ
-                    // This is a Swift implementation of the C float-to-unsigned cast,
-                    // which may differ from Java's implementation.
-                    let intSum = sum > Float(UInt32.max) ? UInt32.max : UInt32(sum)
+                if radiusSquared > 4096 && spx < Self.simplexCutoff {
+                    let scaledChunkX = abs(Float(trialChunkX))
+                    let scaledChunkZ = abs(Float(trialChunkZ))
+                    let rawSum = (scaledChunkZ * 147.0).addingProduct(scaledChunkX, 3439.0)
+                    let intSum = rawSum > Float(UInt32.max) ? UInt32.max : UInt32(rawSum)
                     let scale = UInt64(intSum % 13) + 9
                     let offsetLocalX = localX - Int32(offsetX) * 2
                     let offsetLocalZ = localZ - Int32(offsetZ) * 2
