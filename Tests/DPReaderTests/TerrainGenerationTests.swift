@@ -13,71 +13,9 @@ private let vanillaTerrainHeight: Int32 = 384
 private let vanillaTerrainSampleCount = ProtoChunk.sideLength * ProtoChunk.sideLength * Int(vanillaTerrainHeight)
 private let vanillaLODOrigin = PosInt3D(x: 16, y: 96, z: 240)
 private let vanillaLODRadius: Int32 = 12
-private let vanillaLODSurfaceBandCounts = [
-    [
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64]
-    ],
-    [
-        [64, 64, 64, 64, 64, 61, 47],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64]
-    ],
-    [
-        [64, 64, 64, 64, 57, 26, 12],
-        [64, 64, 64, 64, 64, 63, 56],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64]
-    ],
-    [
-        [26, 21, 18, 10, 0, 0, 0],
-        [44, 44, 43, 36, 22, 3, 0],
-        [58, 64, 64, 64, 57, 30, 13],
-        [64, 64, 64, 64, 64, 59, 48],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64],
-        [64, 64, 64, 64, 64, 64, 64]
-    ],
-    [
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 1, 6, 4, 1, 0, 0],
-        [8, 13, 20, 22, 16, 1, 0],
-        [29, 26, 33, 39, 38, 22, 12],
-        [30, 34, 48, 55, 60, 52, 40],
-        [17, 32, 52, 64, 64, 64, 64]
-    ],
-    [
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 8, 14, 16]
-    ],
-    [
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0]
-    ]
-]
+private let vanillaLODStartingRadius: Int32 = 4
+private let vanillaLODRadiusStep: Int32 = 4
+private let vanillaLODMaxCellSizePower = 2
 private let vanillaTerrainEncodedBitset = """
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -309,6 +247,75 @@ private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bo
     return (bitset[byteIndex] & bitMask) != 0
 }
 
+private struct TerrainChunkKey: Hashable {
+    let x: Int32
+    let z: Int32
+}
+
+@inline(__always)
+private func chebyshevDistance(from origin: PosInt3D, toX x: Int32, z: Int32) -> Int32 {
+    return Int32(max(abs(Int64(x) - Int64(origin.x)), abs(Int64(z) - Int64(origin.z))))
+}
+
+@inline(__always)
+private func expectedLODCellSize(for column: TerrainLODColumn, in result: TerrainLODResult) -> Int32 {
+    let distance = chebyshevDistance(from: PosInt3D(x: result.originX, y: result.originY, z: result.originZ), toX: column.x, z: column.z)
+    let power = min(Int(max(0, distance - result.startingRadius) / result.radiusStep), result.maxCellSizePower)
+    return result.baseCellSize << power
+}
+
+private func generatedTerrainIsSolid(
+    at worldPos: PosInt3D,
+    using worldGenerator: WorldGenerator,
+    cache: inout [TerrainChunkKey: ProtoChunk]
+) throws -> Bool {
+    let chunkPos = PosInt2D(
+        x: worldPos.x >> 4,
+        z: worldPos.z >> 4
+    )
+    let key = TerrainChunkKey(x: chunkPos.x, z: chunkPos.z)
+    let chunk: ProtoChunk
+    if let cached = cache[key] {
+        chunk = cached
+    } else {
+        let generated = ProtoChunk()
+        try worldGenerator.generateInto(generated, at: chunkPos)
+        cache[key] = generated
+        chunk = generated
+    }
+
+    let localPos = PosInt3D(
+        x: worldPos.x - chunkPos.x * Int32(ProtoChunk.sideLength),
+        y: worldPos.y - chunk.minY,
+        z: worldPos.z - chunkPos.z * Int32(ProtoChunk.sideLength)
+    )
+    return chunk.isTerrain(atLocal: localPos)
+}
+
+private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using worldGenerator: WorldGenerator) throws {
+    var chunkCache: [TerrainChunkKey: ProtoChunk] = [:]
+
+    for column in sampled.columns {
+        #expect(column.x >= sampled.minX && column.x < sampled.maxXExclusive)
+        #expect(column.z >= sampled.minZ && column.z < sampled.maxZExclusive)
+        #expect(chebyshevDistance(from: PosInt3D(x: sampled.originX, y: sampled.originY, z: sampled.originZ), toX: column.x, z: column.z) >= sampled.startingRadius)
+        #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
+
+        let expectedSampleCount = Int((sampled.maxYExclusive - sampled.minY + column.cellSize - 1) / column.cellSize)
+        #expect(column.samples.count == expectedSampleCount)
+
+        for sampleIndex in column.samples.indices {
+            let worldY = sampled.minY + Int32(sampleIndex) * column.cellSize
+            let expected = try generatedTerrainIsSolid(
+                at: PosInt3D(x: column.x, y: worldY, z: column.z),
+                using: worldGenerator,
+                cache: &chunkCache
+            )
+            #expect(column.samples[sampleIndex] == expected)
+        }
+    }
+}
+
 @Test func testProtoChunkSectionsStoreTerrainAsBitmap() async throws {
     let chunk = ProtoChunk()
     try chunk.configure(minY: -64, height: 32)
@@ -418,7 +425,7 @@ private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bo
     }
 }
 
-@Test func testSampleLODUsesGenerationCellSizeAndCountsTerrain() async throws {
+@Test func testSampleLODUsesAdaptiveCellSizesAndPointSamples() async throws {
     let pack = try loadNoiseSettingsPack()
     let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:lod_constant")
     pack.noiseSettingsRegistry.register(
@@ -436,32 +443,29 @@ private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bo
         buildSearchTrees: false
     )
 
-    let sampled = try worldGenerator.sampleLOD(from: PosInt3D(x: 5, y: 1, z: -3), radius: 5)
+    let sampled = try worldGenerator.sampleLOD(
+        from: PosInt3D(x: 5, y: 1, z: -3),
+        radius: 9,
+        startingRadius: 4,
+        radiusStep: 2,
+        maxCellSizePower: 2
+    )
 
-    #expect(sampled.cellWidth == 4)
-    #expect(sampled.cellDepth == 4)
-    #expect(sampled.verticalResolution == 4)
-    #expect(sampled.minX == 0)
-    #expect(sampled.maxXExclusive == 12)
+    #expect(sampled.baseCellSize == 4)
+    #expect(sampled.startingRadius == 4)
+    #expect(sampled.radiusStep == 2)
+    #expect(sampled.maxCellSizePower == 2)
+    #expect(sampled.minX == -4)
+    #expect(sampled.maxXExclusive == 15)
     #expect(sampled.minY == -8)
     #expect(sampled.maxYExclusive == 8)
-    #expect(sampled.minZ == -8)
-    #expect(sampled.maxZExclusive == 4)
-    #expect(sampled.sampleCountX == 3)
-    #expect(sampled.sampleCountZ == 3)
-    #expect(sampled.verticalSampleCount == 4)
-    #expect(sampled.columns.count == 9)
+    #expect(sampled.minZ == -12)
+    #expect(sampled.maxZExclusive == 7)
+    #expect(!sampled.columns.isEmpty)
 
     for column in sampled.columns {
-        #expect(column.width == 4)
-        #expect(column.depth == 4)
-        #expect(column.samples.count == 4)
-
-        for sample in column.samples {
-            #expect(sample.height == 4)
-            #expect(sample.solidBlockCount == 64)
-            #expect(sample.containsTerrain)
-        }
+        #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
+        #expect(column.samples.allSatisfy { $0 })
     }
 }
 
@@ -508,6 +512,57 @@ private func vanillaTerrainIsSolid(atWorld pos: PosInt3D, bitset: [UInt8]) -> Bo
     #expect(failure.value == nil)
     for index in chunkPositions.indices {
         #expect(results[index].value == .some(expectedBitmaps[index]))
+    }
+}
+
+@Test func testSampleLODIsStableAcrossConcurrentCalls() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 4,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "test:example"),
+        buildSearchTrees: false
+    )
+
+    let requests = [
+        (PosInt3D(x: 0, y: 64, z: 0), Int32(16), Int32(0), Int32(4), 0),
+        (PosInt3D(x: 32, y: 64, z: -16), Int32(24), Int32(8), Int32(4), 2),
+        (PosInt3D(x: -48, y: 80, z: 24), Int32(28), Int32(12), Int32(8), 1),
+        (PosInt3D(x: 7, y: 1, z: -3), Int32(9), Int32(4), Int32(2), 2),
+    ]
+
+    let expectedResults = try requests.map { request in
+        try worldGenerator.sampleLOD(
+            from: request.0,
+            radius: request.1,
+            startingRadius: request.2,
+            radiusStep: request.3,
+            maxCellSizePower: request.4
+        )
+    }
+
+    let sharedGenerator = UnsafeSendableBox(value: worldGenerator)
+    let sharedRequests = UnsafeSendableBox(value: requests)
+    let results = requests.map { _ in LockedOptional<TerrainLODResult>() }
+    let failure = LockedOptional<String>()
+    DispatchQueue.concurrentPerform(iterations: requests.count) { index in
+        do {
+            let request = sharedRequests.value[index]
+            results[index].value = try sharedGenerator.value.sampleLOD(
+                from: request.0,
+                radius: request.1,
+                startingRadius: request.2,
+                radiusStep: request.3,
+                maxCellSizePower: request.4
+            )
+        } catch {
+            failure.setIfNil(String(describing: error))
+        }
+    }
+
+    #expect(failure.value == nil)
+    for index in requests.indices {
+        #expect(results[index].value == .some(expectedResults[index]))
     }
 }
 
@@ -581,7 +636,7 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     #expect(mismatchCount == 0)
 }
 
-@Test func testSampleLODMatchesCubiomesVanillaTerrain() async throws {
+@Test func testSampleLODMatchesGeneratedVanillaTerrainAtSamplePoints() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -597,54 +652,30 @@ private final class LockedOptional<Value>: @unchecked Sendable {
         usingSettings: RegistryKey(referencing: "minecraft:overworld")
     )
 
-    let sampled = try worldGenerator.sampleLOD(from: vanillaLODOrigin, radius: vanillaLODRadius)
+    let sampled = try worldGenerator.sampleLOD(
+        from: vanillaLODOrigin,
+        radius: vanillaLODRadius,
+        startingRadius: vanillaLODStartingRadius,
+        radiusStep: vanillaLODRadiusStep,
+        maxCellSizePower: vanillaLODMaxCellSizePower
+    )
 
     #expect(sampled.originX == vanillaLODOrigin.x)
     #expect(sampled.originY == vanillaLODOrigin.y)
     #expect(sampled.originZ == vanillaLODOrigin.z)
     #expect(sampled.radius == vanillaLODRadius)
-    #expect(sampled.cellWidth == 4)
-    #expect(sampled.cellDepth == 4)
-    #expect(sampled.verticalResolution == 4)
+    #expect(sampled.startingRadius == vanillaLODStartingRadius)
+    #expect(sampled.radiusStep == vanillaLODRadiusStep)
+    #expect(sampled.maxCellSizePower == vanillaLODMaxCellSizePower)
+    #expect(sampled.baseCellSize == 4)
     #expect(sampled.minX == 4)
-    #expect(sampled.maxXExclusive == 32)
+    #expect(sampled.maxXExclusive == 29)
     #expect(sampled.minY == -64)
     #expect(sampled.maxYExclusive == 320)
     #expect(sampled.minZ == 228)
-    #expect(sampled.maxZExclusive == 256)
-    #expect(sampled.sampleCountX == 7)
-    #expect(sampled.sampleCountZ == 7)
-    #expect(sampled.verticalSampleCount == 96)
-    #expect(sampled.columns.count == sampled.sampleCountX * sampled.sampleCountZ)
+    #expect(sampled.maxZExclusive == 253)
 
-    let bandStartIndex = Int((84 - sampled.minY) / sampled.verticalResolution)
-    #expect(bandStartIndex == 37)
-
-    var columnIndex = 0
-    for zIndex in 0..<sampled.sampleCountZ {
-        for xIndex in 0..<sampled.sampleCountX {
-            let column = sampled.columns[columnIndex]
-            #expect(column.x == sampled.minX + Int32(xIndex) * sampled.cellWidth)
-            #expect(column.z == sampled.minZ + Int32(zIndex) * sampled.cellDepth)
-            #expect(column.width == sampled.cellWidth)
-            #expect(column.depth == sampled.cellDepth)
-            #expect(column.samples.count == sampled.verticalSampleCount)
-            #expect(column.samples.first?.y == sampled.minY)
-            #expect(column.samples.last?.y == sampled.maxYExclusive - sampled.verticalResolution)
-
-            for yIndex in 0..<vanillaLODSurfaceBandCounts.count {
-                let expectedSolidCount = vanillaLODSurfaceBandCounts[yIndex][zIndex][xIndex]
-                let sample = column.samples[bandStartIndex + yIndex]
-
-                #expect(sample.y == 84 + Int32(yIndex) * sampled.verticalResolution)
-                #expect(sample.height == sampled.verticalResolution)
-                #expect(sample.solidBlockCount == expectedSolidCount)
-                #expect(sample.containsTerrain == (expectedSolidCount > 0))
-            }
-
-            columnIndex += 1
-        }
-    }
+    try assertLODMatchesGeneratedTerrain(sampled, using: worldGenerator)
 }
 
 @Test func testChunkNoiseRouterBakeReusesSharedCachesAcrossTerrainAndBiomeRoots() async throws {

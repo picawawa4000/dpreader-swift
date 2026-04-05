@@ -1418,44 +1418,30 @@ public final class ProtoChunk {
     }
 }
 
-/// A single vertical terrain sample inside one `TerrainLODColumn`.
-public struct TerrainLODSample {
-    public let y: Int32
-    public let height: Int32
-    public let solidBlockCount: Int
-
-    public var containsTerrain: Bool {
-        return self.solidBlockCount > 0
-    }
-}
-
-/// One horizontally-aligned LOD column returned by `WorldGenerator.sampleLOD(from:radius:)`.
-public struct TerrainLODColumn {
+/// One point-sampled terrain column returned by `WorldGenerator.sampleLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:)`.
+public struct TerrainLODColumn: Equatable {
     public let x: Int32
     public let z: Int32
-    public let width: Int32
-    public let depth: Int32
-    public let samples: [TerrainLODSample]
+    public let cellSize: Int32
+    public let samples: [Bool]
 }
 
-/// A flattened X-major/Z-major grid of terrain columns sampled at generation-cell detail.
-public struct TerrainLODResult {
+/// A Z-major/X-major list of adaptive terrain columns sampled around an origin.
+public struct TerrainLODResult: Equatable {
     public let originX: Int32
     public let originY: Int32
     public let originZ: Int32
     public let radius: Int32
-    public let cellWidth: Int32
-    public let cellDepth: Int32
-    public let verticalResolution: Int32
+    public let startingRadius: Int32
+    public let radiusStep: Int32
+    public let maxCellSizePower: Int
+    public let baseCellSize: Int32
     public let minX: Int32
     public let minY: Int32
     public let minZ: Int32
     public let maxXExclusive: Int32
     public let maxYExclusive: Int32
     public let maxZExclusive: Int32
-    public let sampleCountX: Int
-    public let sampleCountZ: Int
-    public let verticalSampleCount: Int
     public let columns: [TerrainLODColumn]
 }
 
@@ -1848,6 +1834,26 @@ public final class WorldGenerator {
         let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
         chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
         return chunk
+    }
+
+    @inline(__always)
+    private func terrainCellSize(fromBaseCellSize baseCellSize: Int32, power: Int) -> Int32 {
+        let safePower = max(0, min(30, power))
+        return clampToInt32(Int64(baseCellSize) << safePower)
+    }
+
+    @inline(__always)
+    private func firstAlignedLODCoordinate(
+        atOrAbove minimum: Int32,
+        relativeTo origin: Int32,
+        spacing: Int32
+    ) -> Int32 {
+        let delta = Int64(minimum) - Int64(origin)
+        let quotient = delta >= 0
+            ? delta / Int64(spacing)
+            : -((-delta + Int64(spacing) - 1) / Int64(spacing))
+        let candidate = Int64(origin) + quotient * Int64(spacing)
+        return candidate < Int64(minimum) ? clampToInt32(candidate + Int64(spacing)) : clampToInt32(candidate)
     }
 
     @inline(__always)
@@ -2501,16 +2507,26 @@ public final class WorldGenerator {
         return finalDensity.sample(at: pos)
     }
 
-    /// Samples terrain in a block-radius around an origin using the configured generation cell size as the LOD.
-    /// The returned grid is flattened in X-major order inside Z rows. Each column contains full-height vertical samples
-    /// at the same resolution as that column's horizontal footprint.
-    public func sampleLOD(from origin: PosInt3D, radius: Int32) throws -> TerrainLODResult {
+    /// Samples terrain in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.
+    /// Columns inside `startingRadius` are omitted, and each farther ring grows its spacing by powers of two based on
+    /// how many `radiusStep` intervals it lies beyond `startingRadius`.
+    public func sampleLOD(
+        from origin: PosInt3D,
+        radius: Int32,
+        startingRadius: Int32 = 0,
+        radiusStep: Int32 = 1,
+        maxCellSizePower: Int = 0
+    ) throws -> TerrainLODResult {
         precondition(radius >= 0, "radius must be non-negative")
+        precondition(startingRadius >= 0, "startingRadius must be non-negative")
+        precondition(radiusStep > 0, "radiusStep must be positive")
+        precondition(maxCellSizePower >= 0, "maxCellSizePower must be non-negative")
+
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
 
         let config = try self.validatedTerrainConfig(for: "LOD sampling")
-        let cellWidth = terrainCellBlockCount(fromNoiseSize: config.sizeHorizontal)
-        let cellDepth = cellWidth
-        let verticalResolution = cellWidth
+        let baseCellSize = terrainCellBlockCount(fromNoiseSize: config.sizeHorizontal)
         let worldMinY = Int32(config.minY)
         let worldMaxYExclusive = worldMinY + Int32(config.height)
 
@@ -2519,25 +2535,6 @@ public final class WorldGenerator {
         let requestedMinZ = clampToInt32(Int64(origin.z) - Int64(radius))
         let requestedMaxZExclusive = clampToInt32(Int64(origin.z) + Int64(radius) + 1)
 
-        let minX = floorDiv(requestedMinX, by: cellWidth) * cellWidth
-        let maxXExclusive = (floorDiv(requestedMaxXExclusive - 1, by: cellWidth) + 1) * cellWidth
-        let minZ = floorDiv(requestedMinZ, by: cellDepth) * cellDepth
-        let maxZExclusive = (floorDiv(requestedMaxZExclusive - 1, by: cellDepth) + 1) * cellDepth
-
-        let sampleCountX = Int((Int64(maxXExclusive) - Int64(minX)) / Int64(cellWidth))
-        let sampleCountZ = Int((Int64(maxZExclusive) - Int64(minZ)) / Int64(cellDepth))
-        let alignedMinY = floorDiv(worldMinY, by: verticalResolution) * verticalResolution
-        let alignedMaxYExclusive = (floorDiv(worldMaxYExclusive - 1, by: verticalResolution) + 1) * verticalResolution
-        var ySampleStarts: [Int32] = []
-        var yCursor = alignedMinY
-        while yCursor < alignedMaxYExclusive {
-            if yCursor < worldMaxYExclusive && yCursor + verticalResolution > worldMinY {
-                ySampleStarts.append(yCursor)
-            }
-            yCursor += verticalResolution
-        }
-        let verticalSampleCount = ySampleStarts.count
-
         struct ChunkKey: Hashable {
             let x: Int32
             let z: Int32
@@ -2545,7 +2542,6 @@ public final class WorldGenerator {
 
         var chunks: [ChunkKey: ProtoChunk] = [:]
         var columns: [TerrainLODColumn] = []
-        columns.reserveCapacity(sampleCountX * sampleCountZ)
 
         func chunk(atWorldX worldX: Int32, z worldZ: Int32) throws -> (chunk: ProtoChunk, chunkPos: PosInt2D) {
             let chunkPos = PosInt2D(
@@ -2561,77 +2557,88 @@ public final class WorldGenerator {
             return (generated, chunkPos)
         }
 
-        var cellZ = minZ
-        while cellZ < maxZExclusive {
-            var cellX = minX
-            while cellX < maxXExclusive {
-                var samples: [TerrainLODSample] = []
-                samples.reserveCapacity(verticalSampleCount)
-
-                for sampleStartY in ySampleStarts {
-                    let sampleY = max(sampleStartY, worldMinY)
-                    let sampleHeight = min(sampleStartY + verticalResolution, worldMaxYExclusive) - sampleY
-                    var solidBlockCount = 0
-
-                    for worldY in sampleY..<(sampleY + sampleHeight) {
-                        for worldZ in cellZ..<(cellZ + cellDepth) {
-                            for worldX in cellX..<(cellX + cellWidth) {
-                                let (chunk, chunkPos) = try chunk(atWorldX: worldX, z: worldZ)
-                                let localPos = PosInt3D(
-                                    x: worldX - chunkPos.x * Int32(ProtoChunk.sideLength),
-                                    y: worldY - worldMinY,
-                                    z: worldZ - chunkPos.z * Int32(ProtoChunk.sideLength)
-                                )
-                                if chunk.isTerrain(atLocal: localPos) {
-                                    solidBlockCount += 1
-                                }
-                            }
-                        }
-                    }
-
-                    samples.append(
-                        TerrainLODSample(
-                            y: sampleY,
-                            height: sampleHeight,
-                            solidBlockCount: solidBlockCount
-                        )
-                    )
-                }
-
-                columns.append(
-                    TerrainLODColumn(
-                        x: cellX,
-                        z: cellZ,
-                        width: cellWidth,
-                        depth: cellDepth,
-                        samples: samples
-                    )
-                )
-                cellX += cellWidth
-            }
-            cellZ += cellDepth
+        func chebyshevDistance(fromX x: Int32, z: Int32) -> Int32 {
+            let dx = abs(Int64(x) - Int64(origin.x))
+            let dz = abs(Int64(z) - Int64(origin.z))
+            return clampToInt32(max(dx, dz))
         }
 
-        let resultMinY = ySampleStarts.first.map { max($0, worldMinY) } ?? worldMinY
-        let resultMaxYExclusive = ySampleStarts.last.map { min($0 + verticalResolution, worldMaxYExclusive) } ?? worldMinY
+        let effectiveStartingRadius = min(startingRadius, radius + 1)
+        var bandIndex = 0
+        var bandMin = effectiveStartingRadius
+        while bandMin <= radius {
+            let nextBandMin = clampToInt32(Int64(effectiveStartingRadius) + Int64(bandIndex + 1) * Int64(radiusStep))
+            let bandMaxExclusive = min(radius + 1, nextBandMin)
+            let cellSize = self.terrainCellSize(
+                fromBaseCellSize: baseCellSize,
+                power: min(bandIndex, maxCellSizePower)
+            )
+
+            var z = self.firstAlignedLODCoordinate(atOrAbove: requestedMinZ, relativeTo: origin.z, spacing: cellSize)
+            while z < requestedMaxZExclusive {
+                var x = self.firstAlignedLODCoordinate(atOrAbove: requestedMinX, relativeTo: origin.x, spacing: cellSize)
+                while x < requestedMaxXExclusive {
+                    let distance = chebyshevDistance(fromX: x, z: z)
+                    if distance >= bandMin && distance < bandMaxExclusive {
+                        var samples: [Bool] = []
+                        var sampleY = worldMinY
+                        while sampleY < worldMaxYExclusive {
+                            let (terrainChunk, chunkPos) = try chunk(atWorldX: x, z: z)
+                            let localPos = PosInt3D(
+                                x: x - chunkPos.x * Int32(ProtoChunk.sideLength),
+                                y: sampleY - worldMinY,
+                                z: z - chunkPos.z * Int32(ProtoChunk.sideLength)
+                            )
+                            samples.append(terrainChunk.isTerrain(atLocal: localPos))
+                            sampleY = clampToInt32(Int64(sampleY) + Int64(cellSize))
+                        }
+
+                        columns.append(
+                            TerrainLODColumn(
+                                x: x,
+                                z: z,
+                                cellSize: cellSize,
+                                samples: samples
+                            )
+                        )
+                    }
+                    x = clampToInt32(Int64(x) + Int64(cellSize))
+                }
+                z = clampToInt32(Int64(z) + Int64(cellSize))
+            }
+
+            guard bandMaxExclusive > bandMin else {
+                break
+            }
+            bandIndex += 1
+            bandMin = bandMaxExclusive
+        }
+
+        columns.sort { left, right in
+            if left.z != right.z {
+                return left.z < right.z
+            }
+            if left.x != right.x {
+                return left.x < right.x
+            }
+            return left.cellSize < right.cellSize
+        }
 
         return TerrainLODResult(
             originX: origin.x,
             originY: origin.y,
             originZ: origin.z,
             radius: radius,
-            cellWidth: cellWidth,
-            cellDepth: cellDepth,
-            verticalResolution: verticalResolution,
-            minX: minX,
-            minY: resultMinY,
-            minZ: minZ,
-            maxXExclusive: maxXExclusive,
-            maxYExclusive: resultMaxYExclusive,
-            maxZExclusive: maxZExclusive,
-            sampleCountX: sampleCountX,
-            sampleCountZ: sampleCountZ,
-            verticalSampleCount: verticalSampleCount,
+            startingRadius: startingRadius,
+            radiusStep: radiusStep,
+            maxCellSizePower: maxCellSizePower,
+            baseCellSize: baseCellSize,
+            minX: requestedMinX,
+            minY: worldMinY,
+            minZ: requestedMinZ,
+            maxXExclusive: requestedMaxXExclusive,
+            maxYExclusive: worldMaxYExclusive,
+            maxZExclusive: requestedMaxZExclusive,
             columns: columns
         )
     }
