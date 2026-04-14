@@ -264,11 +264,18 @@ private func expectedLODCellSize(for column: TerrainLODColumn, in result: Terrai
     return result.baseCellSize << power
 }
 
-private func generatedTerrainIsSolid(
-    at worldPos: PosInt3D,
+@inline(__always)
+private func lodSampleY(for sampleIndex: Int, in column: TerrainLODColumn, result: TerrainLODResult) -> Int32 {
+    let bandStartY = result.minY + Int32(sampleIndex) * column.cellSize
+    let bandHeight = min(column.cellSize, result.maxYExclusive - bandStartY)
+    return bandStartY + bandHeight / 2
+}
+
+private func generatedChunk(
+    containing worldPos: PosInt3D,
     using worldGenerator: WorldGenerator,
     cache: inout [TerrainChunkKey: ProtoChunk]
-) throws -> Bool {
+) throws -> (chunk: ProtoChunk, key: TerrainChunkKey) {
     let chunkPos = PosInt2D(
         x: worldPos.x >> 4,
         z: worldPos.z >> 4
@@ -284,34 +291,62 @@ private func generatedTerrainIsSolid(
         chunk = generated
     }
 
+    return (chunk, key)
+}
+
+private func generatedTerrainSample(
+    at worldPos: PosInt3D,
+    using worldGenerator: WorldGenerator,
+    cache: inout [TerrainChunkKey: ProtoChunk]
+) throws -> (isSolid: Bool, biome: RegistryKey<Biome>?) {
+    let (chunk, key) = try generatedChunk(containing: worldPos, using: worldGenerator, cache: &cache)
     let localPos = PosInt3D(
-        x: worldPos.x - chunkPos.x * Int32(ProtoChunk.sideLength),
+        x: worldPos.x - key.x * Int32(ProtoChunk.sideLength),
         y: worldPos.y - chunk.minY,
-        z: worldPos.z - chunkPos.z * Int32(ProtoChunk.sideLength)
+        z: worldPos.z - key.z * Int32(ProtoChunk.sideLength)
     )
-    return chunk.isTerrain(atLocal: localPos)
+    return (chunk.isTerrain(atLocal: localPos), chunk.biome(atLocal: localPos))
 }
 
 private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using worldGenerator: WorldGenerator) throws {
     var chunkCache: [TerrainChunkKey: ProtoChunk] = [:]
 
-    for column in sampled.columns {
-        #expect(column.x >= sampled.minX && column.x < sampled.maxXExclusive)
-        #expect(column.z >= sampled.minZ && column.z < sampled.maxZExclusive)
-        #expect(chebyshevDistance(from: PosInt3D(x: sampled.originX, y: sampled.originY, z: sampled.originZ), toX: column.x, z: column.z) >= sampled.startingRadius)
-        #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
+    for (chunkListIndex, chunk) in sampled.chunks.enumerated() {
+        #expect(sampled.chunkIndex[chunk.key] == chunkListIndex)
 
-        let expectedSampleCount = Int((sampled.maxYExclusive - sampled.minY + column.cellSize - 1) / column.cellSize)
-        #expect(column.samples.count == expectedSampleCount)
+        for column in chunk.columns {
+            #expect(column.x >= sampled.minX && column.x < sampled.maxXExclusive)
+            #expect(column.z >= sampled.minZ && column.z < sampled.maxZExclusive)
+            #expect(chebyshevDistance(from: PosInt3D(x: sampled.originX, y: sampled.originY, z: sampled.originZ), toX: column.x, z: column.z) >= sampled.startingRadius)
+            #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
+            #expect(chunk.key == TerrainLODChunkKey(x: column.x >> 4, z: column.z >> 4))
 
-        for sampleIndex in column.samples.indices {
-            let worldY = sampled.minY + Int32(sampleIndex) * column.cellSize
-            let expected = try generatedTerrainIsSolid(
-                at: PosInt3D(x: column.x, y: worldY, z: column.z),
-                using: worldGenerator,
-                cache: &chunkCache
-            )
-            #expect(column.samples[sampleIndex] == expected)
+            let expectedSampleCount = Int((sampled.maxYExclusive - sampled.minY + column.cellSize - 1) / column.cellSize)
+            #expect(column.samples.count == expectedSampleCount)
+            #expect((column.samplePayloads?.count ?? 0) == (column.samplePayloads == nil ? 0 : expectedSampleCount))
+
+            for sampleIndex in column.samples.indices {
+                let worldY = lodSampleY(for: sampleIndex, in: column, result: sampled)
+                let expected = try generatedTerrainSample(
+                    at: PosInt3D(x: column.x, y: worldY, z: column.z),
+                    using: worldGenerator,
+                    cache: &chunkCache
+                )
+                #expect(column.samples[sampleIndex] == expected.isSolid)
+
+                if let payload = column.samplePayloads?[sampleIndex] {
+                    if sampled.payloads.contains(.biome) {
+                        #expect(payload.biome == expected.biome)
+                    } else {
+                        #expect(payload.biome == nil)
+                    }
+                    if sampled.payloads.contains(.material) {
+                        #expect(payload.materialID == (expected.isSolid ? "minecraft:stone" : "minecraft:air"))
+                    } else {
+                        #expect(payload.materialID == nil)
+                    }
+                }
+            }
         }
     }
 }
@@ -448,24 +483,33 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
         radius: 9,
         startingRadius: 4,
         radiusStep: 2,
-        maxCellSizePower: 2
+        maxCellSizePower: 2,
+        threadCount: 2,
+        payloads: [.material]
     )
 
     #expect(sampled.baseCellSize == 4)
     #expect(sampled.startingRadius == 4)
     #expect(sampled.radiusStep == 2)
     #expect(sampled.maxCellSizePower == 2)
+    #expect(sampled.payloads == [.material])
     #expect(sampled.minX == -4)
     #expect(sampled.maxXExclusive == 15)
     #expect(sampled.minY == -8)
     #expect(sampled.maxYExclusive == 8)
     #expect(sampled.minZ == -12)
     #expect(sampled.maxZExclusive == 7)
+    #expect(!sampled.chunks.isEmpty)
     #expect(!sampled.columns.isEmpty)
 
-    for column in sampled.columns {
-        #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
-        #expect(column.samples.allSatisfy { $0 })
+    for chunk in sampled.chunks {
+        #expect(sampled.chunkIndex[chunk.key] != nil)
+        #expect(!chunk.columns.isEmpty)
+        for column in chunk.columns {
+            #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
+            #expect(column.samples.allSatisfy { $0 })
+            #expect(column.samplePayloads?.allSatisfy { $0.biome == nil && $0.materialID == "minecraft:stone" } == true)
+        }
     }
 }
 
@@ -524,11 +568,11 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
         buildSearchTrees: false
     )
 
-    let requests = [
-        (PosInt3D(x: 0, y: 64, z: 0), Int32(16), Int32(0), Int32(4), 0),
-        (PosInt3D(x: 32, y: 64, z: -16), Int32(24), Int32(8), Int32(4), 2),
-        (PosInt3D(x: -48, y: 80, z: 24), Int32(28), Int32(12), Int32(8), 1),
-        (PosInt3D(x: 7, y: 1, z: -3), Int32(9), Int32(4), Int32(2), 2),
+    let requests: [(PosInt3D, Int32, Int32, Int32, Int, Int, TerrainLODPayloadOptions)] = [
+        (PosInt3D(x: 0, y: 64, z: 0), Int32(16), Int32(0), Int32(4), 0, 1, []),
+        (PosInt3D(x: 32, y: 64, z: -16), Int32(24), Int32(8), Int32(4), 2, 4, [.material]),
+        (PosInt3D(x: -48, y: 80, z: 24), Int32(28), Int32(12), Int32(8), 1, 3, [.material]),
+        (PosInt3D(x: 7, y: 1, z: -3), Int32(9), Int32(4), Int32(2), 2, 2, []),
     ]
 
     let expectedResults = try requests.map { request in
@@ -537,7 +581,9 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
             radius: request.1,
             startingRadius: request.2,
             radiusStep: request.3,
-            maxCellSizePower: request.4
+            maxCellSizePower: request.4,
+            threadCount: request.5,
+            payloads: request.6
         )
     }
 
@@ -553,7 +599,9 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
                 radius: request.1,
                 startingRadius: request.2,
                 radiusStep: request.3,
-                maxCellSizePower: request.4
+                maxCellSizePower: request.4,
+                threadCount: request.5,
+                payloads: request.6
             )
         } catch {
             failure.setIfNil(String(describing: error))
@@ -657,7 +705,9 @@ private final class LockedOptional<Value>: @unchecked Sendable {
         radius: vanillaLODRadius,
         startingRadius: vanillaLODStartingRadius,
         radiusStep: vanillaLODRadiusStep,
-        maxCellSizePower: vanillaLODMaxCellSizePower
+        maxCellSizePower: vanillaLODMaxCellSizePower,
+        threadCount: 4,
+        payloads: [.biome, .material]
     )
 
     #expect(sampled.originX == vanillaLODOrigin.x)
@@ -667,6 +717,7 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     #expect(sampled.startingRadius == vanillaLODStartingRadius)
     #expect(sampled.radiusStep == vanillaLODRadiusStep)
     #expect(sampled.maxCellSizePower == vanillaLODMaxCellSizePower)
+    #expect(sampled.payloads == [.biome, .material])
     #expect(sampled.baseCellSize == 4)
     #expect(sampled.minX == 4)
     #expect(sampled.maxXExclusive == 29)

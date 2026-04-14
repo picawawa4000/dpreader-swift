@@ -1418,15 +1418,49 @@ public final class ProtoChunk {
     }
 }
 
-/// One point-sampled terrain column returned by `WorldGenerator.sampleLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:)`.
+public struct TerrainLODPayloadOptions: OptionSet, Sendable, Equatable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    /// Include exact block-biome samples from the generated chunk at each LOD sample point.
+    public static let biome = TerrainLODPayloadOptions(rawValue: 1 << 0)
+    /// Include a material ID derived from the current terrain occupancy model (`minecraft:stone` or `minecraft:air`).
+    public static let material = TerrainLODPayloadOptions(rawValue: 1 << 1)
+}
+
+public struct TerrainLODSamplePayload: Equatable {
+    public let biome: RegistryKey<Biome>?
+    public let materialID: String?
+}
+
+public struct TerrainLODChunkKey: Hashable, Sendable {
+    public let x: Int32
+    public let z: Int32
+
+    public init(x: Int32, z: Int32) {
+        self.x = x
+        self.z = z
+    }
+}
+
+/// One point-sampled terrain column returned by `WorldGenerator.sampleLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:threadCount:payloads:)`.
 public struct TerrainLODColumn: Equatable {
     public let x: Int32
     public let z: Int32
     public let cellSize: Int32
     public let samples: [Bool]
+    public let samplePayloads: [TerrainLODSamplePayload]?
 }
 
-/// A Z-major/X-major list of adaptive terrain columns sampled around an origin.
+public struct TerrainLODChunk: Equatable {
+    public let key: TerrainLODChunkKey
+    public let columns: [TerrainLODColumn]
+}
+
+/// A chunk-indexed set of adaptive terrain columns sampled around an origin.
 public struct TerrainLODResult: Equatable {
     public let originX: Int32
     public let originY: Int32
@@ -1442,7 +1476,13 @@ public struct TerrainLODResult: Equatable {
     public let maxXExclusive: Int32
     public let maxYExclusive: Int32
     public let maxZExclusive: Int32
-    public let columns: [TerrainLODColumn]
+    public let payloads: TerrainLODPayloadOptions
+    public let chunks: [TerrainLODChunk]
+    public let chunkIndex: [TerrainLODChunkKey: Int]
+
+    public var columns: [TerrainLODColumn] {
+        return self.chunks.flatMap(\.columns)
+    }
 }
 
 private struct ChunkBiomeDensityFunctions {
@@ -1836,6 +1876,62 @@ public final class WorldGenerator {
         return chunk
     }
 
+    private func generateLODChunk(
+        at chunkPos: PosInt2D,
+        using config: NoiseSettings,
+        includeBiomes: Bool
+    ) throws -> ProtoChunk {
+        let chunk = ProtoChunk()
+        let minY = Int32(config.minY)
+        let height = Int32(config.height)
+        try chunk.configure(minY: minY, height: height)
+
+        let chunkSampler = VanillaChunkTerrainSampler(
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+
+        if includeBiomes {
+            let chunkGenerationFunctions = try self.bakeChunkGenerationDensityFunctions(
+                from: config.noiseRouter,
+                with: chunkSampler,
+                chunkPos: chunkPos,
+                minY: minY,
+                height: height,
+                sizeHorizontal: config.sizeHorizontal,
+                sizeVertical: config.sizeVertical
+            )
+            if let biomeSampler = self.configuredChunkBiomeSampler() {
+                switch biomeSampler {
+                case .searchTree(let searchTree):
+                    self.generateBiomesIntoChunk(
+                        chunk,
+                        at: chunkPos,
+                        minY: minY,
+                        using: searchTree,
+                        with: chunkGenerationFunctions.biomeDensityFunctions
+                    )
+                case .theEnd:
+                    self.generateEndBiomesIntoChunk(
+                        chunk,
+                        at: chunkPos,
+                        minY: minY,
+                        with: chunkGenerationFunctions.biomeDensityFunctions
+                    )
+                }
+            }
+            chunkSampler.generateTerrain(into: chunk, with: chunkGenerationFunctions.terrainDensity)
+            return chunk
+        }
+
+        let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
+        chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
+        return chunk
+    }
+
     @inline(__always)
     private func terrainCellSize(fromBaseCellSize baseCellSize: Int32, power: Int) -> Int32 {
         let safePower = max(0, min(30, power))
@@ -1854,6 +1950,16 @@ public final class WorldGenerator {
             : -((-delta + Int64(spacing) - 1) / Int64(spacing))
         let candidate = Int64(origin) + quotient * Int64(spacing)
         return candidate < Int64(minimum) ? clampToInt32(candidate + Int64(spacing)) : clampToInt32(candidate)
+    }
+
+    @inline(__always)
+    private func lodMidpoint(start: Int32, size: Int32) -> Int32 {
+        return clampToInt32(Int64(start) + Int64(size / 2))
+    }
+
+    @inline(__always)
+    private func lodMaterialID(isSolid: Bool) -> String {
+        return isSolid ? "minecraft:stone" : "minecraft:air"
     }
 
     @inline(__always)
@@ -2515,15 +2621,15 @@ public final class WorldGenerator {
         radius: Int32,
         startingRadius: Int32 = 0,
         radiusStep: Int32 = 1,
-        maxCellSizePower: Int = 0
+        maxCellSizePower: Int = 0,
+        threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        payloads: TerrainLODPayloadOptions = [.biome]
     ) throws -> TerrainLODResult {
         precondition(radius >= 0, "radius must be non-negative")
         precondition(startingRadius >= 0, "startingRadius must be non-negative")
         precondition(radiusStep > 0, "radiusStep must be positive")
         precondition(maxCellSizePower >= 0, "maxCellSizePower must be non-negative")
-
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        precondition(threadCount > 0, "threadCount must be positive")
 
         let config = try self.validatedTerrainConfig(for: "LOD sampling")
         let baseCellSize = terrainCellBlockCount(fromNoiseSize: config.sizeHorizontal)
@@ -2535,26 +2641,18 @@ public final class WorldGenerator {
         let requestedMinZ = clampToInt32(Int64(origin.z) - Int64(radius))
         let requestedMaxZExclusive = clampToInt32(Int64(origin.z) + Int64(radius) + 1)
 
-        struct ChunkKey: Hashable {
+        struct ColumnRequest {
             let x: Int32
             let z: Int32
+            let cellSize: Int32
+            let chunkKey: TerrainLODChunkKey
         }
 
-        var chunks: [ChunkKey: ProtoChunk] = [:]
-        var columns: [TerrainLODColumn] = []
-
-        func chunk(atWorldX worldX: Int32, z worldZ: Int32) throws -> (chunk: ProtoChunk, chunkPos: PosInt2D) {
-            let chunkPos = PosInt2D(
-                x: floorDiv(worldX, by: Int32(ProtoChunk.sideLength)),
-                z: floorDiv(worldZ, by: Int32(ProtoChunk.sideLength))
+        func chunkKey(forSampleX x: Int32, z: Int32) -> TerrainLODChunkKey {
+            return TerrainLODChunkKey(
+                x: floorDiv(x, by: Int32(ProtoChunk.sideLength)),
+                z: floorDiv(z, by: Int32(ProtoChunk.sideLength))
             )
-            let key = ChunkKey(x: chunkPos.x, z: chunkPos.z)
-            if let cached = chunks[key] {
-                return (cached, chunkPos)
-            }
-            let generated = try self.generateTerrainChunk(at: chunkPos, using: config)
-            chunks[key] = generated
-            return (generated, chunkPos)
         }
 
         func chebyshevDistance(fromX x: Int32, z: Int32) -> Int32 {
@@ -2563,6 +2661,7 @@ public final class WorldGenerator {
             return clampToInt32(max(dx, dz))
         }
 
+        var requests: [ColumnRequest] = []
         let effectiveStartingRadius = min(startingRadius, radius + 1)
         var bandIndex = 0
         var bandMin = effectiveStartingRadius
@@ -2580,25 +2679,12 @@ public final class WorldGenerator {
                 while x < requestedMaxXExclusive {
                     let distance = chebyshevDistance(fromX: x, z: z)
                     if distance >= bandMin && distance < bandMaxExclusive {
-                        var samples: [Bool] = []
-                        var sampleY = worldMinY
-                        while sampleY < worldMaxYExclusive {
-                            let (terrainChunk, chunkPos) = try chunk(atWorldX: x, z: z)
-                            let localPos = PosInt3D(
-                                x: x - chunkPos.x * Int32(ProtoChunk.sideLength),
-                                y: sampleY - worldMinY,
-                                z: z - chunkPos.z * Int32(ProtoChunk.sideLength)
-                            )
-                            samples.append(terrainChunk.isTerrain(atLocal: localPos))
-                            sampleY = clampToInt32(Int64(sampleY) + Int64(cellSize))
-                        }
-
-                        columns.append(
-                            TerrainLODColumn(
+                        requests.append(
+                            ColumnRequest(
                                 x: x,
                                 z: z,
                                 cellSize: cellSize,
-                                samples: samples
+                                chunkKey: chunkKey(forSampleX: x, z: z)
                             )
                         )
                     }
@@ -2614,15 +2700,178 @@ public final class WorldGenerator {
             bandMin = bandMaxExclusive
         }
 
-        columns.sort { left, right in
+        var requestsByChunk: [TerrainLODChunkKey: [ColumnRequest]] = [:]
+        for request in requests {
+            requestsByChunk[request.chunkKey, default: []].append(request)
+        }
+        let sortedChunkKeys = requestsByChunk.keys.sorted { left, right in
             if left.z != right.z {
                 return left.z < right.z
             }
-            if left.x != right.x {
-                return left.x < right.x
-            }
-            return left.cellSize < right.cellSize
+            return left.x < right.x
         }
+
+        let chunkPlans: [(TerrainLODChunkKey, [ColumnRequest])] = sortedChunkKeys.map { key in
+            let chunkRequests = (requestsByChunk[key] ?? []).sorted { left, right in
+                if left.z != right.z {
+                    return left.z < right.z
+                }
+                if left.x != right.x {
+                    return left.x < right.x
+                }
+                return left.cellSize < right.cellSize
+            }
+            return (key, chunkRequests)
+        }
+
+        let includeBiomes = payloads.contains(.biome)
+        let includeMaterial = payloads.contains(.material)
+        let workerCount = max(1, min(threadCount, max(1, chunkPlans.count)))
+        final class UnsafeSendableBox<Value>: @unchecked Sendable {
+            let value: Value
+
+            init(_ value: Value) {
+                self.value = value
+            }
+        }
+        final class SharedSampleLODResults: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var firstError: Error?
+            private var generatedChunks: [TerrainLODChunkKey: TerrainLODChunk] = [:]
+
+            func shouldAbort() -> Bool {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.firstError != nil
+            }
+
+            func recordError(_ error: Error) {
+                self.lock.lock()
+                if self.firstError == nil {
+                    self.firstError = error
+                }
+                self.lock.unlock()
+            }
+
+            func merge(_ localResults: [TerrainLODChunkKey: TerrainLODChunk]) {
+                self.lock.lock()
+                for (key, value) in localResults {
+                    self.generatedChunks[key] = value
+                }
+                self.lock.unlock()
+            }
+
+            func generatedChunk(for key: TerrainLODChunkKey) -> TerrainLODChunk? {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.generatedChunks[key]
+            }
+        }
+        let generatorBox = UnsafeSendableBox(self)
+        let configBox = UnsafeSendableBox(config)
+        let sharedResults = SharedSampleLODResults()
+        let midpoint: @Sendable (Int32, Int32) -> Int32 = { start, size in
+            clampToInt32(Int64(start) + Int64(size / 2))
+        }
+        let materialIDForSolid: @Sendable (Bool) -> String = { isSolid in
+            isSolid ? "minecraft:stone" : "minecraft:air"
+        }
+
+        @Sendable func materializedColumn(from request: ColumnRequest, using chunk: ProtoChunk) -> TerrainLODColumn {
+            let chunkOriginX = request.chunkKey.x * Int32(ProtoChunk.sideLength)
+            let chunkOriginZ = request.chunkKey.z * Int32(ProtoChunk.sideLength)
+            let localX = request.x - chunkOriginX
+            let localZ = request.z - chunkOriginZ
+
+            var samples: [Bool] = []
+            var samplePayloads: [TerrainLODSamplePayload]? = payloads.isEmpty ? nil : []
+            var bandStartY = worldMinY
+            while bandStartY < worldMaxYExclusive {
+                let bandHeight = min(request.cellSize, worldMaxYExclusive - bandStartY)
+                let sampleY = midpoint(bandStartY, bandHeight)
+                let localPos = PosInt3D(
+                    x: localX,
+                    y: sampleY - worldMinY,
+                    z: localZ
+                )
+                let isSolid = chunk.isTerrain(atLocal: localPos)
+                samples.append(isSolid)
+
+                if samplePayloads != nil {
+                    samplePayloads!.append(
+                        TerrainLODSamplePayload(
+                            biome: includeBiomes ? chunk.biome(atLocal: localPos) : nil,
+                            materialID: includeMaterial ? materialIDForSolid(isSolid) : nil
+                        )
+                    )
+                }
+
+                bandStartY = clampToInt32(Int64(bandStartY) + Int64(request.cellSize))
+            }
+
+            return TerrainLODColumn(
+                x: request.x,
+                z: request.z,
+                cellSize: request.cellSize,
+                samples: samples,
+                samplePayloads: samplePayloads
+            )
+        }
+
+        if workerCount == 1 {
+            for (chunkKey, chunkRequests) in chunkPlans {
+                let chunk = try self.generateLODChunk(
+                    at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
+                    using: config,
+                    includeBiomes: includeBiomes
+                )
+                let terrainChunk = TerrainLODChunk(
+                    key: chunkKey,
+                    columns: chunkRequests.map { materializedColumn(from: $0, using: chunk) }
+                )
+                sharedResults.merge([chunkKey: terrainChunk])
+            }
+        } else {
+            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+                var localResults: [TerrainLODChunkKey: TerrainLODChunk] = [:]
+                for planIndex in stride(from: workerIndex, to: chunkPlans.count, by: workerCount) {
+                    if sharedResults.shouldAbort() {
+                        break
+                    }
+
+                    let plan = chunkPlans[planIndex]
+                    do {
+                        let chunk = try generatorBox.value.generateLODChunk(
+                            at: PosInt2D(x: plan.0.x, z: plan.0.z),
+                            using: configBox.value,
+                            includeBiomes: includeBiomes
+                        )
+                        localResults[plan.0] = TerrainLODChunk(
+                            key: plan.0,
+                            columns: plan.1.map { materializedColumn(from: $0, using: chunk) }
+                        )
+                    } catch {
+                        sharedResults.recordError(error)
+                        break
+                    }
+                }
+
+                if !localResults.isEmpty {
+                    sharedResults.merge(localResults)
+                }
+            }
+        }
+
+        if let firstError = sharedResults.firstError {
+            throw firstError
+        }
+
+        let chunks = sortedChunkKeys.compactMap { sharedResults.generatedChunk(for: $0) }
+        let chunkIndex = Dictionary(
+            uniqueKeysWithValues: chunks.enumerated().map { (index, chunk) in
+                (chunk.key, index)
+            }
+        )
 
         return TerrainLODResult(
             originX: origin.x,
@@ -2639,7 +2888,9 @@ public final class WorldGenerator {
             maxXExclusive: requestedMaxXExclusive,
             maxYExclusive: worldMaxYExclusive,
             maxZExclusive: requestedMaxZExclusive,
-            columns: columns
+            payloads: payloads,
+            chunks: chunks,
+            chunkIndex: chunkIndex
         )
     }
 
