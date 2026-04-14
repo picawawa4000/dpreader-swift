@@ -408,6 +408,11 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
     return Int32(1 << shift)
 }
 
+@inline(__always) private func lodCellBlockCount(fromNoiseSize size: Int) -> Int32 {
+    let shift = max(1, min(30, size))
+    return Int32(1 << shift)
+}
+
 @inline(__always) private func biomeCoord(fromBlock block: Int32) -> Int32 {
     return floorDiv(block, by: 4)
 }
@@ -1858,6 +1863,31 @@ public final class WorldGenerator {
         )
     }
 
+    private func bakeChunkBiomeDensityFunctions(
+        from noiseRouter: NoiseRouter,
+        chunkPos: PosInt2D,
+        minY: Int32,
+        height: Int32,
+        sizeHorizontal: Int,
+        sizeVertical: Int
+    ) throws -> ChunkBiomeDensityFunctions {
+        let biomeBaker = ChunkDensityFunctionBaker(
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: sizeHorizontal,
+            sizeVertical: sizeVertical
+        )
+        return ChunkBiomeDensityFunctions(
+            temperature: try biomeBaker.bakeDensityFunction(noiseRouter.temperature),
+            humidity: try biomeBaker.bakeDensityFunction(noiseRouter.humidity),
+            continentalness: try biomeBaker.bakeDensityFunction(noiseRouter.continents),
+            erosion: try biomeBaker.bakeDensityFunction(noiseRouter.erosion),
+            weirdness: try biomeBaker.bakeDensityFunction(noiseRouter.weirdness),
+            depth: try biomeBaker.bakeDensityFunction(noiseRouter.depth)
+        )
+    }
+
     private func generateTerrainChunk(at chunkPos: PosInt2D, using config: NoiseSettings) throws -> ProtoChunk {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
@@ -1876,59 +1906,42 @@ public final class WorldGenerator {
         return chunk
     }
 
-    private func generateLODChunk(
+    private func generateLODBiomeChunk(
         at chunkPos: PosInt2D,
-        using config: NoiseSettings,
-        includeBiomes: Bool
+        using config: NoiseSettings
     ) throws -> ProtoChunk {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
         let height = Int32(config.height)
         try chunk.configure(minY: minY, height: height)
 
-        let chunkSampler = VanillaChunkTerrainSampler(
-            chunkPos: chunkPos,
-            minY: minY,
-            height: height,
-            sizeHorizontal: config.sizeHorizontal,
-            sizeVertical: config.sizeVertical
-        )
-
-        if includeBiomes {
-            let chunkGenerationFunctions = try self.bakeChunkGenerationDensityFunctions(
+        if let biomeSampler = self.configuredChunkBiomeSampler() {
+            let biomeDensityFunctions = try self.bakeChunkBiomeDensityFunctions(
                 from: config.noiseRouter,
-                with: chunkSampler,
                 chunkPos: chunkPos,
                 minY: minY,
                 height: height,
                 sizeHorizontal: config.sizeHorizontal,
                 sizeVertical: config.sizeVertical
             )
-            if let biomeSampler = self.configuredChunkBiomeSampler() {
-                switch biomeSampler {
-                case .searchTree(let searchTree):
-                    self.generateBiomesIntoChunk(
-                        chunk,
-                        at: chunkPos,
-                        minY: minY,
-                        using: searchTree,
-                        with: chunkGenerationFunctions.biomeDensityFunctions
-                    )
-                case .theEnd:
-                    self.generateEndBiomesIntoChunk(
-                        chunk,
-                        at: chunkPos,
-                        minY: minY,
-                        with: chunkGenerationFunctions.biomeDensityFunctions
-                    )
-                }
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    chunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: biomeDensityFunctions
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    chunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: biomeDensityFunctions
+                )
             }
-            chunkSampler.generateTerrain(into: chunk, with: chunkGenerationFunctions.terrainDensity)
-            return chunk
         }
-
-        let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
-        chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
         return chunk
     }
 
@@ -2632,7 +2645,7 @@ public final class WorldGenerator {
         precondition(threadCount > 0, "threadCount must be positive")
 
         let config = try self.validatedTerrainConfig(for: "LOD sampling")
-        let baseCellSize = terrainCellBlockCount(fromNoiseSize: config.sizeHorizontal)
+        let baseCellSize = lodCellBlockCount(fromNoiseSize: config.sizeHorizontal)
         let worldMinY = Int32(config.minY)
         let worldMaxYExclusive = worldMinY + Int32(config.height)
 
@@ -2645,6 +2658,8 @@ public final class WorldGenerator {
             let x: Int32
             let z: Int32
             let cellSize: Int32
+            let sampleX: Int32
+            let sampleZ: Int32
             let chunkKey: TerrainLODChunkKey
         }
 
@@ -2679,12 +2694,16 @@ public final class WorldGenerator {
                 while x < requestedMaxXExclusive {
                     let distance = chebyshevDistance(fromX: x, z: z)
                     if distance >= bandMin && distance < bandMaxExclusive {
+                        let sampleX = self.lodMidpoint(start: x, size: min(cellSize, requestedMaxXExclusive - x))
+                        let sampleZ = self.lodMidpoint(start: z, size: min(cellSize, requestedMaxZExclusive - z))
                         requests.append(
                             ColumnRequest(
                                 x: x,
                                 z: z,
                                 cellSize: cellSize,
-                                chunkKey: chunkKey(forSampleX: x, z: z)
+                                sampleX: sampleX,
+                                sampleZ: sampleZ,
+                                chunkKey: chunkKey(forSampleX: sampleX, z: sampleZ)
                             )
                         )
                     }
@@ -2777,11 +2796,15 @@ public final class WorldGenerator {
             isSolid ? "minecraft:stone" : "minecraft:air"
         }
 
-        @Sendable func materializedColumn(from request: ColumnRequest, using chunk: ProtoChunk) -> TerrainLODColumn {
+        @Sendable func materializedColumn(
+            from request: ColumnRequest,
+            terrainDensity: any DensityFunction,
+            biomeChunk: ProtoChunk?
+        ) -> TerrainLODColumn {
             let chunkOriginX = request.chunkKey.x * Int32(ProtoChunk.sideLength)
             let chunkOriginZ = request.chunkKey.z * Int32(ProtoChunk.sideLength)
-            let localX = request.x - chunkOriginX
-            let localZ = request.z - chunkOriginZ
+            let localSampleX = request.sampleX - chunkOriginX
+            let localSampleZ = request.sampleZ - chunkOriginZ
 
             var samples: [Bool] = []
             var samplePayloads: [TerrainLODSamplePayload]? = payloads.isEmpty ? nil : []
@@ -2789,18 +2812,23 @@ public final class WorldGenerator {
             while bandStartY < worldMaxYExclusive {
                 let bandHeight = min(request.cellSize, worldMaxYExclusive - bandStartY)
                 let sampleY = midpoint(bandStartY, bandHeight)
-                let localPos = PosInt3D(
-                    x: localX,
-                    y: sampleY - worldMinY,
-                    z: localZ
+                let samplePos = PosInt3D(
+                    x: request.sampleX,
+                    y: sampleY,
+                    z: request.sampleZ
                 )
-                let isSolid = chunk.isTerrain(atLocal: localPos)
+                let localSamplePos = PosInt3D(
+                    x: localSampleX,
+                    y: sampleY - worldMinY,
+                    z: localSampleZ
+                )
+                let isSolid = terrainDensity.sample(at: samplePos) > 0.0
                 samples.append(isSolid)
 
                 if samplePayloads != nil {
                     samplePayloads!.append(
                         TerrainLODSamplePayload(
-                            biome: includeBiomes ? chunk.biome(atLocal: localPos) : nil,
+                            biome: includeBiomes ? biomeChunk?.biome(atLocal: localSamplePos) : nil,
                             materialID: includeMaterial ? materialIDForSolid(isSolid) : nil
                         )
                     )
@@ -2820,14 +2848,24 @@ public final class WorldGenerator {
 
         if workerCount == 1 {
             for (chunkKey, chunkRequests) in chunkPlans {
-                let chunk = try self.generateLODChunk(
-                    at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
-                    using: config,
-                    includeBiomes: includeBiomes
+                let chunkSampler = VanillaChunkTerrainSampler(
+                    chunkPos: PosInt2D(x: chunkKey.x, z: chunkKey.z),
+                    minY: worldMinY,
+                    height: Int32(config.height),
+                    sizeHorizontal: config.sizeHorizontal,
+                    sizeVertical: config.sizeVertical
                 )
+                let bakedTerrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
+                let directTerrainDensity = chunkSampler.makeDirectPointSamplingTerrainDensity(from: bakedTerrainDensity)
+                let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
+                    at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
+                    using: config
+                ) : nil
                 let terrainChunk = TerrainLODChunk(
                     key: chunkKey,
-                    columns: chunkRequests.map { materializedColumn(from: $0, using: chunk) }
+                    columns: chunkRequests.map {
+                        materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
+                    }
                 )
                 sharedResults.merge([chunkKey: terrainChunk])
             }
@@ -2841,14 +2879,24 @@ public final class WorldGenerator {
 
                     let plan = chunkPlans[planIndex]
                     do {
-                        let chunk = try generatorBox.value.generateLODChunk(
-                            at: PosInt2D(x: plan.0.x, z: plan.0.z),
-                            using: configBox.value,
-                            includeBiomes: includeBiomes
+                        let chunkSampler = VanillaChunkTerrainSampler(
+                            chunkPos: PosInt2D(x: plan.0.x, z: plan.0.z),
+                            minY: worldMinY,
+                            height: Int32(configBox.value.height),
+                            sizeHorizontal: configBox.value.sizeHorizontal,
+                            sizeVertical: configBox.value.sizeVertical
                         )
+                        let bakedTerrainDensity = try chunkSampler.bakeDensityFunction(configBox.value.noiseRouter.finalDensity)
+                        let directTerrainDensity = chunkSampler.makeDirectPointSamplingTerrainDensity(from: bakedTerrainDensity)
+                        let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
+                            at: PosInt2D(x: plan.0.x, z: plan.0.z),
+                            using: configBox.value
+                        ) : nil
                         localResults[plan.0] = TerrainLODChunk(
                             key: plan.0,
-                            columns: plan.1.map { materializedColumn(from: $0, using: chunk) }
+                            columns: plan.1.map {
+                                materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
+                            }
                         )
                     } catch {
                         sharedResults.recordError(error)

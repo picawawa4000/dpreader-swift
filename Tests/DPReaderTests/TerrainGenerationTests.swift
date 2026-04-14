@@ -271,6 +271,18 @@ private func lodSampleY(for sampleIndex: Int, in column: TerrainLODColumn, resul
     return bandStartY + bandHeight / 2
 }
 
+@inline(__always)
+private func lodSampleX(for column: TerrainLODColumn, result: TerrainLODResult) -> Int32 {
+    let bandWidth = min(column.cellSize, result.maxXExclusive - column.x)
+    return column.x + bandWidth / 2
+}
+
+@inline(__always)
+private func lodSampleZ(for column: TerrainLODColumn, result: TerrainLODResult) -> Int32 {
+    let bandDepth = min(column.cellSize, result.maxZExclusive - column.z)
+    return column.z + bandDepth / 2
+}
+
 private func generatedChunk(
     containing worldPos: PosInt3D,
     using worldGenerator: WorldGenerator,
@@ -294,7 +306,7 @@ private func generatedChunk(
     return (chunk, key)
 }
 
-private func generatedTerrainSample(
+private func expectedLODSample(
     at worldPos: PosInt3D,
     using worldGenerator: WorldGenerator,
     cache: inout [TerrainChunkKey: ProtoChunk]
@@ -305,7 +317,7 @@ private func generatedTerrainSample(
         y: worldPos.y - chunk.minY,
         z: worldPos.z - key.z * Int32(ProtoChunk.sideLength)
     )
-    return (chunk.isTerrain(atLocal: localPos), chunk.biome(atLocal: localPos))
+    return (try worldGenerator.sampleFinalDensity(at: worldPos) > 0.0, chunk.biome(atLocal: localPos))
 }
 
 private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using worldGenerator: WorldGenerator) throws {
@@ -319,7 +331,7 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
             #expect(column.z >= sampled.minZ && column.z < sampled.maxZExclusive)
             #expect(chebyshevDistance(from: PosInt3D(x: sampled.originX, y: sampled.originY, z: sampled.originZ), toX: column.x, z: column.z) >= sampled.startingRadius)
             #expect(column.cellSize == expectedLODCellSize(for: column, in: sampled))
-            #expect(chunk.key == TerrainLODChunkKey(x: column.x >> 4, z: column.z >> 4))
+            #expect(chunk.key == TerrainLODChunkKey(x: lodSampleX(for: column, result: sampled) >> 4, z: lodSampleZ(for: column, result: sampled) >> 4))
 
             let expectedSampleCount = Int((sampled.maxYExclusive - sampled.minY + column.cellSize - 1) / column.cellSize)
             #expect(column.samples.count == expectedSampleCount)
@@ -327,8 +339,10 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
 
             for sampleIndex in column.samples.indices {
                 let worldY = lodSampleY(for: sampleIndex, in: column, result: sampled)
-                let expected = try generatedTerrainSample(
-                    at: PosInt3D(x: column.x, y: worldY, z: column.z),
+                let worldX = lodSampleX(for: column, result: sampled)
+                let worldZ = lodSampleZ(for: column, result: sampled)
+                let expected = try expectedLODSample(
+                    at: PosInt3D(x: worldX, y: worldY, z: worldZ),
                     using: worldGenerator,
                     cache: &chunkCache
                 )
@@ -488,7 +502,7 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
         payloads: [.material]
     )
 
-    #expect(sampled.baseCellSize == 4)
+    #expect(sampled.baseCellSize == 2)
     #expect(sampled.startingRadius == 4)
     #expect(sampled.radiusStep == 2)
     #expect(sampled.maxCellSizePower == 2)
@@ -684,7 +698,7 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     #expect(mismatchCount == 0)
 }
 
-@Test func testSampleLODMatchesGeneratedVanillaTerrainAtSamplePoints() async throws {
+@Test func testSampleLODMatchesVanillaFinalDensityAndBiomesAtSamplePoints() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -718,7 +732,7 @@ private final class LockedOptional<Value>: @unchecked Sendable {
     #expect(sampled.radiusStep == vanillaLODRadiusStep)
     #expect(sampled.maxCellSizePower == vanillaLODMaxCellSizePower)
     #expect(sampled.payloads == [.biome, .material])
-    #expect(sampled.baseCellSize == 4)
+    #expect(sampled.baseCellSize == 2)
     #expect(sampled.minX == 4)
     #expect(sampled.maxXExclusive == 29)
     #expect(sampled.minY == -64)

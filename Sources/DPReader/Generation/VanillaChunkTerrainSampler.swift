@@ -1470,6 +1470,10 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
+    func makeDirectPointSamplingTerrainDensity(from terrainDensity: any DensityFunction) -> any DensityFunction {
+        return self.makeDirectPointSamplingFunction(from: terrainDensity)
+    }
+
     private func strippedTerrainSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
         if type(of: function) is AnyObject.Type {
             let object = function as AnyObject
@@ -1482,6 +1486,77 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             return stripped
         }
         return self.makeStrippedTerrainSamplingFunction(from: function)
+    }
+
+    private func makeDirectPointSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
+        if let wrapper = function as? any DensityFunctionWrapperIntrospectable {
+            return self.makeDirectPointSamplingFunction(from: wrapper.wrappedDensityFunction)
+        }
+        if let unary = function as? UnaryDensityFunction {
+            return UnaryDensityFunction(operand: self.makeDirectPointSamplingFunction(from: unary.inputOperand), type: unary.operationType)
+        }
+        if let binary = function as? BinaryDensityFunction {
+            return BinaryDensityFunction(
+                firstOperand: self.makeDirectPointSamplingFunction(from: binary.firstOperand),
+                secondOperand: self.makeDirectPointSamplingFunction(from: binary.secondOperand),
+                type: binary.operationType
+            )
+        }
+        if let clampFunction = function as? ClampDensityFunction {
+            return ClampDensityFunction(
+                input: self.makeDirectPointSamplingFunction(from: clampFunction.clampedInput),
+                lowerBound: clampFunction.minimumValue,
+                upperBound: clampFunction.maximumValue
+            )
+        }
+        if let rangeChoice = function as? RangeChoice {
+            return RangeChoice(
+                inputChoice: self.makeDirectPointSamplingFunction(from: rangeChoice.inputChoiceFunction),
+                minInclusive: rangeChoice.minimumInclusive,
+                maxExclusive: rangeChoice.maximumExclusive,
+                whenInRange: self.makeDirectPointSamplingFunction(from: rangeChoice.whenInRangeOutput),
+                whenOutOfRange: self.makeDirectPointSamplingFunction(from: rangeChoice.whenOutOfRangeOutput)
+            )
+        }
+        if let shiftedNoise = function as? ShiftedNoise {
+            return ShiftedNoise(
+                noise: shiftedNoise.noiseSampler,
+                shiftX: self.makeDirectPointSamplingFunction(from: shiftedNoise.shiftXFunction),
+                shiftY: self.makeDirectPointSamplingFunction(from: shiftedNoise.shiftYFunction),
+                shiftZ: self.makeDirectPointSamplingFunction(from: shiftedNoise.shiftZFunction),
+                scaleXZ: shiftedNoise.xzScaleValue,
+                scaleY: shiftedNoise.yScaleValue
+            )
+        }
+        if let noiseDensity = function as? NoiseDensityFunction,
+            noiseDensity.noiseSampler.key.name == "minecraft:jagged",
+            noiseDensity.xzScaleValue == 1500.0,
+            noiseDensity.yScaleValue == 0.0
+        {
+            return ConstantDensityFunction(value: 0.0)
+        }
+        if let blendDensity = function as? BlendDensity {
+            return BlendDensity(wrapping: self.makeDirectPointSamplingFunction(from: blendDensity.argumentFunction))
+        }
+        if let weirdScaledSampler = function as? WeirdScaledSampler {
+            return WeirdScaledSampler(
+                type: weirdScaledSampler.scalingType,
+                withInput: self.makeDirectPointSamplingFunction(from: weirdScaledSampler.inputFunction),
+                withNoise: weirdScaledSampler.noiseSampler
+            )
+        }
+        if let splineDensity = function as? SplineDensityFunction {
+            return SplineDensityFunction(withSpline: self.strippedTerrainSamplingSegment(from: splineDensity.splineSegment))
+        }
+        if let topSurface = function as? FindTopSurface {
+            return FindTopSurface(
+                density: self.makeDirectPointSamplingFunction(from: topSurface.densityFunction),
+                upperBound: self.makeDirectPointSamplingFunction(from: topSurface.upperBoundFunction),
+                lowerBound: topSurface.lowerBoundHeight,
+                cellHeight: topSurface.cellHeightValue
+            )
+        }
+        return function
     }
 
     private func makeStrippedTerrainSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
