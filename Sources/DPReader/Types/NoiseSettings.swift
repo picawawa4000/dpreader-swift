@@ -87,7 +87,9 @@ public final class NoiseRouter: Codable {
     /// TERRAIN
 
     // Used by surface rules and aquifers. Generally represents the beginning of the stone layer.
-    public let preliminarySurfaceLevel: any DensityFunction
+    public let preliminarySurfaceLevel: (any DensityFunction)?
+    // Legacy equivalent used before `preliminarySurfaceLevel` was introduced.
+    public let initialDensityWithoutJaggedness: (any DensityFunction)?
     // If this returns >0 for a given block position, that position is solid. Otherwise, it's air.
     public let finalDensity: any DensityFunction
 
@@ -127,7 +129,8 @@ public final class NoiseRouter: Codable {
     public let weirdness: any DensityFunction
 
     public init(
-        preliminarySurfaceLevel: DensityFunction,
+        preliminarySurfaceLevel: DensityFunction? = nil,
+        initialDensityWithoutJaggedness: DensityFunction? = nil,
         finalDensity: DensityFunction,
         barrier: DensityFunction,
         fluidLevelFloodedness: DensityFunction,
@@ -144,6 +147,7 @@ public final class NoiseRouter: Codable {
         weirdness: DensityFunction
     ) {
         self.preliminarySurfaceLevel = preliminarySurfaceLevel
+        self.initialDensityWithoutJaggedness = initialDensityWithoutJaggedness
         self.finalDensity = finalDensity
         self.barrier = barrier
         self.fluidLevelFloodedness = fluidLevelFloodedness
@@ -162,7 +166,8 @@ public final class NoiseRouter: Codable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.preliminarySurfaceLevel = try container.decode(DensityFunctionInitializer.self, forKey: .preliminarySurfaceLevel).value
+        self.preliminarySurfaceLevel = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .preliminarySurfaceLevel)?.value
+        self.initialDensityWithoutJaggedness = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .initialDensityWithoutJaggedness)?.value
         self.finalDensity = try container.decode(DensityFunctionInitializer.self, forKey: .finalDensity).value
         self.barrier = try container.decode(DensityFunctionInitializer.self, forKey: .barrier).value
         self.fluidLevelFloodedness = try container.decode(DensityFunctionInitializer.self, forKey: .fluidLevelFloodedness).value
@@ -181,7 +186,12 @@ public final class NoiseRouter: Codable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(DensityFunctionEncoder(value: preliminarySurfaceLevel), forKey: .preliminarySurfaceLevel)
+        if let preliminarySurfaceLevel {
+            try container.encode(DensityFunctionEncoder(value: preliminarySurfaceLevel), forKey: .preliminarySurfaceLevel)
+        }
+        if let initialDensityWithoutJaggedness {
+            try container.encode(DensityFunctionEncoder(value: initialDensityWithoutJaggedness), forKey: .initialDensityWithoutJaggedness)
+        }
         try container.encode(DensityFunctionEncoder(value: finalDensity), forKey: .finalDensity)
         try container.encode(DensityFunctionEncoder(value: barrier), forKey: .barrier)
         try container.encode(DensityFunctionEncoder(value: fluidLevelFloodedness), forKey: .fluidLevelFloodedness)
@@ -200,7 +210,8 @@ public final class NoiseRouter: Codable {
 
     public func bakeAll(withBaker baker: any DensityFunctionBaker) throws -> NoiseRouter {
         return NoiseRouter(
-            preliminarySurfaceLevel: try self.preliminarySurfaceLevel.bake(withBaker: baker),
+            preliminarySurfaceLevel: try self.preliminarySurfaceLevel?.bake(withBaker: baker),
+            initialDensityWithoutJaggedness: try self.initialDensityWithoutJaggedness?.bake(withBaker: baker),
             finalDensity: try self.finalDensity.bake(withBaker: baker),
             barrier: try self.barrier.bake(withBaker: baker),
             fluidLevelFloodedness: try self.fluidLevelFloodedness.bake(withBaker: baker),
@@ -220,6 +231,7 @@ public final class NoiseRouter: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case preliminarySurfaceLevel = "preliminary_surface_level"
+        case initialDensityWithoutJaggedness = "initial_density_without_jaggedness"
         case finalDensity = "final_density"
         case barrier = "barrier"
         case fluidLevelFloodedness = "fluid_level_floodedness"

@@ -1488,7 +1488,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         return self.makeStrippedTerrainSamplingFunction(from: function)
     }
 
-    private func makeDirectPointSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
+    func makeDirectPointSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
         if let wrapper = function as? any DensityFunctionWrapperIntrospectable {
             return self.makeDirectPointSamplingFunction(from: wrapper.wrappedDensityFunction)
         }

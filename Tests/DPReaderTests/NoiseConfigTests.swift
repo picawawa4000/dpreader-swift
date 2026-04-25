@@ -68,10 +68,39 @@ import Testing
     #expect(noiseRouter.finalDensity is ReferenceDensityFunction)
     let finalDensity = noiseRouter.finalDensity as! ReferenceDensityFunction
     #expect(finalDensity.targetKey.name == "minecraft:final_density")
-    let preliminary = noiseRouter.preliminarySurfaceLevel as! ConstantDensityFunction
+    let preliminary = try #require(noiseRouter.preliminarySurfaceLevel as? ConstantDensityFunction)
     #expect(preliminary.testingAttributes.value == 1.0)
     let weirdness = noiseRouter.weirdness as! ConstantDensityFunction
     #expect(weirdness.testingAttributes.value == 15.0)
+    #expect(noiseRouter.initialDensityWithoutJaggedness == nil)
+}
+
+@Test func testDecodingLegacyInitialDensityWithoutJaggednessForNoiseRouter() async throws {
+    let data = """
+    {
+        "initial_density_without_jaggedness": 2.0,
+        "final_density": 3.0,
+        "barrier": 4.0,
+        "fluid_level_floodedness": 5.0,
+        "fluid_level_spread": 6.0,
+        "lava": 7.0,
+        "vein_toggle": 8.0,
+        "vein_ridged": 9.0,
+        "vein_gap": 10.0,
+        "temperature": 11.0,
+        "vegetation": 12.0,
+        "continents": 13.0,
+        "erosion": 14.0,
+        "depth": 15.0,
+        "ridges": 16.0
+    }
+    """.data(using: .utf8)!
+
+    let decoder = JSONDecoder()
+    let noiseRouter = try decoder.decode(NoiseRouter.self, from: data)
+    #expect(noiseRouter.preliminarySurfaceLevel == nil)
+    let initialDensity = try #require(noiseRouter.initialDensityWithoutJaggedness as? ConstantDensityFunction)
+    #expect(initialDensity.testingAttributes.value == 2.0)
 }
 
 @Test func testEncodingForNoiseSettings() async throws {

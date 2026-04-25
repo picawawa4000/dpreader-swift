@@ -178,9 +178,25 @@ private func checkDoubleTerrain(_ actualValue: Double, _ roundedExpectedValue: I
 }
 
 private func makeNoiseSettings(minY: Int, height: Int, finalDensity: DensityFunction) -> NoiseSettings {
+    return makeSurfaceNoiseSettings(
+        minY: minY,
+        height: height,
+        finalDensity: finalDensity,
+        preliminarySurfaceLevel: ConstantDensityFunction(value: 0.0)
+    )
+}
+
+private func makeSurfaceNoiseSettings(
+    minY: Int,
+    height: Int,
+    finalDensity: DensityFunction,
+    preliminarySurfaceLevel: DensityFunction? = nil,
+    initialDensityWithoutJaggedness: DensityFunction? = nil
+) -> NoiseSettings {
     let zero = ConstantDensityFunction(value: 0.0)
     let router = NoiseRouter(
-        preliminarySurfaceLevel: zero,
+        preliminarySurfaceLevel: preliminarySurfaceLevel,
+        initialDensityWithoutJaggedness: initialDensityWithoutJaggedness,
         finalDensity: finalDensity,
         barrier: zero,
         fluidLevelFloodedness: zero,
@@ -205,6 +221,10 @@ private func makeNoiseSettings(minY: Int, height: Int, finalDensity: DensityFunc
         noiseRouter: router,
         surfaceRule: SurfaceRuleBlock(resultState: BlockStateDefinition(name: "minecraft:stone"))
     )
+}
+
+private func surfaceCell(atX x: Int32, z: Int32, in result: TerrainSurfaceLODResult) -> TerrainSurfaceLODCell? {
+    return result.cells.first { $0.x == x && $0.z == z }
 }
 
 private func loadNoiseSettingsPack() throws -> DataPack {
@@ -525,6 +545,92 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
             #expect(column.samplePayloads?.allSatisfy { $0.biome == nil && $0.materialID == "minecraft:stone" } == true)
         }
     }
+}
+
+@Test func testSampleSurfaceLODUsesExactInnerSamplesAndRoundedPreliminarySurfaceLevels() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:surface_lod_preliminary")
+    pack.noiseSettingsRegistry.register(
+        makeSurfaceNoiseSettings(
+            minY: 0,
+            height: 16,
+            finalDensity: YClampedGradient(fromY: 0, toY: 15, fromValue: 1.0, toValue: -1.0),
+            preliminarySurfaceLevel: ConstantDensityFunction(value: 10.0)
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 5,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+
+    let sampled = try worldGenerator.sampleSurfaceLOD(
+        from: PosInt3D(x: 0, y: 0, z: 0),
+        radius: 3,
+        startingRadius: 2,
+        radiusStep: 4,
+        maxCellSizePower: 0,
+        threadCount: 2
+    )
+
+    #expect(sampled.baseCellSize == 2)
+    #expect(sampled.minX == -3)
+    #expect(sampled.maxXExclusive == 4)
+    #expect(sampled.minY == 0)
+    #expect(sampled.maxYExclusive == 16)
+    #expect(sampled.cells.contains { $0.cellSize == 1 })
+    #expect(sampled.cells.contains { $0.cellSize == 2 })
+
+    let innerCell = try #require(surfaceCell(atX: 0, z: 0, in: sampled))
+    #expect(innerCell.cellSize == 1)
+    #expect(innerCell.surfaceY == 7)
+    #expect(innerCell.surfaceBiome == nil)
+
+    let coarseCell = try #require(surfaceCell(atX: 2, z: 0, in: sampled))
+    #expect(coarseCell.cellSize == 2)
+    #expect(coarseCell.surfaceY == 10)
+    #expect(coarseCell.surfaceBiome == nil)
+}
+
+@Test func testSampleSurfaceLODFallsBackToInitialDensityWithoutJaggedness() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:surface_lod_legacy")
+    let descendingSurfaceDensity = YClampedGradient(fromY: 0, toY: 15, fromValue: 1.0, toValue: -1.0)
+    pack.noiseSettingsRegistry.register(
+        makeSurfaceNoiseSettings(
+            minY: 0,
+            height: 16,
+            finalDensity: descendingSurfaceDensity,
+            initialDensityWithoutJaggedness: descendingSurfaceDensity
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 6,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+
+    let sampled = try worldGenerator.sampleSurfaceLOD(
+        from: PosInt3D(x: 0, y: 0, z: 0),
+        radius: 2,
+        startingRadius: 1,
+        radiusStep: 4,
+        maxCellSizePower: 0,
+        threadCount: 1
+    )
+
+    let innerCell = try #require(surfaceCell(atX: 0, z: 0, in: sampled))
+    #expect(innerCell.cellSize == 1)
+    #expect(innerCell.surfaceY == 7)
+
+    let coarseCell = try #require(surfaceCell(atX: 2, z: 0, in: sampled))
+    #expect(coarseCell.cellSize == 2)
+    #expect(coarseCell.surfaceY == 8)
+    #expect(coarseCell.surfaceBiome == nil)
 }
 
 @Test func testGenerateIntoIsStableAcrossConcurrentCalls() async throws {
