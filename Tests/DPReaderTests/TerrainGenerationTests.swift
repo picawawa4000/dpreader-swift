@@ -633,6 +633,106 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
     #expect(coarseCell.surfaceBiome == nil)
 }
 
+@Test func testSampleLODReportsProgress() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:lod_progress")
+    pack.noiseSettingsRegistry.register(
+        makeNoiseSettings(
+            minY: -8,
+            height: 16,
+            finalDensity: ConstantDensityFunction(value: 1.0)
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 7,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+    let progressEvents = LockedArray<TerrainLODProgress>()
+
+    let sampled = try worldGenerator.sampleLOD(
+        from: PosInt3D(x: 5, y: 1, z: -3),
+        radius: 9,
+        startingRadius: 4,
+        radiusStep: 2,
+        maxCellSizePower: 2,
+        threadCount: 1,
+        payloads: [.material],
+        progressHandler: { progressEvents.append($0) }
+    )
+
+    let events = progressEvents.values
+    let first = try #require(events.first)
+    let last = try #require(events.last)
+    #expect(first.completedChunkCount == 0)
+    #expect(first.completedSampleCount == 0)
+    #expect(first.totalChunkCount == sampled.chunks.count)
+    #expect(first.totalSampleCount == sampled.columns.count)
+    #expect(last.completedChunkCount == sampled.chunks.count)
+    #expect(last.totalChunkCount == sampled.chunks.count)
+    #expect(last.completedSampleCount == sampled.columns.count)
+    #expect(last.totalSampleCount == sampled.columns.count)
+    #expect(last.isFinished)
+    #expect(last.fractionCompleted == 1.0)
+
+    for index in 1..<events.count {
+        #expect(events[index].completedChunkCount >= events[index - 1].completedChunkCount)
+        #expect(events[index].completedSampleCount >= events[index - 1].completedSampleCount)
+    }
+}
+
+@Test func testSampleSurfaceLODReportsProgress() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:surface_lod_progress")
+    pack.noiseSettingsRegistry.register(
+        makeSurfaceNoiseSettings(
+            minY: 0,
+            height: 16,
+            finalDensity: YClampedGradient(fromY: 0, toY: 15, fromValue: 1.0, toValue: -1.0),
+            preliminarySurfaceLevel: ConstantDensityFunction(value: 10.0)
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 8,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+    let progressEvents = LockedArray<TerrainLODProgress>()
+
+    let sampled = try worldGenerator.sampleSurfaceLOD(
+        from: PosInt3D(x: 0, y: 0, z: 0),
+        radius: 3,
+        startingRadius: 2,
+        radiusStep: 4,
+        maxCellSizePower: 0,
+        threadCount: 1,
+        progressHandler: { progressEvents.append($0) }
+    )
+
+    let events = progressEvents.values
+    let first = try #require(events.first)
+    let last = try #require(events.last)
+    #expect(first.completedChunkCount == 0)
+    #expect(first.completedSampleCount == 0)
+    #expect(first.totalChunkCount == sampled.chunks.count)
+    #expect(first.totalSampleCount == sampled.cells.count)
+    #expect(last.completedChunkCount == sampled.chunks.count)
+    #expect(last.totalChunkCount == sampled.chunks.count)
+    #expect(last.completedSampleCount == sampled.cells.count)
+    #expect(last.totalSampleCount == sampled.cells.count)
+    #expect(last.isFinished)
+    #expect(last.fractionCompleted == 1.0)
+
+    for index in 1..<events.count {
+        #expect(events[index].completedChunkCount >= events[index - 1].completedChunkCount)
+        #expect(events[index].completedSampleCount >= events[index - 1].completedSampleCount)
+    }
+}
+
 @Test func testGenerateIntoIsStableAcrossConcurrentCalls() async throws {
     let pack = try loadNoiseSettingsPack()
     let worldGenerator = try WorldGenerator(
@@ -757,6 +857,23 @@ private final class LockedOptional<Value>: @unchecked Sendable {
         if self.storage == nil {
             self.storage = value
         }
+    }
+}
+
+private final class LockedArray<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Value] = []
+
+    var values: [Value] {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.storage
+    }
+
+    func append(_ value: Value) {
+        self.lock.lock()
+        self.storage.append(value)
+        self.lock.unlock()
     }
 }
 

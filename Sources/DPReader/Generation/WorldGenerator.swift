@@ -1527,6 +1527,26 @@ public struct TerrainSurfaceLODResult: Equatable {
     }
 }
 
+public struct TerrainLODProgress: Sendable, Equatable {
+    public let completedChunkCount: Int
+    public let totalChunkCount: Int
+    public let completedSampleCount: Int
+    public let totalSampleCount: Int
+    public let lastCompletedChunkKey: TerrainLODChunkKey?
+
+    public var fractionCompleted: Double {
+        guard self.totalSampleCount > 0 else {
+            return 1.0
+        }
+        return Double(self.completedSampleCount) / Double(self.totalSampleCount)
+    }
+
+    public var isFinished: Bool {
+        return self.completedChunkCount >= self.totalChunkCount
+            && self.completedSampleCount >= self.totalSampleCount
+    }
+}
+
 private struct ChunkBiomeDensityFunctions {
     let temperature: any DensityFunction
     let humidity: any DensityFunction
@@ -1555,6 +1575,53 @@ struct ChunkGenerationComponentBenchmark {
     let quartBiomesOnlyNanos: UInt64
     let blockBiomesOnlyNanos: UInt64
     let fullGenerateIntoNanos: UInt64
+}
+
+private final class SharedTerrainLODProgressReporter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let totalChunkCount: Int
+    private let totalSampleCount: Int
+    private let handler: (@Sendable (TerrainLODProgress) -> Void)?
+    private var completedChunkCount = 0
+    private var completedSampleCount = 0
+
+    init(
+        totalChunkCount: Int,
+        totalSampleCount: Int,
+        handler: (@Sendable (TerrainLODProgress) -> Void)?
+    ) {
+        self.totalChunkCount = totalChunkCount
+        self.totalSampleCount = totalSampleCount
+        self.handler = handler
+    }
+
+    func reportInitialProgress() {
+        self.handler?(
+            TerrainLODProgress(
+                completedChunkCount: 0,
+                totalChunkCount: self.totalChunkCount,
+                completedSampleCount: 0,
+                totalSampleCount: self.totalSampleCount,
+                lastCompletedChunkKey: nil
+            )
+        )
+    }
+
+    func reportCompletedChunk(_ chunkKey: TerrainLODChunkKey, sampleCount: Int) {
+        let progress: TerrainLODProgress
+        self.lock.lock()
+        self.completedChunkCount += 1
+        self.completedSampleCount += sampleCount
+        progress = TerrainLODProgress(
+            completedChunkCount: self.completedChunkCount,
+            totalChunkCount: self.totalChunkCount,
+            completedSampleCount: self.completedSampleCount,
+            totalSampleCount: self.totalSampleCount,
+            lastCompletedChunkKey: chunkKey
+        )
+        self.lock.unlock()
+        self.handler?(progress)
+    }
 }
 
 private struct SectionBiomeLatticeMap {
@@ -2673,7 +2740,8 @@ public final class WorldGenerator {
         radiusStep: Int32 = 1,
         maxCellSizePower: Int = 0,
         threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
-        payloads: TerrainLODPayloadOptions = [.biome]
+        payloads: TerrainLODPayloadOptions = [.biome],
+        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil
     ) throws -> TerrainLODResult {
         precondition(radius >= 0, "radius must be non-negative")
         precondition(startingRadius >= 0, "startingRadius must be non-negative")
@@ -2783,6 +2851,12 @@ public final class WorldGenerator {
         let includeBiomes = payloads.contains(.biome)
         let includeMaterial = payloads.contains(.material)
         let workerCount = max(1, min(threadCount, max(1, chunkPlans.count)))
+        let progressReporter = SharedTerrainLODProgressReporter(
+            totalChunkCount: chunkPlans.count,
+            totalSampleCount: requests.count,
+            handler: progressHandler
+        )
+        progressReporter.reportInitialProgress()
         final class UnsafeSendableBox<Value>: @unchecked Sendable {
             let value: Value
 
@@ -2905,6 +2979,7 @@ public final class WorldGenerator {
                     }
                 )
                 sharedResults.merge([chunkKey: terrainChunk])
+                progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
             DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
@@ -2935,6 +3010,7 @@ public final class WorldGenerator {
                                 materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
                             }
                         )
+                        progressReporter.reportCompletedChunk(plan.0, sampleCount: plan.1.count)
                     } catch {
                         sharedResults.recordError(error)
                         break
@@ -2988,7 +3064,8 @@ public final class WorldGenerator {
         startingRadius: Int32 = 0,
         radiusStep: Int32 = 1,
         maxCellSizePower: Int = 0,
-        threadCount: Int = ProcessInfo.processInfo.activeProcessorCount
+        threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil
     ) throws -> TerrainSurfaceLODResult {
         precondition(radius >= 0, "radius must be non-negative")
         precondition(startingRadius >= 0, "startingRadius must be non-negative")
@@ -3131,6 +3208,12 @@ public final class WorldGenerator {
 
         let includeBiomes = self.configuredChunkBiomeSampler() != nil
         let workerCount = max(1, min(threadCount, max(1, chunkPlans.count)))
+        let progressReporter = SharedTerrainLODProgressReporter(
+            totalChunkCount: chunkPlans.count,
+            totalSampleCount: requests.count,
+            handler: progressHandler
+        )
+        progressReporter.reportInitialProgress()
         final class UnsafeSendableBox<Value>: @unchecked Sendable {
             let value: Value
 
@@ -3283,6 +3366,7 @@ public final class WorldGenerator {
                         }
                     )
                 ])
+                progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
             DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
@@ -3325,6 +3409,7 @@ public final class WorldGenerator {
                                 )
                             }
                         )
+                        progressReporter.reportCompletedChunk(plan.0, sampleCount: plan.1.count)
                     } catch {
                         sharedResults.recordError(error)
                         break
