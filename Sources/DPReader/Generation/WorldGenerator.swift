@@ -2741,7 +2741,8 @@ public final class WorldGenerator {
         maxCellSizePower: Int = 0,
         threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
         payloads: TerrainLODPayloadOptions = [.biome],
-        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil
+        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil,
+        chunkHandler: (@Sendable (TerrainLODChunk, Int32, Int32) -> Void)? = nil
     ) throws -> TerrainLODResult {
         precondition(radius >= 0, "radius must be non-negative")
         precondition(startingRadius >= 0, "startingRadius must be non-negative")
@@ -2978,6 +2979,7 @@ public final class WorldGenerator {
                         materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
                     }
                 )
+                chunkHandler?(terrainChunk, worldMinY, worldMaxYExclusive)
                 sharedResults.merge([chunkKey: terrainChunk])
                 progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
@@ -3004,12 +3006,14 @@ public final class WorldGenerator {
                             at: PosInt2D(x: plan.0.x, z: plan.0.z),
                             using: configBox.value
                         ) : nil
-                        localResults[plan.0] = TerrainLODChunk(
+                        let terrainChunk = TerrainLODChunk(
                             key: plan.0,
                             columns: plan.1.map {
                                 materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
                             }
                         )
+                        chunkHandler?(terrainChunk, worldMinY, worldMaxYExclusive)
+                        localResults[plan.0] = terrainChunk
                         progressReporter.reportCompletedChunk(plan.0, sampleCount: plan.1.count)
                     } catch {
                         sharedResults.recordError(error)
@@ -3065,7 +3069,8 @@ public final class WorldGenerator {
         radiusStep: Int32 = 1,
         maxCellSizePower: Int = 0,
         threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
-        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil
+        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil,
+        chunkHandler: (@Sendable (TerrainSurfaceLODChunk, Int32, Int32) -> Void)? = nil
     ) throws -> TerrainSurfaceLODResult {
         precondition(radius >= 0, "radius must be non-negative")
         precondition(startingRadius >= 0, "startingRadius must be non-negative")
@@ -3352,20 +3357,20 @@ public final class WorldGenerator {
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
                     using: config
                 ) : nil
-                sharedResults.merge([
-                    chunkKey: TerrainSurfaceLODChunk(
-                        key: chunkKey,
-                        cells: chunkRequests.map {
-                            materializedCell(
-                                from: $0,
-                                finalTerrainDensity: directFinalDensity,
-                                preliminarySurfaceLevel: directPreliminarySurfaceLevel,
-                                initialDensityWithoutJaggedness: directInitialDensityWithoutJaggedness,
-                                biomeChunk: biomeChunk
-                            )
-                        }
-                    )
-                ])
+                let terrainChunk = TerrainSurfaceLODChunk(
+                    key: chunkKey,
+                    cells: chunkRequests.map {
+                        materializedCell(
+                            from: $0,
+                            finalTerrainDensity: directFinalDensity,
+                            preliminarySurfaceLevel: directPreliminarySurfaceLevel,
+                            initialDensityWithoutJaggedness: directInitialDensityWithoutJaggedness,
+                            biomeChunk: biomeChunk
+                        )
+                    }
+                )
+                chunkHandler?(terrainChunk, worldMinY, worldMaxYExclusive)
+                sharedResults.merge([chunkKey: terrainChunk])
                 progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
@@ -3397,7 +3402,7 @@ public final class WorldGenerator {
                             at: PosInt2D(x: plan.0.x, z: plan.0.z),
                             using: configBox.value
                         ) : nil
-                        localResults[plan.0] = TerrainSurfaceLODChunk(
+                        let terrainChunk = TerrainSurfaceLODChunk(
                             key: plan.0,
                             cells: plan.1.map {
                                 materializedCell(
@@ -3409,6 +3414,8 @@ public final class WorldGenerator {
                                 )
                             }
                         )
+                        chunkHandler?(terrainChunk, worldMinY, worldMaxYExclusive)
+                        localResults[plan.0] = terrainChunk
                         progressReporter.reportCompletedChunk(plan.0, sampleCount: plan.1.count)
                     } catch {
                         sharedResults.recordError(error)
