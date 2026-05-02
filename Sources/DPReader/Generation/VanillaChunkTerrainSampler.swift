@@ -1470,8 +1470,14 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    func makeDirectPointSamplingTerrainDensity(from terrainDensity: any DensityFunction) -> any DensityFunction {
-        return self.makeDirectPointSamplingFunction(from: terrainDensity)
+    func makeDirectPointSamplingTerrainDensity(
+        from terrainDensity: any DensityFunction,
+        preserveWorldScaleCaches: Bool = false
+    ) -> any DensityFunction {
+        return self.makeDirectPointSamplingFunction(
+            from: terrainDensity,
+            preserveWorldScaleCaches: preserveWorldScaleCaches
+        )
     }
 
     private func strippedTerrainSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
@@ -1488,42 +1494,114 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         return self.makeStrippedTerrainSamplingFunction(from: function)
     }
 
-    func makeDirectPointSamplingFunction(from function: any DensityFunction) -> any DensityFunction {
+    func makeDirectPointSamplingFunction(
+        from function: any DensityFunction,
+        preserveWorldScaleCaches: Bool = false
+    ) -> any DensityFunction {
+        if preserveWorldScaleCaches, function is WorldScaleFlatCache {
+            return WorldScaleFlatCache(
+                wrapping: self.makeDirectPointSamplingFunction(
+                    from: (function as! any DensityFunctionWrapperIntrospectable).wrappedDensityFunction,
+                    preserveWorldScaleCaches: true
+                )
+            )
+        }
+        if preserveWorldScaleCaches, function is WorldScaleCache2D {
+            return WorldScaleCache2D(
+                wrapping: self.makeDirectPointSamplingFunction(
+                    from: (function as! any DensityFunctionWrapperIntrospectable).wrappedDensityFunction,
+                    preserveWorldScaleCaches: true
+                )
+            )
+        }
+        if let cacheMarker = function as? CacheMarker {
+            let transformedArgument = self.makeDirectPointSamplingFunction(
+                from: cacheMarker.argument,
+                preserveWorldScaleCaches: preserveWorldScaleCaches
+            )
+            if preserveWorldScaleCaches {
+                switch cacheMarker.type {
+                case .flatCache:
+                    return WorldScaleFlatCache(wrapping: transformedArgument)
+                case .cache2D:
+                    return WorldScaleCache2D(wrapping: transformedArgument)
+                case .interpolated, .cacheOnce, .cacheAllInCell:
+                    return transformedArgument
+                }
+            }
+            return transformedArgument
+        }
         if let wrapper = function as? any DensityFunctionWrapperIntrospectable {
-            return self.makeDirectPointSamplingFunction(from: wrapper.wrappedDensityFunction)
+            return self.makeDirectPointSamplingFunction(
+                from: wrapper.wrappedDensityFunction,
+                preserveWorldScaleCaches: preserveWorldScaleCaches
+            )
         }
         if let unary = function as? UnaryDensityFunction {
-            return UnaryDensityFunction(operand: self.makeDirectPointSamplingFunction(from: unary.inputOperand), type: unary.operationType)
+            return UnaryDensityFunction(
+                operand: self.makeDirectPointSamplingFunction(
+                    from: unary.inputOperand,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                type: unary.operationType
+            )
         }
         if let binary = function as? BinaryDensityFunction {
             return BinaryDensityFunction(
-                firstOperand: self.makeDirectPointSamplingFunction(from: binary.firstOperand),
-                secondOperand: self.makeDirectPointSamplingFunction(from: binary.secondOperand),
+                firstOperand: self.makeDirectPointSamplingFunction(
+                    from: binary.firstOperand,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                secondOperand: self.makeDirectPointSamplingFunction(
+                    from: binary.secondOperand,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
                 type: binary.operationType
             )
         }
         if let clampFunction = function as? ClampDensityFunction {
             return ClampDensityFunction(
-                input: self.makeDirectPointSamplingFunction(from: clampFunction.clampedInput),
+                input: self.makeDirectPointSamplingFunction(
+                    from: clampFunction.clampedInput,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
                 lowerBound: clampFunction.minimumValue,
                 upperBound: clampFunction.maximumValue
             )
         }
         if let rangeChoice = function as? RangeChoice {
             return RangeChoice(
-                inputChoice: self.makeDirectPointSamplingFunction(from: rangeChoice.inputChoiceFunction),
+                inputChoice: self.makeDirectPointSamplingFunction(
+                    from: rangeChoice.inputChoiceFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
                 minInclusive: rangeChoice.minimumInclusive,
                 maxExclusive: rangeChoice.maximumExclusive,
-                whenInRange: self.makeDirectPointSamplingFunction(from: rangeChoice.whenInRangeOutput),
-                whenOutOfRange: self.makeDirectPointSamplingFunction(from: rangeChoice.whenOutOfRangeOutput)
+                whenInRange: self.makeDirectPointSamplingFunction(
+                    from: rangeChoice.whenInRangeOutput,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                whenOutOfRange: self.makeDirectPointSamplingFunction(
+                    from: rangeChoice.whenOutOfRangeOutput,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                )
             )
         }
         if let shiftedNoise = function as? ShiftedNoise {
             return ShiftedNoise(
                 noise: shiftedNoise.noiseSampler,
-                shiftX: self.makeDirectPointSamplingFunction(from: shiftedNoise.shiftXFunction),
-                shiftY: self.makeDirectPointSamplingFunction(from: shiftedNoise.shiftYFunction),
-                shiftZ: self.makeDirectPointSamplingFunction(from: shiftedNoise.shiftZFunction),
+                shiftX: self.makeDirectPointSamplingFunction(
+                    from: shiftedNoise.shiftXFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                shiftY: self.makeDirectPointSamplingFunction(
+                    from: shiftedNoise.shiftYFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                shiftZ: self.makeDirectPointSamplingFunction(
+                    from: shiftedNoise.shiftZFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
                 scaleXZ: shiftedNoise.xzScaleValue,
                 scaleY: shiftedNoise.yScaleValue
             )
@@ -1536,12 +1614,20 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             return ConstantDensityFunction(value: 0.0)
         }
         if let blendDensity = function as? BlendDensity {
-            return BlendDensity(wrapping: self.makeDirectPointSamplingFunction(from: blendDensity.argumentFunction))
+            return BlendDensity(
+                wrapping: self.makeDirectPointSamplingFunction(
+                    from: blendDensity.argumentFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                )
+            )
         }
         if let weirdScaledSampler = function as? WeirdScaledSampler {
             return WeirdScaledSampler(
                 type: weirdScaledSampler.scalingType,
-                withInput: self.makeDirectPointSamplingFunction(from: weirdScaledSampler.inputFunction),
+                withInput: self.makeDirectPointSamplingFunction(
+                    from: weirdScaledSampler.inputFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
                 withNoise: weirdScaledSampler.noiseSampler
             )
         }
@@ -1550,8 +1636,14 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
         if let topSurface = function as? FindTopSurface {
             return FindTopSurface(
-                density: self.makeDirectPointSamplingFunction(from: topSurface.densityFunction),
-                upperBound: self.makeDirectPointSamplingFunction(from: topSurface.upperBoundFunction),
+                density: self.makeDirectPointSamplingFunction(
+                    from: topSurface.densityFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                upperBound: self.makeDirectPointSamplingFunction(
+                    from: topSurface.upperBoundFunction,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
                 lowerBound: topSurface.lowerBoundHeight,
                 cellHeight: topSurface.cellHeightValue
             )

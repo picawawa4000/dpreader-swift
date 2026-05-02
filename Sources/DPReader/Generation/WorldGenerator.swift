@@ -1739,11 +1739,21 @@ private struct ChunkGenerationDensityFunctions {
     let biomeDensityFunctions: ChunkBiomeDensityFunctions
 }
 
-private struct DirectPointSamplingDensityFunctions {
+private struct DirectPointSamplingDensityFunctionVariant {
     let finalDensity: any DensityFunction
     let preliminarySurfaceLevel: (any DensityFunction)?
     let initialDensityWithoutJaggedness: (any DensityFunction)?
     let biomeDensityFunctions: ChunkBiomeDensityFunctions
+}
+
+private struct DirectPointSamplingDensityFunctions {
+    let cached: DirectPointSamplingDensityFunctionVariant
+    let cacheless: DirectPointSamplingDensityFunctionVariant
+}
+
+private enum DirectPointSamplingCacheMode {
+    case preserveWorldScaleCaches
+    case stripAllCaches
 }
 
 enum ChunkBiomeGenerationMode {
@@ -2034,7 +2044,7 @@ public final class WorldGenerator {
 
         if self.config != nil {
             self.config = self.config!.with(noiseRouter: try self.config!.noiseRouter.bakeAll(withBaker: baker))
-            self.directPointSamplingDensityFunctions = self.makeDirectPointSamplingDensityFunctions(from: self.config!)
+            self.directPointSamplingDensityFunctions = try self.makeDirectPointSamplingDensityFunctions(from: self.config!)
         }
     }
 
@@ -2136,7 +2146,23 @@ public final class WorldGenerator {
 
     private func makeDirectPointSamplingDensityFunctions(
         from config: NoiseSettings
-    ) -> DirectPointSamplingDensityFunctions {
+    ) throws -> DirectPointSamplingDensityFunctions {
+        return DirectPointSamplingDensityFunctions(
+            cached: try self.makeDirectPointSamplingDensityFunctionVariant(
+                from: config,
+                cacheMode: .preserveWorldScaleCaches
+            ),
+            cacheless: try self.makeDirectPointSamplingDensityFunctionVariant(
+                from: config,
+                cacheMode: .stripAllCaches
+            )
+        )
+    }
+
+    private func makeDirectPointSamplingDensityFunctionVariant(
+        from config: NoiseSettings,
+        cacheMode: DirectPointSamplingCacheMode
+    ) throws -> DirectPointSamplingDensityFunctionVariant {
         let sampler = VanillaChunkTerrainSampler(
             chunkPos: PosInt2D(x: 0, z: 0),
             minY: Int32(config.minY),
@@ -2144,21 +2170,57 @@ public final class WorldGenerator {
             sizeHorizontal: config.sizeHorizontal,
             sizeVertical: config.sizeVertical
         )
-        return DirectPointSamplingDensityFunctions(
-            finalDensity: sampler.makeDirectPointSamplingTerrainDensity(from: config.noiseRouter.finalDensity),
-            preliminarySurfaceLevel: config.noiseRouter.preliminarySurfaceLevel.map {
-                sampler.makeDirectPointSamplingFunction(from: $0)
+        let preserveWorldScaleCaches = cacheMode == .preserveWorldScaleCaches
+        let noiseRouter: NoiseRouter
+        switch cacheMode {
+        case .preserveWorldScaleCaches:
+            noiseRouter = try config.noiseRouter.bakeAll(withBaker: WorldScaleDensityFunctionBaker())
+        case .stripAllCaches:
+            noiseRouter = config.noiseRouter
+        }
+
+        return DirectPointSamplingDensityFunctionVariant(
+            finalDensity: sampler.makeDirectPointSamplingTerrainDensity(
+                from: noiseRouter.finalDensity,
+                preserveWorldScaleCaches: preserveWorldScaleCaches
+            ),
+            preliminarySurfaceLevel: noiseRouter.preliminarySurfaceLevel.map {
+                sampler.makeDirectPointSamplingFunction(
+                    from: $0,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                )
             },
-            initialDensityWithoutJaggedness: config.noiseRouter.initialDensityWithoutJaggedness.map {
-                sampler.makeDirectPointSamplingFunction(from: $0)
+            initialDensityWithoutJaggedness: noiseRouter.initialDensityWithoutJaggedness.map {
+                sampler.makeDirectPointSamplingFunction(
+                    from: $0,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                )
             },
             biomeDensityFunctions: ChunkBiomeDensityFunctions(
-                temperature: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.temperature),
-                humidity: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.humidity),
-                continentalness: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.continents),
-                erosion: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.erosion),
-                weirdness: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.weirdness),
-                depth: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.depth)
+                temperature: sampler.makeDirectPointSamplingFunction(
+                    from: noiseRouter.temperature,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                humidity: sampler.makeDirectPointSamplingFunction(
+                    from: noiseRouter.humidity,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                continentalness: sampler.makeDirectPointSamplingFunction(
+                    from: noiseRouter.continents,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                erosion: sampler.makeDirectPointSamplingFunction(
+                    from: noiseRouter.erosion,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                weirdness: sampler.makeDirectPointSamplingFunction(
+                    from: noiseRouter.weirdness,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                ),
+                depth: sampler.makeDirectPointSamplingFunction(
+                    from: noiseRouter.depth,
+                    preserveWorldScaleCaches: preserveWorldScaleCaches
+                )
             )
         )
     }
@@ -2237,7 +2299,8 @@ public final class WorldGenerator {
 
     private func generateLODBiomeChunk(
         at chunkPos: PosInt2D,
-        using config: NoiseSettings
+        using config: NoiseSettings,
+        with biomeDensityFunctions: ChunkBiomeDensityFunctions
     ) throws -> ProtoChunk {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
@@ -2245,9 +2308,6 @@ public final class WorldGenerator {
         try chunk.configure(minY: minY, height: height)
 
         if let biomeSampler = self.configuredChunkBiomeSampler() {
-            let biomeDensityFunctions = try self.validatedDirectPointSamplingDensityFunctions(
-                for: "LOD biome sampling"
-            ).biomeDensityFunctions
             switch biomeSampler {
             case .searchTree(let searchTree):
                 self.generateBiomesIntoChunk(
@@ -2933,7 +2993,7 @@ public final class WorldGenerator {
     func sampleFinalDensity(at pos: PosInt3D) throws -> Double {
         return try self.validatedDirectPointSamplingDensityFunctions(
             for: "Final density sampling"
-        ).finalDensity.sample(at: pos)
+        ).cacheless.finalDensity.sample(at: pos)
     }
 
     /// Samples terrain in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.
@@ -3107,9 +3167,9 @@ public final class WorldGenerator {
         let generatorBox = UnsafeSendableBox(self)
         let configBox = UnsafeSendableBox(config)
         let sharedResults = SharedSampleLODResults()
-        let directPointFunctionsBox = UnsafeSendableBox(
-            try self.validatedDirectPointSamplingDensityFunctions(for: "LOD sampling")
-        )
+        let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "LOD sampling")
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let needsCachedDirectPointFunctions = includeBiomes
         let midpoint: @Sendable (Int32, Int32) -> Int32 = { start, size in
             clampToInt32(Int64(start) + Int64(size / 2))
         }
@@ -3168,17 +3228,19 @@ public final class WorldGenerator {
         }
 
         if workerCount == 1 {
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
             for (chunkKey, chunkRequests) in chunkPlans {
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
-                    using: config
+                    using: config,
+                    with: cachedDirectPointFunctions?.biomeDensityFunctions ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
                 ) : nil
                 let terrainChunk = TerrainLODChunk(
                     key: chunkKey,
                     columns: chunkRequests.map {
                         materializedColumn(
                             from: $0,
-                            terrainDensity: directPointFunctionsBox.value.finalDensity,
+                            terrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
                             biomeChunk: biomeChunk
                         )
                     }
@@ -3190,6 +3252,18 @@ public final class WorldGenerator {
         } else {
             DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
                 var localResults: [TerrainLODChunkKey: TerrainLODChunk] = [:]
+                let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
+                do {
+                    cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                        ? try generatorBox.value.makeDirectPointSamplingDensityFunctionVariant(
+                            from: configBox.value,
+                            cacheMode: .preserveWorldScaleCaches
+                        )
+                        : nil
+                } catch {
+                    sharedResults.recordError(error)
+                    return
+                }
                 for planIndex in stride(from: workerIndex, to: chunkPlans.count, by: workerCount) {
                     if sharedResults.shouldAbort() {
                         break
@@ -3199,14 +3273,16 @@ public final class WorldGenerator {
                     do {
                         let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
                             at: PosInt2D(x: plan.0.x, z: plan.0.z),
-                            using: configBox.value
+                            using: configBox.value,
+                            with: cachedDirectPointFunctions?.biomeDensityFunctions
+                                ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
                         ) : nil
                         let terrainChunk = TerrainLODChunk(
                             key: plan.0,
                             columns: plan.1.map {
                                 materializedColumn(
                                     from: $0,
-                                    terrainDensity: directPointFunctionsBox.value.finalDensity,
+                                    terrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
                                     biomeChunk: biomeChunk
                                 )
                             }
@@ -3462,9 +3538,9 @@ public final class WorldGenerator {
         let generatorBox = UnsafeSendableBox(self)
         let configBox = UnsafeSendableBox(config)
         let sharedResults = SharedSampleSurfaceLODResults()
-        let directPointFunctionsBox = UnsafeSendableBox(
-            try self.validatedDirectPointSamplingDensityFunctions(for: "Surface LOD sampling")
-        )
+        let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "Surface LOD sampling")
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let needsCachedDirectPointFunctions = includeBiomes
         let roundedSurfaceHeight: @Sendable (Double, Int32) -> Int32 = { surfaceLevel, ratio in
             let rounded = Int64((surfaceLevel / Double(ratio)).rounded()) * Int64(ratio)
             let clampedUpperBound = Int64(worldMaxYExclusive) - 1
@@ -3539,19 +3615,21 @@ public final class WorldGenerator {
         }
 
         if workerCount == 1 {
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
             for (chunkKey, chunkRequests) in chunkPlans {
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
-                    using: config
+                    using: config,
+                    with: cachedDirectPointFunctions?.biomeDensityFunctions ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
                 ) : nil
                 let terrainChunk = TerrainSurfaceLODChunk(
                     key: chunkKey,
                     cells: chunkRequests.map {
                         materializedCell(
                             from: $0,
-                            finalTerrainDensity: directPointFunctionsBox.value.finalDensity,
-                            preliminarySurfaceLevel: directPointFunctionsBox.value.preliminarySurfaceLevel,
-                            initialDensityWithoutJaggedness: directPointFunctionsBox.value.initialDensityWithoutJaggedness,
+                            finalTerrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
+                            preliminarySurfaceLevel: statelessDirectPointFunctionsBox.value.preliminarySurfaceLevel,
+                            initialDensityWithoutJaggedness: statelessDirectPointFunctionsBox.value.initialDensityWithoutJaggedness,
                             biomeChunk: biomeChunk
                         )
                     }
@@ -3563,6 +3641,18 @@ public final class WorldGenerator {
         } else {
             DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
                 var localResults: [TerrainLODChunkKey: TerrainSurfaceLODChunk] = [:]
+                let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
+                do {
+                    cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                        ? try generatorBox.value.makeDirectPointSamplingDensityFunctionVariant(
+                            from: configBox.value,
+                            cacheMode: .preserveWorldScaleCaches
+                        )
+                        : nil
+                } catch {
+                    sharedResults.recordError(error)
+                    return
+                }
                 for planIndex in stride(from: workerIndex, to: chunkPlans.count, by: workerCount) {
                     if sharedResults.shouldAbort() {
                         break
@@ -3572,16 +3662,18 @@ public final class WorldGenerator {
                     do {
                         let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
                             at: PosInt2D(x: plan.0.x, z: plan.0.z),
-                            using: configBox.value
+                            using: configBox.value,
+                            with: cachedDirectPointFunctions?.biomeDensityFunctions
+                                ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
                         ) : nil
                         let terrainChunk = TerrainSurfaceLODChunk(
                             key: plan.0,
                             cells: plan.1.map {
                                 materializedCell(
                                     from: $0,
-                                    finalTerrainDensity: directPointFunctionsBox.value.finalDensity,
-                                    preliminarySurfaceLevel: directPointFunctionsBox.value.preliminarySurfaceLevel,
-                                    initialDensityWithoutJaggedness: directPointFunctionsBox.value.initialDensityWithoutJaggedness,
+                                    finalTerrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
+                                    preliminarySurfaceLevel: statelessDirectPointFunctionsBox.value.preliminarySurfaceLevel,
+                                    initialDensityWithoutJaggedness: statelessDirectPointFunctionsBox.value.initialDensityWithoutJaggedness,
                                     biomeChunk: biomeChunk
                                 )
                             }
