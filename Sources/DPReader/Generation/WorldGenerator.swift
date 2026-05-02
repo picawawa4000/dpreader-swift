@@ -4019,6 +4019,353 @@ public final class WorldGenerator {
         )
     }
 
+    /// Streams terrain surface LOD chunks in an adaptive block-radius around an origin.
+    /// Unlike `sampleSurfaceLOD`, this method does not retain streamed chunks after invoking `streamer`.
+    /// The `streamer` closure is invoked synchronously on the internal sampling threads.
+    /// When `threadCount` is greater than 1, calls may happen concurrently and out of chunk order.
+    /// The closure does not need to be asynchronous, but it must be thread-safe and should hand work off internally
+    /// if it needs asynchronous or blocking downstream processing.
+    public func streamSurfaceLOD(
+        from origin: PosInt3D,
+        radius: Int32,
+        startingRadius: Int32 = 0,
+        radiusStep: Int32 = 1,
+        maxCellSizePower: Int = 0,
+        threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil,
+        streamer: @escaping @Sendable (TerrainSurfaceLODChunk, Int32, Int32) -> Void
+    ) throws {
+        precondition(radius >= 0, "radius must be non-negative")
+        precondition(startingRadius >= 0, "startingRadius must be non-negative")
+        precondition(radiusStep > 0, "radiusStep must be positive")
+        precondition(maxCellSizePower >= 0, "maxCellSizePower must be non-negative")
+        precondition(threadCount > 0, "threadCount must be positive")
+
+        let config = try self.validatedTerrainConfig(for: "Surface LOD streaming")
+        let baseCellSize = lodCellBlockCount(fromNoiseSize: config.sizeHorizontal)
+        let worldMinY = Int32(config.minY)
+        let worldMaxYExclusive = worldMinY + Int32(config.height)
+
+        let requestedMinX = clampToInt32(Int64(origin.x) - Int64(radius))
+        let requestedMaxXExclusive = clampToInt32(Int64(origin.x) + Int64(radius) + 1)
+        let requestedMinZ = clampToInt32(Int64(origin.z) - Int64(radius))
+        let requestedMaxZExclusive = clampToInt32(Int64(origin.z) + Int64(radius) + 1)
+
+        struct CellRequest {
+            let x: Int32
+            let z: Int32
+            let cellSize: Int32
+            let sampleX: Int32
+            let sampleZ: Int32
+            let chunkKey: TerrainLODChunkKey
+        }
+
+        func chunkKey(forSampleX x: Int32, z: Int32) -> TerrainLODChunkKey {
+            return TerrainLODChunkKey(
+                x: floorDiv(x, by: Int32(ProtoChunk.sideLength)),
+                z: floorDiv(z, by: Int32(ProtoChunk.sideLength))
+            )
+        }
+
+        func chebyshevDistance(fromX x: Int32, z: Int32) -> Int32 {
+            let dx = abs(Int64(x) - Int64(origin.x))
+            let dz = abs(Int64(z) - Int64(origin.z))
+            return clampToInt32(max(dx, dz))
+        }
+
+        var requests: [CellRequest] = []
+        let effectiveStartingRadius = min(startingRadius, radius + 1)
+        if effectiveStartingRadius > 0 {
+            var z = requestedMinZ
+            while z < requestedMaxZExclusive {
+                var x = requestedMinX
+                while x < requestedMaxXExclusive {
+                    if chebyshevDistance(fromX: x, z: z) < effectiveStartingRadius {
+                        requests.append(
+                            CellRequest(
+                                x: x,
+                                z: z,
+                                cellSize: 1,
+                                sampleX: x,
+                                sampleZ: z,
+                                chunkKey: chunkKey(forSampleX: x, z: z)
+                            )
+                        )
+                    }
+                    x = clampToInt32(Int64(x) + 1)
+                }
+                z = clampToInt32(Int64(z) + 1)
+            }
+        }
+
+        var bandIndex = 0
+        var bandMin = effectiveStartingRadius
+        while bandMin <= radius {
+            let nextBandMin = clampToInt32(Int64(effectiveStartingRadius) + Int64(bandIndex + 1) * Int64(radiusStep))
+            let bandMaxExclusive = min(radius + 1, nextBandMin)
+            let cellSize = self.terrainCellSize(
+                fromBaseCellSize: baseCellSize,
+                power: min(bandIndex, maxCellSizePower)
+            )
+
+            var z = self.firstAlignedLODCoordinate(atOrAbove: requestedMinZ, relativeTo: origin.z, spacing: cellSize)
+            while z < requestedMaxZExclusive {
+                var x = self.firstAlignedLODCoordinate(atOrAbove: requestedMinX, relativeTo: origin.x, spacing: cellSize)
+                while x < requestedMaxXExclusive {
+                    let distance = chebyshevDistance(fromX: x, z: z)
+                    if distance >= bandMin && distance < bandMaxExclusive {
+                        let cellWidth = min(cellSize, requestedMaxXExclusive - x)
+                        let cellDepth = min(cellSize, requestedMaxZExclusive - z)
+                        requests.append(
+                            CellRequest(
+                                x: x,
+                                z: z,
+                                cellSize: cellSize,
+                                sampleX: self.lodMidpoint(start: x, size: cellWidth),
+                                sampleZ: self.lodMidpoint(start: z, size: cellDepth),
+                                chunkKey: chunkKey(
+                                    forSampleX: self.lodMidpoint(start: x, size: cellWidth),
+                                    z: self.lodMidpoint(start: z, size: cellDepth)
+                                )
+                            )
+                        )
+                    }
+                    x = clampToInt32(Int64(x) + Int64(cellSize))
+                }
+                z = clampToInt32(Int64(z) + Int64(cellSize))
+            }
+
+            guard bandMaxExclusive > bandMin else {
+                break
+            }
+            bandIndex += 1
+            bandMin = bandMaxExclusive
+        }
+
+        let needsCoarseSurfaceSampling = requests.contains { $0.cellSize > 1 }
+        if needsCoarseSurfaceSampling
+            && config.noiseRouter.preliminarySurfaceLevel == nil
+            && config.noiseRouter.initialDensityWithoutJaggedness == nil
+        {
+            throw WorldGenerationErrors.noSurfaceDensityInNoiseRouter
+        }
+
+        var requestsByChunk: [TerrainLODChunkKey: [CellRequest]] = [:]
+        for request in requests {
+            requestsByChunk[request.chunkKey, default: []].append(request)
+        }
+        let sortedChunkKeys = requestsByChunk.keys.sorted { left, right in
+            if left.z != right.z {
+                return left.z < right.z
+            }
+            return left.x < right.x
+        }
+
+        let chunkPlans: [(TerrainLODChunkKey, [CellRequest])] = sortedChunkKeys.map { key in
+            let chunkRequests = (requestsByChunk[key] ?? []).sorted { left, right in
+                if left.z != right.z {
+                    return left.z < right.z
+                }
+                if left.x != right.x {
+                    return left.x < right.x
+                }
+                return left.cellSize < right.cellSize
+            }
+            return (key, chunkRequests)
+        }
+
+        let includeBiomes = self.configuredChunkBiomeSampler() != nil
+        let workerCount = max(1, min(threadCount, max(1, chunkPlans.count)))
+        let progressReporter = SharedTerrainLODProgressReporter(
+            totalChunkCount: chunkPlans.count,
+            totalSampleCount: requests.count,
+            handler: progressHandler
+        )
+        progressReporter.reportInitialProgress()
+
+        final class UnsafeSendableBox<Value>: @unchecked Sendable {
+            let value: Value
+
+            init(_ value: Value) {
+                self.value = value
+            }
+        }
+        final class SharedSurfaceLODStreamingState: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var firstError: Error?
+
+            func shouldAbort() -> Bool {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.firstError != nil
+            }
+
+            func recordError(_ error: Error) {
+                self.lock.lock()
+                if self.firstError == nil {
+                    self.firstError = error
+                }
+                self.lock.unlock()
+            }
+        }
+
+        let generatorBox = UnsafeSendableBox(self)
+        let configBox = UnsafeSendableBox(config)
+        let streamingState = SharedSurfaceLODStreamingState()
+        let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "Surface LOD streaming")
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let needsCachedDirectPointFunctions = includeBiomes
+        let roundedSurfaceHeight: @Sendable (Double, Int32) -> Int32 = { surfaceLevel, ratio in
+            let rounded = Int64((surfaceLevel / Double(ratio)).rounded()) * Int64(ratio)
+            let clampedUpperBound = Int64(worldMaxYExclusive) - 1
+            return clampToInt32(min(max(Int64(worldMinY), rounded), clampedUpperBound))
+        }
+        let scannedSurfaceY: @Sendable (any DensityFunction, Int32, Int32, Int32) -> Int32? = { density, x, z, step in
+            var y = worldMaxYExclusive - 1
+            while y >= worldMinY {
+                if density.sample(at: PosInt3D(x: x, y: y, z: z)) > 0.0 {
+                    return y
+                }
+
+                let nextY = Int64(y) - Int64(step)
+                if nextY < Int64(Int32.min) {
+                    break
+                }
+                y = Int32(nextY)
+            }
+            return nil
+        }
+
+        @Sendable func materializedCell(
+            from request: CellRequest,
+            finalTerrainDensity: any DensityFunction,
+            preliminarySurfaceLevel: (any DensityFunction)?,
+            initialDensityWithoutJaggedness: (any DensityFunction)?,
+            biomeChunk: ProtoChunk?
+        ) -> TerrainSurfaceLODCell {
+            let surfaceY: Int32?
+            if request.cellSize == 1 {
+                surfaceY = scannedSurfaceY(finalTerrainDensity, request.sampleX, request.sampleZ, 1)
+            } else if let preliminarySurfaceLevel {
+                let sampledSurfaceLevel = preliminarySurfaceLevel.sample(
+                    at: PosInt3D(x: request.sampleX, y: 0, z: request.sampleZ)
+                )
+                surfaceY = roundedSurfaceHeight(sampledSurfaceLevel, request.cellSize)
+            } else if let initialDensityWithoutJaggedness,
+                let approximateSurfaceY = scannedSurfaceY(
+                    initialDensityWithoutJaggedness,
+                    request.sampleX,
+                    request.sampleZ,
+                    request.cellSize
+                )
+            {
+                surfaceY = roundedSurfaceHeight(Double(approximateSurfaceY), request.cellSize)
+            } else {
+                surfaceY = nil
+            }
+
+            let surfaceBiome: RegistryKey<Biome>?
+            if let biomeChunk, let surfaceY {
+                let chunkOriginX = request.chunkKey.x * Int32(ProtoChunk.sideLength)
+                let chunkOriginZ = request.chunkKey.z * Int32(ProtoChunk.sideLength)
+                surfaceBiome = biomeChunk.biome(
+                    atLocal: PosInt3D(
+                        x: request.sampleX - chunkOriginX,
+                        y: surfaceY - worldMinY,
+                        z: request.sampleZ - chunkOriginZ
+                    )
+                )
+            } else {
+                surfaceBiome = nil
+            }
+
+            return TerrainSurfaceLODCell(
+                x: request.x,
+                z: request.z,
+                cellSize: request.cellSize,
+                surfaceY: surfaceY,
+                surfaceBiome: surfaceBiome
+            )
+        }
+
+        if workerCount == 1 {
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
+            for (chunkKey, chunkRequests) in chunkPlans {
+                let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
+                    at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
+                    using: config,
+                    with: cachedDirectPointFunctions?.biomeDensityFunctions ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
+                ) : nil
+                let terrainChunk = TerrainSurfaceLODChunk(
+                    key: chunkKey,
+                    cells: chunkRequests.map {
+                        materializedCell(
+                            from: $0,
+                            finalTerrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
+                            preliminarySurfaceLevel: statelessDirectPointFunctionsBox.value.preliminarySurfaceLevel,
+                            initialDensityWithoutJaggedness: statelessDirectPointFunctionsBox.value.initialDensityWithoutJaggedness,
+                            biomeChunk: biomeChunk
+                        )
+                    }
+                )
+                streamer(terrainChunk, worldMinY, worldMaxYExclusive)
+                progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
+            }
+        } else {
+            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+                let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
+                do {
+                    cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                        ? try generatorBox.value.makeDirectPointSamplingDensityFunctionVariant(
+                            from: configBox.value,
+                            cacheMode: .preserveWorldScaleCaches
+                        )
+                        : nil
+                } catch {
+                    streamingState.recordError(error)
+                    return
+                }
+
+                for planIndex in stride(from: workerIndex, to: chunkPlans.count, by: workerCount) {
+                    if streamingState.shouldAbort() {
+                        break
+                    }
+
+                    let plan = chunkPlans[planIndex]
+                    do {
+                        let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
+                            at: PosInt2D(x: plan.0.x, z: plan.0.z),
+                            using: configBox.value,
+                            with: cachedDirectPointFunctions?.biomeDensityFunctions
+                                ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
+                        ) : nil
+                        let terrainChunk = TerrainSurfaceLODChunk(
+                            key: plan.0,
+                            cells: plan.1.map {
+                                materializedCell(
+                                    from: $0,
+                                    finalTerrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
+                                    preliminarySurfaceLevel: statelessDirectPointFunctionsBox.value.preliminarySurfaceLevel,
+                                    initialDensityWithoutJaggedness: statelessDirectPointFunctionsBox.value.initialDensityWithoutJaggedness,
+                                    biomeChunk: biomeChunk
+                                )
+                            }
+                        )
+                        streamer(terrainChunk, worldMinY, worldMaxYExclusive)
+                        progressReporter.reportCompletedChunk(plan.0, sampleCount: plan.1.count)
+                    } catch {
+                        streamingState.recordError(error)
+                        break
+                    }
+                }
+            }
+        }
+
+        if let firstError = streamingState.firstError {
+            throw firstError
+        }
+    }
+
     // Currently visible for testing only.
     func getBakedNoiseOrThrow(at key: RegistryKey<DoublePerlinNoise>) throws -> DoublePerlinNoise {
         guard let ret = self.registries.bakedNoiseRegistry.get(key) else {

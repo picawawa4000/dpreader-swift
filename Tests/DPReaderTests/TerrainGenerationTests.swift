@@ -737,6 +737,59 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
     #expect(streamedRanges.values.allSatisfy { $0.0 == sampled.minY && $0.1 == sampled.maxYExclusive })
 }
 
+@Test func testStreamSurfaceLODMatchesSampleSurfaceLODChunks() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:surface_lod_streaming")
+    pack.noiseSettingsRegistry.register(
+        makeSurfaceNoiseSettings(
+            minY: 0,
+            height: 16,
+            finalDensity: YClampedGradient(fromY: 0, toY: 15, fromValue: 1.0, toValue: -1.0),
+            preliminarySurfaceLevel: ConstantDensityFunction(value: 10.0)
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 10,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+
+    let streamedChunks = LockedArray<TerrainSurfaceLODChunk>()
+    let streamedRanges = LockedArray<(Int32, Int32)>()
+    try worldGenerator.streamSurfaceLOD(
+        from: PosInt3D(x: 0, y: 0, z: 0),
+        radius: 3,
+        startingRadius: 2,
+        radiusStep: 4,
+        maxCellSizePower: 0,
+        threadCount: 2,
+        streamer: { chunk, minY, maxYExclusive in
+            streamedChunks.append(chunk)
+            streamedRanges.append((minY, maxYExclusive))
+        }
+    )
+
+    let sampled = try worldGenerator.sampleSurfaceLOD(
+        from: PosInt3D(x: 0, y: 0, z: 0),
+        radius: 3,
+        startingRadius: 2,
+        radiusStep: 4,
+        maxCellSizePower: 0,
+        threadCount: 2
+    )
+
+    let sortedStreamedChunks = streamedChunks.values.sorted { left, right in
+        if left.key.z != right.key.z {
+            return left.key.z < right.key.z
+        }
+        return left.key.x < right.key.x
+    }
+    #expect(sortedStreamedChunks == sampled.chunks)
+    #expect(streamedRanges.values.allSatisfy { $0.0 == sampled.minY && $0.1 == sampled.maxYExclusive })
+}
+
 @Test func testSampleSurfaceLODReportsProgress() async throws {
     let pack = try loadNoiseSettingsPack()
     let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:surface_lod_progress")
