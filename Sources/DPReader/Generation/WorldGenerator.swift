@@ -3334,6 +3334,301 @@ public final class WorldGenerator {
         )
     }
 
+    /// Streams terrain LOD chunks in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.
+    /// Unlike `sampleLOD`, this method does not retain streamed chunks after invoking `streamer`.
+    /// The `streamer` closure is invoked synchronously on the internal sampling threads.
+    /// When `threadCount` is greater than 1, calls may happen concurrently and out of chunk order.
+    /// The closure does not need to be asynchronous, but it must be thread-safe and should hand work off internally
+    /// if it needs asynchronous or blocking downstream processing.
+    public func streamLOD(
+        from origin: PosInt3D,
+        radius: Int32,
+        startingRadius: Int32 = 0,
+        radiusStep: Int32 = 1,
+        maxCellSizePower: Int = 0,
+        threadCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        payloads: TerrainLODPayloadOptions = [.biome],
+        progressHandler: (@Sendable (TerrainLODProgress) -> Void)? = nil,
+        streamer: @escaping @Sendable (TerrainLODChunk, Int32, Int32) -> Void
+    ) throws {
+        precondition(radius >= 0, "radius must be non-negative")
+        precondition(startingRadius >= 0, "startingRadius must be non-negative")
+        precondition(radiusStep > 0, "radiusStep must be positive")
+        precondition(maxCellSizePower >= 0, "maxCellSizePower must be non-negative")
+        precondition(threadCount > 0, "threadCount must be positive")
+
+        let config = try self.validatedTerrainConfig(for: "LOD streaming")
+        let baseCellSize = lodCellBlockCount(fromNoiseSize: config.sizeHorizontal)
+        let worldMinY = Int32(config.minY)
+        let worldMaxYExclusive = worldMinY + Int32(config.height)
+
+        struct ColumnRequest {
+            let x: Int32
+            let z: Int32
+            let cellSize: Int32
+            let sampleX: Int32
+            let sampleZ: Int32
+            let chunkKey: TerrainLODChunkKey
+        }
+
+        func chunkKey(forSampleX x: Int32, z: Int32) -> TerrainLODChunkKey {
+            return TerrainLODChunkKey(
+                x: floorDiv(x, by: Int32(ProtoChunk.sideLength)),
+                z: floorDiv(z, by: Int32(ProtoChunk.sideLength))
+            )
+        }
+
+        func chebyshevDistance(fromX x: Int32, z: Int32) -> Int32 {
+            let dx = abs(Int64(x) - Int64(origin.x))
+            let dz = abs(Int64(z) - Int64(origin.z))
+            return clampToInt32(max(dx, dz))
+        }
+
+        let requestedMinX = clampToInt32(Int64(origin.x) - Int64(radius))
+        let requestedMaxXExclusive = clampToInt32(Int64(origin.x) + Int64(radius) + 1)
+        let requestedMinZ = clampToInt32(Int64(origin.z) - Int64(radius))
+        let requestedMaxZExclusive = clampToInt32(Int64(origin.z) + Int64(radius) + 1)
+
+        var requests: [ColumnRequest] = []
+        let effectiveStartingRadius = min(startingRadius, radius + 1)
+        var bandIndex = 0
+        var bandMin = effectiveStartingRadius
+        while bandMin <= radius {
+            let nextBandMin = clampToInt32(Int64(effectiveStartingRadius) + Int64(bandIndex + 1) * Int64(radiusStep))
+            let bandMaxExclusive = min(radius + 1, nextBandMin)
+            let cellSize = self.terrainCellSize(
+                fromBaseCellSize: baseCellSize,
+                power: min(bandIndex, maxCellSizePower)
+            )
+
+            var z = self.firstAlignedLODCoordinate(atOrAbove: requestedMinZ, relativeTo: origin.z, spacing: cellSize)
+            while z < requestedMaxZExclusive {
+                var x = self.firstAlignedLODCoordinate(atOrAbove: requestedMinX, relativeTo: origin.x, spacing: cellSize)
+                while x < requestedMaxXExclusive {
+                    let distance = chebyshevDistance(fromX: x, z: z)
+                    if distance >= bandMin && distance < bandMaxExclusive {
+                        let sampleX = self.lodMidpoint(start: x, size: min(cellSize, requestedMaxXExclusive - x))
+                        let sampleZ = self.lodMidpoint(start: z, size: min(cellSize, requestedMaxZExclusive - z))
+                        requests.append(
+                            ColumnRequest(
+                                x: x,
+                                z: z,
+                                cellSize: cellSize,
+                                sampleX: sampleX,
+                                sampleZ: sampleZ,
+                                chunkKey: chunkKey(forSampleX: sampleX, z: sampleZ)
+                            )
+                        )
+                    }
+                    x = clampToInt32(Int64(x) + Int64(cellSize))
+                }
+                z = clampToInt32(Int64(z) + Int64(cellSize))
+            }
+
+            guard bandMaxExclusive > bandMin else {
+                break
+            }
+            bandIndex += 1
+            bandMin = bandMaxExclusive
+        }
+
+        var requestsByChunk: [TerrainLODChunkKey: [ColumnRequest]] = [:]
+        for request in requests {
+            requestsByChunk[request.chunkKey, default: []].append(request)
+        }
+        let sortedChunkKeys = requestsByChunk.keys.sorted { left, right in
+            if left.z != right.z {
+                return left.z < right.z
+            }
+            return left.x < right.x
+        }
+
+        let chunkPlans: [(TerrainLODChunkKey, [ColumnRequest])] = sortedChunkKeys.map { key in
+            let chunkRequests = (requestsByChunk[key] ?? []).sorted { left, right in
+                if left.z != right.z {
+                    return left.z < right.z
+                }
+                if left.x != right.x {
+                    return left.x < right.x
+                }
+                return left.cellSize < right.cellSize
+            }
+            return (key, chunkRequests)
+        }
+
+        let includeBiomes = payloads.contains(.biome)
+        let includeMaterial = payloads.contains(.material)
+        let workerCount = max(1, min(threadCount, max(1, chunkPlans.count)))
+        let progressReporter = SharedTerrainLODProgressReporter(
+            totalChunkCount: chunkPlans.count,
+            totalSampleCount: requests.count,
+            handler: progressHandler
+        )
+        progressReporter.reportInitialProgress()
+
+        final class UnsafeSendableBox<Value>: @unchecked Sendable {
+            let value: Value
+
+            init(_ value: Value) {
+                self.value = value
+            }
+        }
+        final class SharedLODStreamingState: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var firstError: Error?
+
+            func shouldAbort() -> Bool {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.firstError != nil
+            }
+
+            func recordError(_ error: Error) {
+                self.lock.lock()
+                if self.firstError == nil {
+                    self.firstError = error
+                }
+                self.lock.unlock()
+            }
+        }
+
+        let generatorBox = UnsafeSendableBox(self)
+        let configBox = UnsafeSendableBox(config)
+        let streamingState = SharedLODStreamingState()
+        let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "LOD streaming")
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let needsCachedDirectPointFunctions = includeBiomes
+        let midpoint: @Sendable (Int32, Int32) -> Int32 = { start, size in
+            clampToInt32(Int64(start) + Int64(size / 2))
+        }
+        let materialIDForSolid: @Sendable (Bool) -> String = { isSolid in
+            isSolid ? "minecraft:stone" : "minecraft:air"
+        }
+
+        @Sendable func materializedColumn(
+            from request: ColumnRequest,
+            terrainDensity: any DensityFunction,
+            biomeChunk: ProtoChunk?
+        ) -> TerrainLODColumn {
+            let chunkOriginX = request.chunkKey.x * Int32(ProtoChunk.sideLength)
+            let chunkOriginZ = request.chunkKey.z * Int32(ProtoChunk.sideLength)
+            let localSampleX = request.sampleX - chunkOriginX
+            let localSampleZ = request.sampleZ - chunkOriginZ
+
+            var samples: [Bool] = []
+            var samplePayloads: [TerrainLODSamplePayload]? = payloads.isEmpty ? nil : []
+            var bandStartY = worldMinY
+            while bandStartY < worldMaxYExclusive {
+                let bandHeight = min(request.cellSize, worldMaxYExclusive - bandStartY)
+                let sampleY = midpoint(bandStartY, bandHeight)
+                let samplePos = PosInt3D(
+                    x: request.sampleX,
+                    y: sampleY,
+                    z: request.sampleZ
+                )
+                let localSamplePos = PosInt3D(
+                    x: localSampleX,
+                    y: sampleY - worldMinY,
+                    z: localSampleZ
+                )
+                let isSolid = terrainDensity.sample(at: samplePos) > 0.0
+                samples.append(isSolid)
+
+                if samplePayloads != nil {
+                    samplePayloads!.append(
+                        TerrainLODSamplePayload(
+                            biome: includeBiomes ? biomeChunk?.biome(atLocal: localSamplePos) : nil,
+                            materialID: includeMaterial ? materialIDForSolid(isSolid) : nil
+                        )
+                    )
+                }
+
+                bandStartY = clampToInt32(Int64(bandStartY) + Int64(request.cellSize))
+            }
+
+            return TerrainLODColumn(
+                x: request.x,
+                z: request.z,
+                cellSize: request.cellSize,
+                samples: samples,
+                samplePayloads: samplePayloads
+            )
+        }
+
+        if workerCount == 1 {
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
+            for (chunkKey, chunkRequests) in chunkPlans {
+                let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
+                    at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
+                    using: config,
+                    with: cachedDirectPointFunctions?.biomeDensityFunctions ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
+                ) : nil
+                let terrainChunk = TerrainLODChunk(
+                    key: chunkKey,
+                    columns: chunkRequests.map {
+                        materializedColumn(
+                            from: $0,
+                            terrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
+                            biomeChunk: biomeChunk
+                        )
+                    }
+                )
+                streamer(terrainChunk, worldMinY, worldMaxYExclusive)
+                progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
+            }
+        } else {
+            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+                let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
+                do {
+                    cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                        ? try generatorBox.value.makeDirectPointSamplingDensityFunctionVariant(
+                            from: configBox.value,
+                            cacheMode: .preserveWorldScaleCaches
+                        )
+                        : nil
+                } catch {
+                    streamingState.recordError(error)
+                    return
+                }
+
+                for planIndex in stride(from: workerIndex, to: chunkPlans.count, by: workerCount) {
+                    if streamingState.shouldAbort() {
+                        break
+                    }
+
+                    let plan = chunkPlans[planIndex]
+                    do {
+                        let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
+                            at: PosInt2D(x: plan.0.x, z: plan.0.z),
+                            using: configBox.value,
+                            with: cachedDirectPointFunctions?.biomeDensityFunctions
+                                ?? statelessDirectPointFunctionsBox.value.biomeDensityFunctions
+                        ) : nil
+                        let terrainChunk = TerrainLODChunk(
+                            key: plan.0,
+                            columns: plan.1.map {
+                                materializedColumn(
+                                    from: $0,
+                                    terrainDensity: statelessDirectPointFunctionsBox.value.finalDensity,
+                                    biomeChunk: biomeChunk
+                                )
+                            }
+                        )
+                        streamer(terrainChunk, worldMinY, worldMaxYExclusive)
+                        progressReporter.reportCompletedChunk(plan.0, sampleCount: plan.1.count)
+                    } catch {
+                        streamingState.recordError(error)
+                        break
+                    }
+                }
+            }
+        }
+
+        if let firstError = streamingState.firstError {
+            throw firstError
+        }
+    }
+
     /// Samples terrain surfaces in an adaptive block-radius around an origin.
     /// Cells inside `startingRadius` are sampled at 1:1 block resolution using a full final-density surface scan.
     /// Farther rings reuse the same adaptive spacing as `sampleLOD`, but store one surface height and biome per 2D cell.

@@ -683,6 +683,60 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
     }
 }
 
+@Test func testStreamLODMatchesSampleLODChunks() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:lod_streaming")
+    pack.noiseSettingsRegistry.register(
+        makeNoiseSettings(
+            minY: -8,
+            height: 16,
+            finalDensity: ConstantDensityFunction(value: 1.0)
+        ),
+        forKey: settingsKey
+    )
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 9,
+        usingDataPacks: [pack],
+        usingSettings: settingsKey,
+        buildSearchTrees: false
+    )
+
+    let streamedChunks = LockedArray<TerrainLODChunk>()
+    let streamedRanges = LockedArray<(Int32, Int32)>()
+    try worldGenerator.streamLOD(
+        from: PosInt3D(x: 5, y: 1, z: -3),
+        radius: 9,
+        startingRadius: 4,
+        radiusStep: 2,
+        maxCellSizePower: 2,
+        threadCount: 2,
+        payloads: [.material],
+        streamer: { chunk, minY, maxYExclusive in
+            streamedChunks.append(chunk)
+            streamedRanges.append((minY, maxYExclusive))
+        }
+    )
+
+    let sampled = try worldGenerator.sampleLOD(
+        from: PosInt3D(x: 5, y: 1, z: -3),
+        radius: 9,
+        startingRadius: 4,
+        radiusStep: 2,
+        maxCellSizePower: 2,
+        threadCount: 2,
+        payloads: [.material]
+    )
+
+    let sortedStreamedChunks = streamedChunks.values.sorted { left, right in
+        if left.key.z != right.key.z {
+            return left.key.z < right.key.z
+        }
+        return left.key.x < right.key.x
+    }
+    #expect(sortedStreamedChunks == sampled.chunks)
+    #expect(streamedRanges.values.allSatisfy { $0.0 == sampled.minY && $0.1 == sampled.maxYExclusive })
+}
+
 @Test func testSampleSurfaceLODReportsProgress() async throws {
     let pack = try loadNoiseSettingsPack()
     let settingsKey = RegistryKey<NoiseSettings>(referencing: "test:surface_lod_progress")
