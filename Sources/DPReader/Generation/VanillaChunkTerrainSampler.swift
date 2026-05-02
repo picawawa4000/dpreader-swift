@@ -1659,11 +1659,11 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             if let cached = self.memo[key] {
                 return cached
             }
-            let baked = try function.bake(withBaker: self)
+            let baked = try self.bindDensityFunction(function)
             self.memo[key] = baked
             return baked
         }
-        return try function.bake(withBaker: self)
+        return try self.bindDensityFunction(function)
     }
 
     func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
@@ -1712,6 +1712,33 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
 
     func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise {
         return interpolatedNoise
+    }
+
+    private func bindDensityFunction(_ function: any DensityFunction) throws -> any DensityFunction {
+        if function is ConstantDensityFunction
+            || function is YClampedGradient
+            || function is BlendAlpha
+            || function is BlendOffset
+            || function is BeardifierMarker
+            || function is EndIslandsDensityFunction
+            || function is InterpolatedNoise
+            || function is ShiftDensityFunction
+            || function is NoiseDensityFunction
+        {
+            return function
+        }
+        if function is VanillaChunkInterpolatedCache
+            || function is VanillaChunkFlatCache
+            || function is VanillaChunkCache2D
+            || function is VanillaChunkCacheOnce
+            || function is VanillaChunkCellCache
+        {
+            return function
+        }
+        if let cacheMarker = function as? CacheMarker {
+            return try self.bake(cacheMarker: cacheMarker)
+        }
+        return try function.bake(withBaker: self)
     }
 
     private enum BakingErrors: Error {

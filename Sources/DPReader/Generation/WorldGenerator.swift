@@ -276,6 +276,22 @@ final class WorldScaleFlatCache: DensityFunction, DensityFunctionWrapperIntrospe
     return constant.constantValue == 0.0
 }
 
+private func sameDensityFunctionInstance(_ lhs: any DensityFunction, _ rhs: any DensityFunction) -> Bool {
+    guard type(of: lhs) is AnyObject.Type, type(of: rhs) is AnyObject.Type else { return false }
+    return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
+}
+
+private func sameSplineSegmentIdentity(_ lhs: SplineSegment, _ rhs: SplineSegment) -> Bool {
+    switch (lhs, rhs) {
+    case (.number(let left), .number(let right)):
+        return left == right
+    case (.object(let left), .object(let right)):
+        return ObjectIdentifier(left) == ObjectIdentifier(right)
+    default:
+        return false
+    }
+}
+
 @inline(__always) private func densityFunctionHasFlatCache(_ function: any DensityFunction) -> Bool {
     if function is WorldScaleFlatCache || function is ChunkFlatCache {
         return true
@@ -1106,11 +1122,11 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
             if let cached = self.memo[key] {
                 return cached
             }
-            let baked = withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: self.bounds)
+            let baked = withAutoAppliedFlatCache(try self.bindDensityFunction(function), bounds: self.bounds)
             self.memo[key] = baked
             return baked
         }
-        return withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: self.bounds)
+        return withAutoAppliedFlatCache(try self.bindDensityFunction(function), bounds: self.bounds)
     }
 
     func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
@@ -1123,6 +1139,168 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
 
     func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise {
         return interpolatedNoise
+    }
+
+    private func bindDensityFunction(_ function: any DensityFunction) throws -> any DensityFunction {
+        if function is ConstantDensityFunction
+            || function is YClampedGradient
+            || function is BlendAlpha
+            || function is BlendOffset
+            || function is BeardifierMarker
+            || function is EndIslandsDensityFunction
+            || function is InterpolatedNoise
+        {
+            return function
+        }
+        if function is ChunkFlatCache
+            || function is ChunkCache2D
+            || function is ChunkPositionCache
+            || function is ChunkInterpolatedCache
+        {
+            return function
+        }
+        if let cacheMarker = function as? CacheMarker {
+            return try self.bake(cacheMarker: cacheMarker)
+        }
+        if let unary = function as? UnaryDensityFunction {
+            let operand = try self.bakeDensityFunction(unary.inputOperand)
+            guard !sameDensityFunctionInstance(operand, unary.inputOperand) else {
+                return function
+            }
+            return UnaryDensityFunction(operand: operand, type: unary.operationType)
+        }
+        if let binary = function as? BinaryDensityFunction {
+            let first = try self.bakeDensityFunction(binary.firstOperand)
+            let second = try self.bakeDensityFunction(binary.secondOperand)
+            guard !sameDensityFunctionInstance(first, binary.firstOperand)
+                || !sameDensityFunctionInstance(second, binary.secondOperand)
+            else {
+                return function
+            }
+            return BinaryDensityFunction(firstOperand: first, secondOperand: second, type: binary.operationType)
+        }
+        if let clampFunction = function as? ClampDensityFunction {
+            let input = try self.bakeDensityFunction(clampFunction.clampedInput)
+            guard !sameDensityFunctionInstance(input, clampFunction.clampedInput) else {
+                return function
+            }
+            return ClampDensityFunction(
+                input: input,
+                lowerBound: clampFunction.minimumValue,
+                upperBound: clampFunction.maximumValue
+            )
+        }
+        if let rangeChoice = function as? RangeChoice {
+            let inputChoice = try self.bakeDensityFunction(rangeChoice.inputChoiceFunction)
+            let whenInRange = try self.bakeDensityFunction(rangeChoice.whenInRangeOutput)
+            let whenOutOfRange = try self.bakeDensityFunction(rangeChoice.whenOutOfRangeOutput)
+            guard !sameDensityFunctionInstance(inputChoice, rangeChoice.inputChoiceFunction)
+                || !sameDensityFunctionInstance(whenInRange, rangeChoice.whenInRangeOutput)
+                || !sameDensityFunctionInstance(whenOutOfRange, rangeChoice.whenOutOfRangeOutput)
+            else {
+                return function
+            }
+            return RangeChoice(
+                inputChoice: inputChoice,
+                minInclusive: rangeChoice.minimumInclusive,
+                maxExclusive: rangeChoice.maximumExclusive,
+                whenInRange: whenInRange,
+                whenOutOfRange: whenOutOfRange
+            )
+        }
+        if let shiftedNoise = function as? ShiftedNoise {
+            let shiftX = try self.bakeDensityFunction(shiftedNoise.shiftXFunction)
+            let shiftY = try self.bakeDensityFunction(shiftedNoise.shiftYFunction)
+            let shiftZ = try self.bakeDensityFunction(shiftedNoise.shiftZFunction)
+            guard !sameDensityFunctionInstance(shiftX, shiftedNoise.shiftXFunction)
+                || !sameDensityFunctionInstance(shiftY, shiftedNoise.shiftYFunction)
+                || !sameDensityFunctionInstance(shiftZ, shiftedNoise.shiftZFunction)
+            else {
+                return function
+            }
+            return ShiftedNoise(
+                noise: shiftedNoise.noiseSampler,
+                shiftX: shiftX,
+                shiftY: shiftY,
+                shiftZ: shiftZ,
+                scaleXZ: shiftedNoise.xzScaleValue,
+                scaleY: shiftedNoise.yScaleValue
+            )
+        }
+        if let blendDensity = function as? BlendDensity {
+            let argument = try self.bakeDensityFunction(blendDensity.argumentFunction)
+            guard !sameDensityFunctionInstance(argument, blendDensity.argumentFunction) else {
+                return function
+            }
+            return BlendDensity(wrapping: argument)
+        }
+        if let weirdScaledSampler = function as? WeirdScaledSampler {
+            let input = try self.bakeDensityFunction(weirdScaledSampler.inputFunction)
+            guard !sameDensityFunctionInstance(input, weirdScaledSampler.inputFunction) else {
+                return function
+            }
+            return WeirdScaledSampler(
+                type: weirdScaledSampler.scalingType,
+                withInput: input,
+                withNoise: weirdScaledSampler.noiseSampler
+            )
+        }
+        if let splineDensity = function as? SplineDensityFunction {
+            let segment = try self.bindSplineSegment(splineDensity.splineSegment)
+            guard !sameSplineSegmentIdentity(segment, splineDensity.splineSegment) else {
+                return function
+            }
+            return SplineDensityFunction(withSpline: segment)
+        }
+        if let topSurface = function as? FindTopSurface {
+            let density = try self.bakeDensityFunction(topSurface.densityFunction)
+            let upperBound = try self.bakeDensityFunction(topSurface.upperBoundFunction)
+            guard !sameDensityFunctionInstance(density, topSurface.densityFunction)
+                || !sameDensityFunctionInstance(upperBound, topSurface.upperBoundFunction)
+            else {
+                return function
+            }
+            return FindTopSurface(
+                density: density,
+                upperBound: upperBound,
+                lowerBound: topSurface.lowerBoundHeight,
+                cellHeight: topSurface.cellHeightValue
+            )
+        }
+        if function is ShiftDensityFunction || function is NoiseDensityFunction {
+            return function
+        }
+        return try function.bake(withBaker: self)
+    }
+
+    private func bindSplineSegment(_ segment: SplineSegment) throws -> SplineSegment {
+        switch segment {
+        case .number:
+            return segment
+        case .object(let object):
+            let input = try self.bakeDensityFunction(object.inputFunction)
+            var didChange = !sameDensityFunctionInstance(input, object.inputFunction)
+            var values: [SplineSegment] = []
+            values.reserveCapacity(object.pointValues.count)
+            for value in object.pointValues {
+                let boundValue = try self.bindSplineSegment(value)
+                if !sameSplineSegmentIdentity(boundValue, value) {
+                    didChange = true
+                }
+                values.append(boundValue)
+            }
+            guard didChange else {
+                return segment
+            }
+            return .object(
+                SplineObject(
+                    withInput: input,
+                    locations: object.pointLocations,
+                    values: values,
+                    derivatives: object.pointDerivatives
+                )
+            )
+        }
     }
 
     private enum BakingErrors: Error {
@@ -1561,6 +1739,13 @@ private struct ChunkGenerationDensityFunctions {
     let biomeDensityFunctions: ChunkBiomeDensityFunctions
 }
 
+private struct DirectPointSamplingDensityFunctions {
+    let finalDensity: any DensityFunction
+    let preliminarySurfaceLevel: (any DensityFunction)?
+    let initialDensityWithoutJaggedness: (any DensityFunction)?
+    let biomeDensityFunctions: ChunkBiomeDensityFunctions
+}
+
 enum ChunkBiomeGenerationMode {
     case quartOnly
     case blockOnly
@@ -1711,6 +1896,7 @@ public final class WorldGenerator {
     private var registries = WorldGenerationRegistries()
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
     private var endBiomeDimensions = Set<RegistryKey<Dimension>>()
+    private var directPointSamplingDensityFunctions: DirectPointSamplingDensityFunctions?
     // Terrain generation walks a shared baked density-function graph composed of reference types.
     // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
     private let terrainGenerationLock = NSLock()
@@ -1848,6 +2034,7 @@ public final class WorldGenerator {
 
         if self.config != nil {
             self.config = self.config!.with(noiseRouter: try self.config!.noiseRouter.bakeAll(withBaker: baker))
+            self.directPointSamplingDensityFunctions = self.makeDirectPointSamplingDensityFunctions(from: self.config!)
         }
     }
 
@@ -1938,6 +2125,44 @@ public final class WorldGenerator {
         return config
     }
 
+    private func validatedDirectPointSamplingDensityFunctions(
+        for operation: String
+    ) throws -> DirectPointSamplingDensityFunctions {
+        guard let functions = self.directPointSamplingDensityFunctions else {
+            throw WorldGenerationErrors.noiseSettingsNotPresent("\(operation) requires a configured noise settings entry.")
+        }
+        return functions
+    }
+
+    private func makeDirectPointSamplingDensityFunctions(
+        from config: NoiseSettings
+    ) -> DirectPointSamplingDensityFunctions {
+        let sampler = VanillaChunkTerrainSampler(
+            chunkPos: PosInt2D(x: 0, z: 0),
+            minY: Int32(config.minY),
+            height: Int32(config.height),
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+        return DirectPointSamplingDensityFunctions(
+            finalDensity: sampler.makeDirectPointSamplingTerrainDensity(from: config.noiseRouter.finalDensity),
+            preliminarySurfaceLevel: config.noiseRouter.preliminarySurfaceLevel.map {
+                sampler.makeDirectPointSamplingFunction(from: $0)
+            },
+            initialDensityWithoutJaggedness: config.noiseRouter.initialDensityWithoutJaggedness.map {
+                sampler.makeDirectPointSamplingFunction(from: $0)
+            },
+            biomeDensityFunctions: ChunkBiomeDensityFunctions(
+                temperature: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.temperature),
+                humidity: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.humidity),
+                continentalness: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.continents),
+                erosion: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.erosion),
+                weirdness: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.weirdness),
+                depth: sampler.makeDirectPointSamplingFunction(from: config.noiseRouter.depth)
+            )
+        )
+    }
+
     private func bakeChunkGenerationDensityFunctions(
         from noiseRouter: NoiseRouter,
         with chunkSampler: VanillaChunkTerrainSampler,
@@ -2020,14 +2245,9 @@ public final class WorldGenerator {
         try chunk.configure(minY: minY, height: height)
 
         if let biomeSampler = self.configuredChunkBiomeSampler() {
-            let biomeDensityFunctions = try self.bakeChunkBiomeDensityFunctions(
-                from: config.noiseRouter,
-                chunkPos: chunkPos,
-                minY: minY,
-                height: height,
-                sizeHorizontal: config.sizeHorizontal,
-                sizeVertical: config.sizeVertical
-            )
+            let biomeDensityFunctions = try self.validatedDirectPointSamplingDensityFunctions(
+                for: "LOD biome sampling"
+            ).biomeDensityFunctions
             switch biomeSampler {
             case .searchTree(let searchTree):
                 self.generateBiomesIntoChunk(
@@ -2711,23 +2931,9 @@ public final class WorldGenerator {
 
     // Currently visible for testing only.
     func sampleFinalDensity(at pos: PosInt3D) throws -> Double {
-        let config = try self.validatedTerrainConfig(for: "Final density sampling")
-
-        let minY = Int32(config.minY)
-        let height = Int32(config.height)
-        let chunkPos = PosInt2D(
-            x: floorDiv(pos.x, by: Int32(ProtoChunk.sideLength)),
-            z: floorDiv(pos.z, by: Int32(ProtoChunk.sideLength))
-        )
-        let chunkSampler = VanillaChunkTerrainSampler(
-            chunkPos: chunkPos,
-            minY: minY,
-            height: height,
-            sizeHorizontal: config.sizeHorizontal,
-            sizeVertical: config.sizeVertical
-        )
-        let finalDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
-        return finalDensity.sample(at: pos)
+        return try self.validatedDirectPointSamplingDensityFunctions(
+            for: "Final density sampling"
+        ).finalDensity.sample(at: pos)
     }
 
     /// Samples terrain in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.
@@ -2901,6 +3107,9 @@ public final class WorldGenerator {
         let generatorBox = UnsafeSendableBox(self)
         let configBox = UnsafeSendableBox(config)
         let sharedResults = SharedSampleLODResults()
+        let directPointFunctionsBox = UnsafeSendableBox(
+            try self.validatedDirectPointSamplingDensityFunctions(for: "LOD sampling")
+        )
         let midpoint: @Sendable (Int32, Int32) -> Int32 = { start, size in
             clampToInt32(Int64(start) + Int64(size / 2))
         }
@@ -2960,15 +3169,6 @@ public final class WorldGenerator {
 
         if workerCount == 1 {
             for (chunkKey, chunkRequests) in chunkPlans {
-                let chunkSampler = VanillaChunkTerrainSampler(
-                    chunkPos: PosInt2D(x: chunkKey.x, z: chunkKey.z),
-                    minY: worldMinY,
-                    height: Int32(config.height),
-                    sizeHorizontal: config.sizeHorizontal,
-                    sizeVertical: config.sizeVertical
-                )
-                let bakedTerrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
-                let directTerrainDensity = chunkSampler.makeDirectPointSamplingTerrainDensity(from: bakedTerrainDensity)
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
                     using: config
@@ -2976,7 +3176,11 @@ public final class WorldGenerator {
                 let terrainChunk = TerrainLODChunk(
                     key: chunkKey,
                     columns: chunkRequests.map {
-                        materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
+                        materializedColumn(
+                            from: $0,
+                            terrainDensity: directPointFunctionsBox.value.finalDensity,
+                            biomeChunk: biomeChunk
+                        )
                     }
                 )
                 chunkHandler?(terrainChunk, worldMinY, worldMaxYExclusive)
@@ -2993,15 +3197,6 @@ public final class WorldGenerator {
 
                     let plan = chunkPlans[planIndex]
                     do {
-                        let chunkSampler = VanillaChunkTerrainSampler(
-                            chunkPos: PosInt2D(x: plan.0.x, z: plan.0.z),
-                            minY: worldMinY,
-                            height: Int32(configBox.value.height),
-                            sizeHorizontal: configBox.value.sizeHorizontal,
-                            sizeVertical: configBox.value.sizeVertical
-                        )
-                        let bakedTerrainDensity = try chunkSampler.bakeDensityFunction(configBox.value.noiseRouter.finalDensity)
-                        let directTerrainDensity = chunkSampler.makeDirectPointSamplingTerrainDensity(from: bakedTerrainDensity)
                         let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
                             at: PosInt2D(x: plan.0.x, z: plan.0.z),
                             using: configBox.value
@@ -3009,7 +3204,11 @@ public final class WorldGenerator {
                         let terrainChunk = TerrainLODChunk(
                             key: plan.0,
                             columns: plan.1.map {
-                                materializedColumn(from: $0, terrainDensity: directTerrainDensity, biomeChunk: biomeChunk)
+                                materializedColumn(
+                                    from: $0,
+                                    terrainDensity: directPointFunctionsBox.value.finalDensity,
+                                    biomeChunk: biomeChunk
+                                )
                             }
                         )
                         chunkHandler?(terrainChunk, worldMinY, worldMaxYExclusive)
@@ -3263,6 +3462,9 @@ public final class WorldGenerator {
         let generatorBox = UnsafeSendableBox(self)
         let configBox = UnsafeSendableBox(config)
         let sharedResults = SharedSampleSurfaceLODResults()
+        let directPointFunctionsBox = UnsafeSendableBox(
+            try self.validatedDirectPointSamplingDensityFunctions(for: "Surface LOD sampling")
+        )
         let roundedSurfaceHeight: @Sendable (Double, Int32) -> Int32 = { surfaceLevel, ratio in
             let rounded = Int64((surfaceLevel / Double(ratio)).rounded()) * Int64(ratio)
             let clampedUpperBound = Int64(worldMaxYExclusive) - 1
@@ -3338,21 +3540,6 @@ public final class WorldGenerator {
 
         if workerCount == 1 {
             for (chunkKey, chunkRequests) in chunkPlans {
-                let chunkSampler = VanillaChunkTerrainSampler(
-                    chunkPos: PosInt2D(x: chunkKey.x, z: chunkKey.z),
-                    minY: worldMinY,
-                    height: Int32(config.height),
-                    sizeHorizontal: config.sizeHorizontal,
-                    sizeVertical: config.sizeVertical
-                )
-                let bakedFinalDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
-                let directFinalDensity = chunkSampler.makeDirectPointSamplingTerrainDensity(from: bakedFinalDensity)
-                let directPreliminarySurfaceLevel = try config.noiseRouter.preliminarySurfaceLevel.map {
-                    chunkSampler.makeDirectPointSamplingFunction(from: try chunkSampler.bakeDensityFunction($0))
-                }
-                let directInitialDensityWithoutJaggedness = try config.noiseRouter.initialDensityWithoutJaggedness.map {
-                    chunkSampler.makeDirectPointSamplingFunction(from: try chunkSampler.bakeDensityFunction($0))
-                }
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
                     using: config
@@ -3362,9 +3549,9 @@ public final class WorldGenerator {
                     cells: chunkRequests.map {
                         materializedCell(
                             from: $0,
-                            finalTerrainDensity: directFinalDensity,
-                            preliminarySurfaceLevel: directPreliminarySurfaceLevel,
-                            initialDensityWithoutJaggedness: directInitialDensityWithoutJaggedness,
+                            finalTerrainDensity: directPointFunctionsBox.value.finalDensity,
+                            preliminarySurfaceLevel: directPointFunctionsBox.value.preliminarySurfaceLevel,
+                            initialDensityWithoutJaggedness: directPointFunctionsBox.value.initialDensityWithoutJaggedness,
                             biomeChunk: biomeChunk
                         )
                     }
@@ -3383,21 +3570,6 @@ public final class WorldGenerator {
 
                     let plan = chunkPlans[planIndex]
                     do {
-                        let chunkSampler = VanillaChunkTerrainSampler(
-                            chunkPos: PosInt2D(x: plan.0.x, z: plan.0.z),
-                            minY: worldMinY,
-                            height: Int32(configBox.value.height),
-                            sizeHorizontal: configBox.value.sizeHorizontal,
-                            sizeVertical: configBox.value.sizeVertical
-                        )
-                        let bakedFinalDensity = try chunkSampler.bakeDensityFunction(configBox.value.noiseRouter.finalDensity)
-                        let directFinalDensity = chunkSampler.makeDirectPointSamplingTerrainDensity(from: bakedFinalDensity)
-                        let directPreliminarySurfaceLevel = try configBox.value.noiseRouter.preliminarySurfaceLevel.map {
-                            chunkSampler.makeDirectPointSamplingFunction(from: try chunkSampler.bakeDensityFunction($0))
-                        }
-                        let directInitialDensityWithoutJaggedness = try configBox.value.noiseRouter.initialDensityWithoutJaggedness.map {
-                            chunkSampler.makeDirectPointSamplingFunction(from: try chunkSampler.bakeDensityFunction($0))
-                        }
                         let biomeChunk = includeBiomes ? try generatorBox.value.generateLODBiomeChunk(
                             at: PosInt2D(x: plan.0.x, z: plan.0.z),
                             using: configBox.value
@@ -3407,9 +3579,9 @@ public final class WorldGenerator {
                             cells: plan.1.map {
                                 materializedCell(
                                     from: $0,
-                                    finalTerrainDensity: directFinalDensity,
-                                    preliminarySurfaceLevel: directPreliminarySurfaceLevel,
-                                    initialDensityWithoutJaggedness: directInitialDensityWithoutJaggedness,
+                                    finalTerrainDensity: directPointFunctionsBox.value.finalDensity,
+                                    preliminarySurfaceLevel: directPointFunctionsBox.value.preliminarySurfaceLevel,
+                                    initialDensityWithoutJaggedness: directPointFunctionsBox.value.initialDensityWithoutJaggedness,
                                     biomeChunk: biomeChunk
                                 )
                             }
