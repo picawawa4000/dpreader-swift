@@ -50,6 +50,27 @@ private func decodeLootTable(_ identifier: String, from root: URL = lootPackRoot
     return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
 }
 
+private func makeLootDecoder(packFormat: Version = .assumedCurrent) -> JSONDecoder {
+    let decoder = JSONDecoder()
+    decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat))
+    return decoder
+}
+
+private func makeTemporaryPackRoot(packFormat: Version) throws -> URL {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("data"), withIntermediateDirectories: true)
+    let metadata = """
+    {
+        "pack": {
+            "pack_format": \(packFormat.description),
+            "description": "Test pack"
+        }
+    }
+    """
+    try metadata.data(using: .utf8)!.write(to: root.appendingPathComponent("pack.mcmeta"))
+    return root
+}
+
 private struct RealWorldLootFixture: Decodable {
     let version: String
     let cases: [RealWorldLootCase]
@@ -255,6 +276,123 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     )
 
     #expect(updated.components["minecraft:potion_contents"] == .object(["potion": .string("minecraft:water")]))
+}
+
+@Test func testNewLootFunctionsRequirePackFormat95() throws {
+    let packFormat = Version(major: 92, minor: 0)
+
+    for function in ["minecraft:set_random_dyes", "minecraft:set_random_potion"] {
+        let data = """
+        {
+            "function": "\(function)"
+        }
+        """.data(using: .utf8)!
+
+        do {
+            _ = try makeLootDecoder(packFormat: packFormat).decode(ItemModifierInitializer.self, from: data)
+            Issue.record("Expected \(function) to be rejected in pack format \(packFormat)")
+        } catch let error as DecodingError {
+            guard case .dataCorrupted(let context) = error else {
+                Issue.record("Expected dataCorrupted for \(function), got \(error)")
+                continue
+            }
+            #expect(context.debugDescription.contains("supported versions: 95.0+"))
+        }
+    }
+}
+
+@Test func testNewLootFunctionsLoadInPackFormat95() throws {
+    let data = """
+    {
+        "type": "minecraft:block",
+        "functions": [
+            {
+                "function": "minecraft:set_random_dyes"
+            },
+            {
+                "function": "minecraft:set_random_potion"
+            }
+        ],
+        "pools": [
+            {
+                "rolls": 1,
+                "entries": [
+                    {
+                        "type": "minecraft:item",
+                        "name": "minecraft:bundle"
+                    }
+                ]
+            }
+        ]
+    }
+    """.data(using: .utf8)!
+
+    let table = try makeLootDecoder(packFormat: Version(major: 95, minor: 0)).decode(LootTable.self, from: data)
+    #expect(table.functions.count == 2)
+    #expect(table.functions[0] is SetRandomDyesItemModifier)
+    #expect(table.functions[1] is SetRandomPotionItemModifier)
+}
+
+@Test func testNewLootFunctionsAreUnimplementedInPackFormat95() throws {
+    let functions: [(String, any ItemModifier.Type)] = [
+        ("minecraft:set_random_dyes", SetRandomDyesItemModifier.self),
+        ("minecraft:set_random_potion", SetRandomPotionItemModifier.self)
+    ]
+
+    for (function, expectedType) in functions {
+        let data = """
+        {
+            "function": "\(function)"
+        }
+        """.data(using: .utf8)!
+
+        let modifier = try makeLootDecoder(packFormat: Version(major: 95, minor: 0)).decode(ItemModifierInitializer.self, from: data).value
+        #expect(type(of: modifier) == expectedType)
+
+        do {
+            _ = try modifier.apply(to: ItemStack(itemName: "minecraft:bundle", count: 1), withContext: makeContext())
+            Issue.record("Expected \(function) to be unimplemented during evaluation")
+        } catch let error as LootEvaluationError {
+            guard case .unimplemented(let message) = error else {
+                Issue.record("Expected unimplemented for \(function), got \(error)")
+                continue
+            }
+            #expect(message.contains(function.replacingOccurrences(of: "minecraft:", with: "")))
+        }
+    }
+}
+
+@Test func testDataPackDecoderUsesPackMetadataFormat() throws {
+    let pack92Root = try makeTemporaryPackRoot(packFormat: Version(major: 92, minor: 0))
+    let pack95Root = try makeTemporaryPackRoot(packFormat: Version(major: 95, minor: 0))
+    defer {
+        try? FileManager.default.removeItem(at: pack92Root)
+        try? FileManager.default.removeItem(at: pack95Root)
+    }
+
+    let data = """
+    {
+        "function": "minecraft:set_random_potion"
+    }
+    """.data(using: .utf8)!
+
+    let pack92 = try DataPack(fromRootPath: pack92Root, loadingOptions: minimalRegistryLoadingOptions())
+    #expect(pack92.packFormat == Version(major: 92, minor: 0))
+    do {
+        _ = try pack92.makeDecoder().decode(ItemModifierInitializer.self, from: data)
+        Issue.record("Expected pack.mcmeta format 92.0 to reject minecraft:set_random_potion")
+    } catch let error as DecodingError {
+        guard case .dataCorrupted(let context) = error else {
+            Issue.record("Expected dataCorrupted for pack format 92.0, got \(error)")
+            return
+        }
+        #expect(context.debugDescription.contains("supported versions: 95.0+"))
+    }
+
+    let pack95 = try DataPack(fromRootPath: pack95Root, loadingOptions: minimalRegistryLoadingOptions())
+    #expect(pack95.packFormat == Version(major: 95, minor: 0))
+    let modifier = try pack95.makeDecoder().decode(ItemModifierInitializer.self, from: data).value
+    #expect(modifier is SetRandomPotionItemModifier)
 }
 
 @Test func testSetStewEffectModifierEvaluation() throws {

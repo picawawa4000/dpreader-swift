@@ -20,4 +20,4 @@ If you find a bug (incorrect biomes, terrain, etc.), open an issue and state the
 
 ## Supported data pack formats
 
-Currently, DPReader is mainly geared towards data pack version 92.0, which corresponds to Minecraft version 25w44a. Because the code is rather messy, however, it is likely that some features only present in newer formats have crept in. Proper format control will be introduced as soon as I can figure out the cleanest way to implement it.
+Currently, DPReader is mainly geared towards data pack format version 92.0, which corresponds to Minecraft version 25w44a. Support for other versions will be added as required.

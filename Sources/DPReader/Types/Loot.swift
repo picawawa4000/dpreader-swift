@@ -813,6 +813,7 @@ public enum JSONValue: Codable, Equatable, Sendable {
 /// Errors raised while decoding or evaluating loot.
 public enum LootEvaluationError: Error, Sendable {
     case unsupported(String)
+    case unimplemented(String)
     case missingContext(String)
     case invalidData(String)
 }
@@ -1606,6 +1607,10 @@ func decodeItemModifier(from decoder: Decoder) throws -> ItemModifier {
         return try SetOminousBottleAmplifierItemModifier(from: decoder)
     case "minecraft:set_potion":
         return try SetPotionItemModifier(from: decoder)
+    case "minecraft:set_random_dyes":
+        return try SetRandomDyesItemModifier(from: decoder)
+    case "minecraft:set_random_potion":
+        return try SetRandomPotionItemModifier(from: decoder)
     case "minecraft:set_stew_effect":
         return try SetStewEffectItemModifier(from: decoder)
     case "minecraft:set_writable_book_pages":
@@ -1659,6 +1664,8 @@ func encodeItemModifier(_ modifier: ItemModifier, to encoder: Encoder) throws {
     case let v as SetNameItemModifier: try v.encode(to: encoder)
     case let v as SetOminousBottleAmplifierItemModifier: try v.encode(to: encoder)
     case let v as SetPotionItemModifier: try v.encode(to: encoder)
+    case let v as SetRandomDyesItemModifier: try v.encode(to: encoder)
+    case let v as SetRandomPotionItemModifier: try v.encode(to: encoder)
     case let v as SetStewEffectItemModifier: try v.encode(to: encoder)
     case let v as SetWritableBookPagesItemModifier: try v.encode(to: encoder)
     case let v as SetWrittenBookPagesItemModifier: try v.encode(to: encoder)
@@ -3138,6 +3145,64 @@ public final class SetPotionItemModifier: ConditionalItemModifier {
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
         return stack.settingComponent("minecraft:potion_contents", .object(["potion": .string(id)]))
+    }
+}
+
+public final class SetRandomDyesItemModifier: ConditionalItemModifier {
+    public let conditions: [LootCondition]
+
+    fileprivate static let feature = VersionedSchemaFeature(
+        "item modifier minecraft:set_random_dyes",
+        supportedVersions: .atLeast(.init(major: 95, minor: 0))
+    )
+
+    public init(conditions: [LootCondition] = []) {
+        self.conditions = conditions
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.require(SetRandomDyesItemModifier.feature)
+        let c = try decoder.container(keyedBy: DynamicCodingKey.self)
+        self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicCodingKey.self)
+        try c.encode("minecraft:set_random_dyes", forKey: key("function"))
+        try encodeLootConditions(conditions, to: &c, forKey: "conditions")
+    }
+
+    public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
+        throw LootEvaluationError.unimplemented("set_random_dyes is not implemented")
+    }
+}
+
+public final class SetRandomPotionItemModifier: ConditionalItemModifier {
+    public let conditions: [LootCondition]
+
+    fileprivate static let feature = VersionedSchemaFeature(
+        "item modifier minecraft:set_random_potion",
+        supportedVersions: .atLeast(.init(major: 95, minor: 0))
+    )
+
+    public init(conditions: [LootCondition] = []) {
+        self.conditions = conditions
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.require(SetRandomPotionItemModifier.feature)
+        let c = try decoder.container(keyedBy: DynamicCodingKey.self)
+        self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicCodingKey.self)
+        try c.encode("minecraft:set_random_potion", forKey: key("function"))
+        try encodeLootConditions(conditions, to: &c, forKey: "conditions")
+    }
+
+    public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
+        throw LootEvaluationError.unimplemented("set_random_potion is not implemented")
     }
 }
 

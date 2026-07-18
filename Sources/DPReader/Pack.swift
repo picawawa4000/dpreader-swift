@@ -42,6 +42,8 @@ public final class DataPack {
     public let tagRegistry = Registry<TagDefinition>()
     public let structureRegistry = Registry<Structure>()
     public let structureSetRegistry = Registry<StructureSet>()
+    public let versioning: PackVersioning
+    public var packFormat: Version { versioning.selectedVersion }
 
     /// Loads a data pack from the given path. All loading options are turned off by default.
     /// - Parameter rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
@@ -50,13 +52,39 @@ public final class DataPack {
         try self.init(fromRootPath: rootPath, loadingOptions: DataPackRegistryLoadingOptions(rawValue: 0))
     }
 
+    /// Loads a data pack from the given path, decoding it as the requested pack format.
+    /// - Parameters:
+    ///   - rootPath: The path to load the data pack from.
+    ///   - decodingVersion: The pack format to decode against. It must be supported by the pack metadata.
+    public convenience init(fromRootPath rootPath: URL, decodingVersion: Version) throws {
+        try self.init(
+            fromRootPath: rootPath,
+            loadingOptions: DataPackRegistryLoadingOptions(rawValue: 0),
+            decodingVersion: decodingVersion
+        )
+    }
+
     /// Loads a data pack from the given path with the given options.
     /// - Parameters:
     ///   - rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
     ///   - options: The options to use when loading the data pack. These are mostly for debugging purposes,
     /// and not including the right ones may break the data pack. Use with caution.
     /// - Throws: Any errors thrown by the loading process.
-    public init(fromRootPath rootPath: URL, loadingOptions options: DataPackRegistryLoadingOptions) throws {
+    public convenience init(fromRootPath rootPath: URL, loadingOptions options: DataPackRegistryLoadingOptions) throws {
+        try self.init(fromRootPath: rootPath, loadingOptions: options, decodingVersion: nil)
+    }
+
+    /// Loads a data pack from the given path with the given options and decoding version.
+    /// - Parameters:
+    ///   - rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
+    ///   - options: The options to use when loading the data pack.
+    ///   - decodingVersion: The pack format to decode against. If omitted, the highest declared supported version is used.
+    public init(
+        fromRootPath rootPath: URL,
+        loadingOptions options: DataPackRegistryLoadingOptions,
+        decodingVersion: Version?
+    ) throws {
+        self.versioning = try Self.loadVersioning(fromRootPath: rootPath, decodingVersion: decodingVersion)
         let namespacesPath = rootPath.appendingDirectory(path: "data")
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
             let namespace = namespaceURL.lastPathComponent
@@ -74,6 +102,10 @@ public final class DataPack {
             if !options.contains(.noStructures) { try self.loadStructures(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noStructureSets) { try self.loadStructureSets(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
+    }
+
+    public func makeDecoder() -> JSONDecoder {
+        Self.makeDecoder(for: versioning)
     }
 
     static func namespacedID(fromNamespace namespace: String, relativeTo rootURL: URL, withURL url: URL) -> String {
@@ -101,12 +133,34 @@ public final class DataPack {
         !filepath.isDirectory && filepath.pathExtension.lowercased() == "json"
     }
 
+    private static func loadVersioning(fromRootPath rootPath: URL, decodingVersion: Version?) throws -> PackVersioning {
+        let metadataURL = rootPath.appendingPathComponent("pack.mcmeta")
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+            let selectedVersion = decodingVersion ?? Version.assumedCurrent
+            let supportedVersions = VersionRange.exactly(.assumedCurrent)
+            guard supportedVersions.contains(selectedVersion) else {
+                throw LoadingErrors.unsupportedPackVersion(selected: selectedVersion, supported: supportedVersions)
+            }
+            return PackVersioning(supportedVersions: supportedVersions, selectedVersion: selectedVersion)
+        }
+
+        let data = try Data(contentsOf: metadataURL)
+        let metadata = try JSONDecoder().decode(PackMetadata.self, from: data)
+        return try metadata.pack.makeVersioning(decodingVersion: decodingVersion)
+    }
+
+    private static func makeDecoder(for versioning: PackVersioning) -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.setDPReaderVersioning(versioning)
+        return decoder
+    }
+
     private func loadDensityFunctions(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
         let root = worldgenURL.appendingDirectory(path: "density_function")
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -127,7 +181,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -147,7 +201,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -166,7 +220,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -185,7 +239,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -204,7 +258,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -224,7 +278,7 @@ public final class DataPack {
             return
         }
 
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -243,7 +297,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -262,7 +316,7 @@ public final class DataPack {
         guard FileManager.default.fileExists(atPath: root.path) else {
             return
         }
-        let decoder = JSONDecoder()
+        let decoder = makeDecoder()
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeFile(at: filepath) { continue }
@@ -278,5 +332,55 @@ public final class DataPack {
 
     enum LoadingErrors: Error {
         case failedToEnumerateDirectory(String)
+        case unsupportedPackVersion(selected: Version, supported: VersionRange)
+    }
+}
+
+private struct PackMetadata: Decodable {
+    let pack: PackMetadataPack
+}
+
+private struct PackMetadataPack: Decodable {
+    let packFormat: Version?
+    let minFormat: Version?
+    let maxFormat: Version?
+
+    func makeVersioning(decodingVersion: Version?) throws -> PackVersioning {
+        let supportedVersions = supportedVersionRange
+        let selectedVersion = decodingVersion ?? maxFormat ?? packFormat ?? minFormat ?? .assumedCurrent
+        guard supportedVersions.contains(selectedVersion) else {
+            throw DataPack.LoadingErrors.unsupportedPackVersion(selected: selectedVersion, supported: supportedVersions)
+        }
+        return PackVersioning(supportedVersions: supportedVersions, selectedVersion: selectedVersion)
+    }
+
+    private var supportedVersionRange: VersionRange {
+        if let packFormat {
+            return .exactly(packFormat)
+        }
+        return VersionRange(minimum: minFormat, maximum: maxFormat)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.packFormat = try container.decodeIfPresent(Version.self, forKey: .packFormat)
+        self.minFormat = try container.decodeIfPresent(Version.self, forKey: .minFormat)
+        self.maxFormat = try container.decodeIfPresent(Version.self, forKey: .maxFormat)
+
+        if packFormat == nil && minFormat == nil && maxFormat == nil {
+            throw DecodingError.keyNotFound(
+                CodingKeys.packFormat,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Expected pack_format, max_format, or min_format in pack metadata"
+                )
+            )
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case packFormat = "pack_format"
+        case minFormat = "min_format"
+        case maxFormat = "max_format"
     }
 }
