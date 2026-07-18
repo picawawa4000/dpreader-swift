@@ -1,0 +1,22 @@
+{
+  "anvil_cost": 1,
+  "description": {
+    "text": "Edge"
+  },
+  "exclusive_set": "#test:exclusive_set/edge",
+  "max_cost": {
+    "base": 100,
+    "per_level_above_first": 1
+  },
+  "max_level": 3,
+  "min_cost": {
+    "base": 1,
+    "per_level_above_first": 1
+  },
+  "primary_items": "#test:primary_weapon",
+  "slots": [
+    "mainhand"
+  ],
+  "supported_items": "#test:weapon_like",
+  "weight": 7
+}

@@ -1388,6 +1388,129 @@ private final class LockedArray<Value>: @unchecked Sendable {
     )
 }
 
+@Test func benchmarkVanillaTerrainChunkGenerationDetailedProfile() async throws {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
+
+    _ = try worldGenerator.benchmarkChunkGenerationDetailedProfile(at: PosInt2D(x: 0, z: 0))
+    let benchmark = try worldGenerator.benchmarkChunkGenerationDetailedProfile(at: PosInt2D(x: 0, z: 0))
+
+    func averageCallNanos(_ profile: TimedComponentBenchmark) -> UInt64 {
+        guard profile.callCount > 0 else { return 0 }
+        return profile.totalNanos / profile.callCount
+    }
+
+    func printComponent(_ label: String, _ profile: TimedComponentBenchmark) {
+        print(
+            label,
+            profile.totalNanos, "ns",
+            "(\(profile.callCount) calls;",
+            "\(averageCallNanos(profile))ns/call)"
+        )
+    }
+
+    func printBiomeProfile(_ label: String, _ profile: ChunkBiomeGenerationDetailedBenchmark?) {
+        guard let profile else {
+            print(label, "n/a")
+            return
+        }
+        print(label)
+        printComponent("  temperature:", profile.temperature)
+        printComponent("  humidity:", profile.humidity)
+        printComponent("  continentalness:", profile.continentalness)
+        printComponent("  erosion:", profile.erosion)
+        printComponent("  weirdness:", profile.weirdness)
+        printComponent("  depth:", profile.depth)
+        printComponent("  search tree:", profile.searchTree)
+    }
+
+    print(
+        "benchmarkVanillaTerrainChunkGenerationDetailedProfile:",
+        "configure", benchmark.configureNanos, "ns;",
+        "sampler init", benchmark.samplerInitNanos, "ns;",
+        "shared bake", benchmark.sharedBakeNanos, "ns;"
+    )
+    print(
+        "  terrain only:",
+        benchmark.terrainOnlyNanos, "ns"
+    )
+    printComponent("    terrain density:", benchmark.terrainOnlyProfile.terrainDensity)
+    print(
+        "  quart biomes only:",
+        benchmark.quartBiomesOnlyNanos, "ns"
+    )
+    printBiomeProfile("    quart biome components:", benchmark.quartBiomesOnlyProfile)
+    print(
+        "  block biomes only:",
+        benchmark.blockBiomesOnlyNanos, "ns"
+    )
+    printBiomeProfile("    block biome components:", benchmark.blockBiomesOnlyProfile)
+    print(
+        "  full generateInto body:",
+        benchmark.fullGenerateIntoNanos, "ns"
+    )
+    printBiomeProfile("    full biome components:", benchmark.fullBiomeProfile)
+    printComponent("    full terrain density:", benchmark.fullTerrainProfile.terrainDensity)
+}
+
+@Test func benchmarkVanillaFullBiomeAndTerrainChunkGeneration() async throws {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
+
+    let warmupChunk = ProtoChunk()
+    try worldGenerator.generateInto(warmupChunk, at: PosInt2D(x: 0, z: 0))
+    let warmupChecksum = biomeAndTerrainHash(for: warmupChunk)
+
+    var totalNanos: UInt64 = 0
+    var checksum: UInt64 = 0
+    for chunkX in 0..<8 {
+        for chunkZ in 0..<8 {
+            let chunk = ProtoChunk()
+            let start = DispatchTime.now().uptimeNanoseconds
+            try worldGenerator.generateInto(chunk, at: PosInt2D(x: Int32(chunkX), z: Int32(chunkZ)))
+            totalNanos &+= DispatchTime.now().uptimeNanoseconds - start
+            checksum ^= biomeAndTerrainHash(for: chunk)
+        }
+    }
+
+    let chunkCount: UInt64 = 64
+    print(
+        "benchmarkVanillaFullBiomeAndTerrainChunkGeneration:",
+        chunkCount, "chunks in",
+        totalNanos, "ns",
+        "(\(totalNanos / 1_000_000)ms total;",
+        "\(totalNanos / chunkCount)ns/chunk);",
+        "warmup checksum", warmupChecksum,
+        "checksum", checksum
+    )
+}
+
+private func biomeAndTerrainHash(for chunk: ProtoChunk) -> UInt64 {
+    let offsetBasis: UInt64 = 1_469_598_103_934_665_603
+    let prime: UInt64 = 1_099_511_628_211
+
+    var hash = offsetBasis
+    for localY in 0..<Int(chunk.height) {
+        for localZ in 0..<ProtoChunk.sideLength {
+            for localX in 0..<ProtoChunk.sideLength {
+                let pos = PosInt3D(x: Int32(localX), y: Int32(localY), z: Int32(localZ))
+                hash ^= chunk.isTerrain(atLocal: pos) ? 1 : 0
+                hash &*= prime
+
+                if let biome = chunk.biome(atLocal: pos) {
+                    for byte in biome.name.utf8 {
+                        hash ^= UInt64(byte)
+                        hash &*= prime
+                    }
+                } else {
+                    hash ^= 0xff
+                    hash &*= prime
+                }
+            }
+        }
+    }
+
+    return hash
+}
+
 private func makeVanillaTerrainBenchmarkWorldGenerator() throws -> WorldGenerator {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()

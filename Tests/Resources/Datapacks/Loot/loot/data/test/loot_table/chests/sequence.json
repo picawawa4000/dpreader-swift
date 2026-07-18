@@ -1,0 +1,28 @@
+{
+  "pools": [
+    {
+      "rolls": 1,
+      "entries": [
+        {
+          "type": "minecraft:sequence",
+          "children": [
+            {
+              "type": "minecraft:item",
+              "name": "minecraft:book"
+            },
+            {
+              "type": "minecraft:item",
+              "name": "minecraft:quartz",
+              "conditions": [
+                {
+                  "condition": "minecraft:random_chance",
+                  "chance": 0.0
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

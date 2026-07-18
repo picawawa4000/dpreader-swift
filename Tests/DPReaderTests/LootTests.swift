@@ -2,10 +2,158 @@ import Foundation
 import Testing
 @testable import DPReader
 
-@Test func testEncodingForItemLootEntry() async throws {
+private let lootPackRoot = URL(filePath: "Tests/Resources/Datapacks/Loot/loot")
+private let enchantmentPackRoot = URL(filePath: "Tests/Resources/Datapacks/Enchantments/enchantments")
+private let vanilla12111Root = URL(filePath: "vanilla/1.21.11")
+private let vanilla12111ReferenceURL = URL(filePath: "Tests/Resources/Loot/vanilla_1_21_11_reference.json")
+
+private func minimalRegistryLoadingOptions(excluding extra: DataPackRegistryLoadingOptions = []) -> DataPackRegistryLoadingOptions {
+    [
+        .noDensityFunctions,
+        .noNoises,
+        .noNoiseSettings,
+        .noDimensions,
+        .noBiomes,
+        .noStructures,
+        .noStructureSets,
+        extra
+    ].reduce(into: DataPackRegistryLoadingOptions(rawValue: 0)) { $0.formUnion($1) }
+}
+
+private func makeContext(seed: UInt64 = 0, enchantmentResources: LootEnchantmentResources? = nil) -> LootContext {
+    LootContext(random: XoroshiroRandom(seed: seed), enchantmentResources: enchantmentResources)
+}
+
+private func makeCheckedContext(seed: UInt64, enchantmentResources: LootEnchantmentResources? = nil) -> LootContext {
+    LootContext(random: CheckedRandom(seed: seed), enchantmentResources: enchantmentResources)
+}
+
+private func loadEnchantmentTestResources() throws -> LootEnchantmentResources {
+    let pack = try DataPack(fromRootPath: enchantmentPackRoot, loadingOptions: minimalRegistryLoadingOptions())
+    return pack.lootEnchantmentResources
+}
+
+private func loadVanilla12111EnchantmentResources() throws -> LootEnchantmentResources {
+    let pack = try DataPack(fromRootPath: vanilla12111Root, loadingOptions: minimalRegistryLoadingOptions())
+    return pack.lootEnchantmentResources
+}
+
+private func decodeLootTable(_ identifier: String, from root: URL = lootPackRoot) throws -> LootTable {
+    let parts = identifier.split(separator: ":", maxSplits: 1).map(String.init)
+    let namespace = parts.count == 2 ? parts[0] : "minecraft"
+    let path = parts.count == 2 ? parts[1] : parts[0]
+    let url = root
+        .appendingPathComponent("data")
+        .appendingPathComponent(namespace)
+        .appendingPathComponent("loot_table")
+        .appendingPathComponent(path + ".json")
+    return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
+}
+
+private struct RealWorldLootFixture: Decodable {
+    let version: String
+    let cases: [RealWorldLootCase]
+}
+
+private struct RealWorldLootCase: Decodable {
+    let table: String
+    let xppleName: String
+    let seed: UInt64
+    let items: [NormalizedLootItem]
+
+    enum CodingKeys: String, CodingKey {
+        case table
+        case xppleName = "xpple_name"
+        case seed
+        case items
+    }
+}
+
+private struct NormalizedLootItem: Decodable, Equatable {
+    let name: String
+    let count: Int
+    let enchantments: [NormalizedEnchantment]
+    let mobEffect: NormalizedMobEffect?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case count
+        case enchantments
+        case mobEffect = "mob_effect"
+    }
+}
+
+private struct NormalizedEnchantment: Decodable, Equatable {
+    let id: String
+    let level: Int
+}
+
+private struct NormalizedMobEffect: Decodable, Equatable {
+    let id: String
+    let duration: Int
+}
+
+private func normalizedEnchantmentID(_ id: String) -> String {
+    switch id {
+    case "minecraft:binding_curse":
+        return "minecraft:curse_of_binding"
+    case "minecraft:vanishing_curse":
+        return "minecraft:curse_of_vanishing"
+    default:
+        return id
+    }
+}
+
+private func normalizeGeneratedLoot(_ items: [ItemStack]) -> [NormalizedLootItem] {
+    items.map { item in
+        let enchantments = item.enchantmentLevels
+            .map { NormalizedEnchantment(id: normalizedEnchantmentID($0.key), level: $0.value) }
+            .sorted { $0.id < $1.id }
+
+        let mobEffect: NormalizedMobEffect?
+        if
+            case .array(let effects)? = item.components["minecraft:suspicious_stew_effects"],
+            let first = effects.first?.objectValue,
+            let id = first["id"]?.stringValue,
+            let duration = first["duration"]?.intValue
+        {
+            mobEffect = NormalizedMobEffect(id: id, duration: duration)
+        } else {
+            mobEffect = nil
+        }
+
+        let normalizedName: String
+        if item.itemName == "minecraft:enchanted_book", !enchantments.isEmpty {
+            normalizedName = "minecraft:book"
+        } else {
+            normalizedName = item.itemName
+        }
+
+        return NormalizedLootItem(
+            name: normalizedName,
+            count: item.count,
+            enchantments: enchantments,
+            mobEffect: mobEffect
+        )
+    }
+}
+
+private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [NormalizedLootItem] {
+    items.map {
+        NormalizedLootItem(
+            name: $0.name,
+            count: $0.count,
+            enchantments: $0.enchantments
+                .map { NormalizedEnchantment(id: normalizedEnchantmentID($0.id), level: $0.level) }
+                .sorted { $0.id < $1.id },
+            mobEffect: $0.mobEffect
+        )
+    }
+}
+
+@Test func testEncodingForItemLootEntry() throws {
     let lootEntry: any LootEntry = ItemEntry(name: "minecraft:diamond", weight: 5, quality: 2)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
+    let data = try JSONEncoder().encode(lootEntry)
     #expect(try checkJSON(data, [
         "type": "minecraft:item",
         "name": "minecraft:diamond",
@@ -14,339 +162,245 @@ import Testing
     ]))
 }
 
-@Test func testEncodingForLootTableLootEntry() async throws {
-    let lootEntry: any LootEntry = LootTableEntry(value: .name("test:example"), weight: 3, quality: 1)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    print(String(data: data, encoding: .utf8)!)
+@Test func testEncodingForLootTableLootEntry() throws {
+    let lootEntry: any LootEntry = LootTableEntry(value: .name("test:chests/subtable"), weight: 3, quality: 1)
+    let data = try JSONEncoder().encode(lootEntry)
     #expect(try checkJSON(data, [
         "type": "minecraft:loot_table",
-        "value": "test:example",
+        "value": "test:chests/subtable",
         "weight": 3,
         "quality": 1
     ]))
 }
 
-@Test func testEncodingForDynamicLootEntryShulkerBoxContents() async throws {
-    let dynamicType = DynamicEntry.DynamicType.shulkerBoxContents
-    let lootEntry: any LootEntry = DynamicEntry(type: dynamicType, weight: 4, quality: 0)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:dynamic",
-        "name": "contents",
-        "weight": 4,
-        "quality": 0
-    ]))
+@Test func testDecodingLootTableFunctionsAndConditions() throws {
+    let data = """
+    {
+        "type": "minecraft:block",
+        "functions": [
+            {
+                "function": "minecraft:explosion_decay"
+            }
+        ],
+        "pools": [
+            {
+                "rolls": 1.0,
+                "bonus_rolls": 0.0,
+                "conditions": [
+                    {
+                        "condition": "minecraft:random_chance",
+                        "chance": 0.5
+                    }
+                ],
+                "entries": [
+                    {
+                        "type": "minecraft:item",
+                        "name": "minecraft:stick",
+                        "conditions": [
+                            {
+                                "condition": "minecraft:survives_explosion"
+                            }
+                        ],
+                        "functions": [
+                            {
+                                "function": "minecraft:set_count",
+                                "count": 2,
+                                "add": false
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "random_sequence": "minecraft:blocks/example"
+    }
+    """.data(using: .utf8)!
+
+    let table = try JSONDecoder().decode(LootTable.self, from: data)
+    #expect(table.type == "minecraft:block")
+    #expect(table.randomSequenceLocation == "minecraft:blocks/example")
+    #expect(table.functions.count == 1)
+    #expect(table.functions[0] is ExplosionDecayItemModifier)
+    #expect(table.pools.count == 1)
+    #expect(table.pools[0].conditions.count == 1)
+    #expect(table.pools[0].conditions[0] is RandomChanceLootCondition)
+
+    let itemEntry = table.pools[0].entries[0] as! ItemEntry
+    #expect(itemEntry.conditions.count == 1)
+    #expect(itemEntry.conditions[0] is SurvivesExplosionLootCondition)
+    #expect(itemEntry.functions.count == 1)
+    #expect(itemEntry.functions[0] is SetCountItemModifier)
 }
 
-@Test func testEncodingForDynamicLootEntryDecoratedPotSherds() async throws {
-    let dynamicType = DynamicEntry.DynamicType.decoratedPotSherds
-    let lootEntry: any LootEntry = DynamicEntry(type: dynamicType, weight: 6, quality: -1)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:dynamic",
-        "name": "sherds",
-        "weight": 6,
-        "quality": -1
-    ]))
+@Test func testDecodingEnchantWithLevelsTreasureFlag() throws {
+    let data = """
+    {
+        "function": "minecraft:enchant_with_levels",
+        "levels": 30,
+        "options": "minecraft:infinity",
+        "treasure": false
+    }
+    """.data(using: .utf8)!
+
+    let modifier = try JSONDecoder().decode(ItemModifierInitializer.self, from: data).value
+    let enchantWithLevels = modifier as! EnchantWithLevelsItemModifier
+    #expect(enchantWithLevels.treasure == false)
 }
 
-@Test func testEncodingForEmptyLootEntry() async throws {
-    let lootEntry: any LootEntry = EmptyEntry(weight: 10, quality: 2)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:empty",
-        "weight": 10,
-        "quality": 2
-    ]))
+@Test func testSetPotionModifierEvaluation() throws {
+    let modifier = SetPotionItemModifier(id: "minecraft:water")
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:potion", count: 1),
+        withContext: makeContext()
+    )
+
+    #expect(updated.components["minecraft:potion_contents"] == .object(["potion": .string("minecraft:water")]))
 }
 
-@Test func testEncodingForTagLootEntryNonExpanding() async throws {
-    let lootEntry: any LootEntry = TagEntry(name: "test:example", expand: false, weight: 3, quality: 6)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:tag",
-        "weight": 3,
-        "quality": 6,
-        "expand": false,
-        "name": "test:example"
-    ]))
-}
-
-@Test func testEncodingForTagLootEntryExpanding() async throws {
-    let lootEntry: any LootEntry = TagEntry(name: "test:example", expand: true, weight: 5, quality: 0)
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:tag",
-        "weight": 5,
-        "quality": 0,
-        "expand": true,
-        "name": "test:example"
-    ]))
-}
-
-@Test func testEncodingForGroupLootEntry() async throws {
-    let lootEntry: any LootEntry = GroupEntry(children: [
-        ItemEntry(name: "minecraft:diamond", weight: 1, quality: 1),
-        EmptyEntry(weight: 3, quality: 0)
+@Test func testSetStewEffectModifierEvaluation() throws {
+    let modifier = SetStewEffectItemModifier(effects: [
+        StewEffect(type: "minecraft:speed", duration: ConstantLootNumberProvider(value: 5.0))
     ])
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:group",
-        "children": [
-            [
-                "type": "minecraft:item",
-                "name": "minecraft:diamond",
-                "weight": 1,
-                "quality": 1
-            ],
-            [
-                "type": "minecraft:empty",
-                "weight": 3,
-                "quality": 0
-            ]
-        ]
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:suspicious_stew", count: 1),
+        withContext: makeContext()
+    )
+
+    #expect(updated.components["minecraft:suspicious_stew_effects"] == .array([
+        .object([
+            "id": .string("minecraft:speed"),
+            "duration": .integer(100)
+        ])
     ]))
 }
 
-@Test func testEncodingForAlternativesLootEntry() async throws {
-    let lootEntry: any LootEntry = AlternativesEntry(children: [
-        ItemEntry(name: "minecraft:diamond", weight: 1, quality: 1),
-        EmptyEntry(weight: 3, quality: 0)
-    ])
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:alternatives",
-        "children": [
-            [
-                "type": "minecraft:item",
-                "name": "minecraft:diamond",
-                "weight": 1,
-                "quality": 1
-            ],
-            [
-                "type": "minecraft:empty",
-                "weight": 3,
-                "quality": 0
-            ]
-        ]
-    ]))
+@Test func testSetDamageModifierEvaluation() throws {
+    let modifier = SetDamageItemModifier(damage: ConstantLootNumberProvider(value: 0.25))
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:iron_sword", count: 1),
+        withContext: makeContext()
+    )
+
+    #expect(updated.components["minecraft:damage"] == JSONValue.integer(187))
 }
 
-@Test func testEncodingForSequenceLootEntry() async throws {
-    let lootEntry: any LootEntry = SequenceEntry(children: [
-        ItemEntry(name: "minecraft:diamond", weight: 1, quality: 1),
-        EmptyEntry(weight: 3, quality: 0)
-    ])
-    let encoder = JSONEncoder()
-    let data = try encoder.encode(lootEntry)
-    #expect(try checkJSON(data, [
-        "type": "minecraft:sequence",
-        "children": [
-            [
-                "type": "minecraft:item",
-                "name": "minecraft:diamond",
-                "weight": 1,
-                "quality": 1
-            ],
-            [
-                "type": "minecraft:empty",
-                "weight": 3,
-                "quality": 0
-            ]
-        ]
-    ]))
+@Test func testSetInstrumentModifierEvaluation() throws {
+    let modifier = SetInstrumentItemModifier(options: "minecraft:ponder_goat_horn")
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:goat_horn", count: 1),
+        withContext: makeContext(seed: 99)
+    )
+
+    #expect(updated.components["minecraft:instrument"] == .string("minecraft:ponder_goat_horn"))
 }
 
-@Test func testDecodingForItemLootEntry() async throws {
-    let data = """
-    {
-        "type": "minecraft:item",
-        "name": "minecraft:diamond",
-        "weight": 5,
-        "quality": 1
-    }
-    """.data(using: .utf8)!
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is ItemEntry)
-    let itemEntry = lootEntry as! ItemEntry
-    #expect(itemEntry.name == "minecraft:diamond")
-    #expect(itemEntry.weight == 5)
-    #expect(itemEntry.quality == 1)
+@Test func testEnchantRandomlyModifierEvaluation() throws {
+    let resources = try loadVanilla12111EnchantmentResources()
+    let modifier = EnchantRandomlyItemModifier(options: .string("minecraft:infinity"))
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:book", count: 1),
+        withContext: makeContext(seed: 1, enchantmentResources: resources)
+    )
+
+    #expect(updated.itemName == "minecraft:enchanted_book")
+    #expect(updated.enchantmentLevels == ["minecraft:infinity": 1])
 }
 
-@Test func testDecodingForLootTableLootEntry() async throws {
-    let data = """
-    {
-        "type": "minecraft:loot_table",
-        "value": "test:example",
-        "weight": 4,
-        "quality": 3
-    }
-    """.data(using: .utf8)!
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is LootTableEntry)
-    let lootTableEntry = lootEntry as! LootTableEntry
-    #expect(lootTableEntry.weight == 4)
-    #expect(lootTableEntry.quality == 3)
-    switch lootTableEntry.value {
-        case .name(let name):
-            #expect(name == "test:example")
-        default:
-            // too lazy to add a new exception
-            #expect(Bool(false), "LootTableEntry.value != name!")
-    }
+@Test func testEnchantWithLevelsModifierEvaluation() throws {
+    let resources = try loadVanilla12111EnchantmentResources()
+    let modifier = EnchantWithLevelsItemModifier(
+        levels: ConstantLootNumberProvider(value: 30.0),
+        options: .string("minecraft:infinity")
+    )
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:book", count: 1),
+        withContext: makeContext(seed: 2, enchantmentResources: resources)
+    )
+
+    #expect(updated.itemName == "minecraft:enchanted_book")
+    #expect(updated.enchantmentLevels == ["minecraft:infinity": 1])
 }
 
-@Test func testDecodingForDynamicLootEntryShulkerBoxContents() async throws {
-    let data = """
-    {
-        "type": "minecraft:dynamic",
-        "name": "contents"
-    }
-    """.data(using: .utf8)! // weight defaults to 1, quality defaults to 0
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is DynamicEntry)
-    let dynamicLootEntry = lootEntry as! DynamicEntry
-    #expect(dynamicLootEntry.weight == 1)
-    #expect(dynamicLootEntry.quality == 0)
-    #expect(dynamicLootEntry.type == .shulkerBoxContents)
+@Test func testEnchantRandomlyUsesSupportedItemsFromLoadedEnchantments() throws {
+    let resources = try loadEnchantmentTestResources()
+    let modifier = EnchantRandomlyItemModifier(options: .string("#test:on_random_loot"))
+    let updated = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:iron_axe", count: 1),
+        withContext: makeContext(seed: 7, enchantmentResources: resources)
+    )
+
+    #expect(updated.itemName == "minecraft:iron_axe")
+    #expect(updated.enchantmentLevels.keys.sorted() == ["test:edge"])
+    #expect((updated.enchantmentLevels["test:edge"] ?? 0) >= 1)
+    #expect((updated.enchantmentLevels["test:edge"] ?? 0) <= 3)
 }
 
-@Test func testDecodingForDynamicLootEntryDecoratedPotSherds() async throws {
-    let data = """
-    {
-        "type": "minecraft:dynamic",
-        "name": "sherds"
-    }
-    """.data(using: .utf8)! // weight defaults to 1, quality defaults to 0
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is DynamicEntry)
-    let dynamicLootEntry = lootEntry as! DynamicEntry
-    #expect(dynamicLootEntry.weight == 1)
-    #expect(dynamicLootEntry.quality == 0)
-    #expect(dynamicLootEntry.type == .decoratedPotSherds)
+@Test func testEnchantWithLevelsUsesPrimaryItemsFromLoadedEnchantments() throws {
+    let resources = try loadEnchantmentTestResources()
+    let modifier = EnchantWithLevelsItemModifier(
+        levels: ConstantLootNumberProvider(value: 5.0)
+    )
+
+    let unsupportedPrimary = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:iron_axe", count: 1),
+        withContext: makeContext(seed: 2, enchantmentResources: resources)
+    )
+    #expect(unsupportedPrimary.enchantmentLevels.isEmpty)
+
+    let supportedPrimary = try modifier.apply(
+        to: ItemStack(itemName: "minecraft:iron_sword", count: 1),
+        withContext: makeContext(seed: 2, enchantmentResources: resources)
+    )
+    #expect(supportedPrimary.enchantmentLevels == ["test:edge": 3])
 }
 
-@Test func testDecodingForEmptyLootEntryDefaults() async throws {
-    let data = """
-    {
-        "type": "minecraft:empty"
-    }
-    """.data(using: .utf8)! // weight defaults to 1, quality defaults to 0
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is EmptyEntry)
-    let emptyEntry = lootEntry as! EmptyEntry
-    #expect(emptyEntry.weight == 1)
-    #expect(emptyEntry.quality == 0)
+@Test func testNestedLootTableGenerationFromDatapack() throws {
+    let resolver: LootTableResolver = { try decodeLootTable($0) }
+    let table = try decodeLootTable("test:chests/nested")
+    let generated = try table.generateLoot(withContext: makeContext(seed: 3), resolvingTables: resolver)
+
+    #expect(generated.count == 1)
+    #expect(generated[0].itemName == "minecraft:golden_apple")
+    #expect(generated[0].count == 3)
+    #expect(generated[0].components["minecraft:custom_name"] == .object(["text": .string("debug-table")]))
 }
 
-@Test func testDecodingForTagLootEntry() async throws {
-    let data = """
-    {
-        "type": "minecraft:tag",
-        "name": "test:example",
-        "expand": true,
-        "weight": 7,
-        "quality": -2
-    }
-    """.data(using: .utf8)!
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is TagEntry)
-    let tagEntry = lootEntry as! TagEntry
-    #expect(tagEntry.name == "test:example")
-    #expect(tagEntry.expand == true)
-    #expect(tagEntry.weight == 7)
-    #expect(tagEntry.quality == -2)
+@Test func testAlternativesLootTableGenerationFromDatapack() throws {
+    let table = try decodeLootTable("test:chests/alternatives")
+    let generated = try table.generateLoot(withContext: makeContext(seed: 4))
+
+    #expect(generated.count == 1)
+    #expect(generated[0].itemName == "minecraft:emerald")
 }
 
-@Test func testDecodingForGroupLootEntry() async throws {
-    let data = """
-    {
-        "type": "minecraft:group",
-        "children": [
-            { "type": "minecraft:item", "name": "minecraft:diamond", "weight": 2, "quality": 1 },
-            { "type": "minecraft:empty" }
-        ]
-    }
-    """.data(using: .utf8)!
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is GroupEntry)
-    let groupEntry = lootEntry as! GroupEntry
-    #expect(groupEntry.children.count == 2)
-    #expect(groupEntry.children[0] is ItemEntry)
-    #expect(groupEntry.children[1] is EmptyEntry)
-    let itemEntry = groupEntry.children[0] as! ItemEntry
-    #expect(itemEntry.name == "minecraft:diamond")
-    #expect(itemEntry.weight == 2)
-    #expect(itemEntry.quality == 1)
-    let emptyEntry = groupEntry.children[1] as! EmptyEntry
-    #expect(emptyEntry.weight == 1)
-    #expect(emptyEntry.quality == 0)
+@Test func testSequenceLootTableGenerationFromDatapack() throws {
+    let table = try decodeLootTable("test:chests/sequence")
+    let generated = try table.generateLoot(withContext: makeContext(seed: 5))
+
+    #expect(generated.count == 1)
+    #expect(generated[0].itemName == "minecraft:book")
 }
 
-@Test func testDecodingForAlternativesLootEntry() async throws {
-    let data = """
-    {
-        "type": "minecraft:alternatives",
-        "children": [
-            { "type": "minecraft:item", "name": "minecraft:emerald" },
-            { "type": "minecraft:empty", "weight": 4, "quality": 3 }
-        ]
-    }
-    """.data(using: .utf8)!
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is AlternativesEntry)
-    let alternativesEntry = lootEntry as! AlternativesEntry
-    #expect(alternativesEntry.children.count == 2)
-    #expect(alternativesEntry.children[0] is ItemEntry)
-    #expect(alternativesEntry.children[1] is EmptyEntry)
-    let itemEntry = alternativesEntry.children[0] as! ItemEntry
-    #expect(itemEntry.name == "minecraft:emerald")
-    #expect(itemEntry.weight == 1)
-    #expect(itemEntry.quality == 0)
-    let emptyEntry = alternativesEntry.children[1] as! EmptyEntry
-    #expect(emptyEntry.weight == 4)
-    #expect(emptyEntry.quality == 3)
+@Test func testGroupLootTableGenerationFromDatapack() throws {
+    let table = try decodeLootTable("test:chests/group")
+    let generated = try table.generateLoot(withContext: makeContext(seed: 6))
+
+    #expect(generated.count == 1)
+    #expect(generated[0].itemName == "minecraft:coal")
 }
 
-@Test func testDecodingForSequenceLootEntry() async throws {
-    let data = """
-    {
-        "type": "minecraft:sequence",
-        "children": [
-            { "type": "minecraft:item", "name": "minecraft:gold_ingot", "weight": 3, "quality": 2 },
-            { "type": "minecraft:empty" }
-        ]
+@Test func testVanilla12111LootTablesAgainstCubiomesReference() throws {
+    let fixture = try JSONDecoder().decode(RealWorldLootFixture.self, from: Data(contentsOf: vanilla12111ReferenceURL))
+    #expect(fixture.version == "1.21.11")
+    let resources = try loadVanilla12111EnchantmentResources()
+
+    for testCase in fixture.cases {
+        let table = try decodeLootTable(testCase.table, from: vanilla12111Root)
+        let generated = try table.generateLoot(withContext: makeCheckedContext(seed: testCase.seed, enchantmentResources: resources))
+        let normalized = normalizeGeneratedLoot(generated)
+        #expect(
+            normalized == normalizeExpectedLoot(testCase.items),
+            "\(testCase.table) / \(testCase.xppleName) / seed \(testCase.seed)"
+        )
     }
-    """.data(using: .utf8)!
-    let decoder = JSONDecoder()
-    let lootEntry = try decoder.decode(LootEntryInitializer.self, from: data).value
-    #expect(lootEntry is SequenceEntry)
-    let sequenceEntry = lootEntry as! SequenceEntry
-    #expect(sequenceEntry.children.count == 2)
-    #expect(sequenceEntry.children[0] is ItemEntry)
-    #expect(sequenceEntry.children[1] is EmptyEntry)
-    let itemEntry = sequenceEntry.children[0] as! ItemEntry
-    #expect(itemEntry.name == "minecraft:gold_ingot")
-    #expect(itemEntry.weight == 3)
-    #expect(itemEntry.quality == 2)
-    let emptyEntry = sequenceEntry.children[1] as! EmptyEntry
-    #expect(emptyEntry.weight == 1)
-    #expect(emptyEntry.quality == 0)
 }

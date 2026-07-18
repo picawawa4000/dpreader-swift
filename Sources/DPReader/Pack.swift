@@ -28,6 +28,7 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
     public static let noBiomes = DataPackRegistryLoadingOptions(rawValue: 1 << 4)
     public static let noStructures = DataPackRegistryLoadingOptions(rawValue: 1 << 5)
     public static let noStructureSets = DataPackRegistryLoadingOptions(rawValue: 1 << 6)
+    public static let noEnchantments = DataPackRegistryLoadingOptions(rawValue: 1 << 7)
 }
 
 /// Represents a data pack.
@@ -37,6 +38,7 @@ public final class DataPack {
     public let noiseSettingsRegistry = Registry<NoiseSettings>()
     public let dimensionsRegistry = Registry<Dimension>()
     public let biomeRegistry = Registry<Biome>()
+    public let enchantmentRegistry = Registry<Enchantment>()
     public let tagRegistry = Registry<TagDefinition>()
     public let structureRegistry = Registry<Structure>()
     public let structureSetRegistry = Registry<StructureSet>()
@@ -60,6 +62,7 @@ public final class DataPack {
             let namespace = namespaceURL.lastPathComponent
 
             try self.loadTags(fromNamespaceURL: namespaceURL, withNamespace: namespace)
+            if !options.contains(.noEnchantments) { try self.loadEnchantments(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
             if !options.contains(.noDimensions) { try self.loadDimensions(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
 
             let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
@@ -174,6 +177,25 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("dimension")
+        }
+    }
+
+    private func loadEnchantments(fromNamespaceURL namespaceURL: URL, withNamespace namespace: String) throws {
+        let root = namespaceURL.appendingDirectory(path: "enchantment")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
+        let decoder = JSONDecoder()
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if !Self.shouldDecodeFile(at: filepath) { continue }
+                let data = try Data(contentsOf: filepath)
+                let enchantment = try decoder.decode(Enchantment.self, from: data)
+                let id = RegistryKey<Enchantment>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
+                self.enchantmentRegistry.register(enchantment, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("enchantment")
         }
     }
 

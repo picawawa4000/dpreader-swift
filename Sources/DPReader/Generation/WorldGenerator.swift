@@ -1772,6 +1772,147 @@ struct ChunkGenerationComponentBenchmark {
     let fullGenerateIntoNanos: UInt64
 }
 
+struct TimedComponentBenchmark {
+    let callCount: UInt64
+    let totalNanos: UInt64
+}
+
+struct ChunkBiomeGenerationDetailedBenchmark {
+    let temperature: TimedComponentBenchmark
+    let humidity: TimedComponentBenchmark
+    let continentalness: TimedComponentBenchmark
+    let erosion: TimedComponentBenchmark
+    let weirdness: TimedComponentBenchmark
+    let depth: TimedComponentBenchmark
+    let searchTree: TimedComponentBenchmark
+}
+
+struct ChunkTerrainGenerationDetailedBenchmark {
+    let terrainDensity: TimedComponentBenchmark
+}
+
+struct ChunkGenerationDetailedProfileBenchmark {
+    let configureNanos: UInt64
+    let samplerInitNanos: UInt64
+    let sharedBakeNanos: UInt64
+    let terrainOnlyNanos: UInt64
+    let terrainOnlyProfile: ChunkTerrainGenerationDetailedBenchmark
+    let quartBiomesOnlyNanos: UInt64
+    let quartBiomesOnlyProfile: ChunkBiomeGenerationDetailedBenchmark?
+    let blockBiomesOnlyNanos: UInt64
+    let blockBiomesOnlyProfile: ChunkBiomeGenerationDetailedBenchmark?
+    let fullGenerateIntoNanos: UInt64
+    let fullTerrainProfile: ChunkTerrainGenerationDetailedBenchmark
+    let fullBiomeProfile: ChunkBiomeGenerationDetailedBenchmark?
+}
+
+private func benchmarkRuntimeOnlyDecodeError(_ decoder: any Decoder, forType typeName: String) -> DecodingError {
+    return DecodingError.dataCorrupted(
+        DecodingError.Context(
+            codingPath: decoder.codingPath,
+            debugDescription: "\(typeName) is a runtime-only benchmark profiling wrapper."
+        )
+    )
+}
+
+private func benchmarkRuntimeOnlyEncodeError(_ encoder: any Encoder, forType typeName: String) -> EncodingError {
+    return EncodingError.invalidValue(
+        typeName,
+        EncodingError.Context(
+            codingPath: encoder.codingPath,
+            debugDescription: "\(typeName) is a runtime-only benchmark profiling wrapper."
+        )
+    )
+}
+
+final class MutableTimedComponentBenchmark {
+    var callCount: UInt64 = 0
+    var totalNanos: UInt64 = 0
+
+    @inline(__always)
+    func record<T>(_ body: () -> T) -> T {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let value = body()
+        self.totalNanos &+= DispatchTime.now().uptimeNanoseconds - start
+        self.callCount &+= 1
+        return value
+    }
+
+    func snapshot() -> TimedComponentBenchmark {
+        return TimedComponentBenchmark(callCount: self.callCount, totalNanos: self.totalNanos)
+    }
+}
+
+private final class MutableChunkBiomeGenerationDetailedBenchmark {
+    let temperature = MutableTimedComponentBenchmark()
+    let humidity = MutableTimedComponentBenchmark()
+    let continentalness = MutableTimedComponentBenchmark()
+    let erosion = MutableTimedComponentBenchmark()
+    let weirdness = MutableTimedComponentBenchmark()
+    let depth = MutableTimedComponentBenchmark()
+    let searchTree = MutableTimedComponentBenchmark()
+
+    func snapshot() -> ChunkBiomeGenerationDetailedBenchmark {
+        return ChunkBiomeGenerationDetailedBenchmark(
+            temperature: self.temperature.snapshot(),
+            humidity: self.humidity.snapshot(),
+            continentalness: self.continentalness.snapshot(),
+            erosion: self.erosion.snapshot(),
+            weirdness: self.weirdness.snapshot(),
+            depth: self.depth.snapshot(),
+            searchTree: self.searchTree.snapshot()
+        )
+    }
+}
+
+private final class MutableChunkTerrainGenerationDetailedBenchmark {
+    let terrainDensity = MutableTimedComponentBenchmark()
+
+    func snapshot() -> ChunkTerrainGenerationDetailedBenchmark {
+        return ChunkTerrainGenerationDetailedBenchmark(terrainDensity: self.terrainDensity.snapshot())
+    }
+}
+
+final class BenchmarkProfilingDensityFunction: DensityFunction, DensityFunctionWrapperIntrospectable {
+    private let delegate: any DensityFunction
+    private let profile: MutableTimedComponentBenchmark
+
+    init(wrapping delegate: any DensityFunction, profile: MutableTimedComponentBenchmark) {
+        self.delegate = delegate
+        self.profile = profile
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.delegate
+    }
+
+    func sample(at pos: PosInt3D) -> Double {
+        return self.profile.record {
+            self.delegate.sample(at: pos)
+        }
+    }
+
+    func lowerBoundValue() -> Double {
+        return self.delegate.lowerBoundValue()
+    }
+
+    func upperBoundValue() -> Double {
+        return self.delegate.upperBoundValue()
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw benchmarkRuntimeOnlyDecodeError(decoder, forType: "BenchmarkProfilingDensityFunction")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw benchmarkRuntimeOnlyEncodeError(encoder, forType: "BenchmarkProfilingDensityFunction")
+    }
+}
+
 private final class SharedTerrainLODProgressReporter: @unchecked Sendable {
     private let lock = NSLock()
     private let totalChunkCount: Int
@@ -2509,7 +2650,8 @@ public final class WorldGenerator {
         minY: Int32,
         using searchTree: BiomeSearchTree,
         with functions: ChunkBiomeDensityFunctions,
-        mode: ChunkBiomeGenerationMode = .quartAndBlock
+        mode: ChunkBiomeGenerationMode = .quartAndBlock,
+        searchTreeProfile: MutableTimedComponentBenchmark? = nil
     ) {
         let lookupState = searchTree.makeReusableLookupState()
         self.generateBiomesIntoChunk(chunk, at: chunkPos, minY: minY, mode: mode) { biomeX, biomeY, biomeZ in
@@ -2518,13 +2660,32 @@ public final class WorldGenerator {
                 y: blockCoord(fromBiome: biomeY),
                 z: blockCoord(fromBiome: biomeZ)
             )
+            let temperature = functions.temperature.sample(at: pos)
+            let humidity = functions.humidity.sample(at: pos)
+            let continentalness = functions.continentalness.sample(at: pos)
+            let erosion = functions.erosion.sample(at: pos)
+            let weirdness = functions.weirdness.sample(at: pos)
+            let depth = functions.depth.sample(at: pos)
+            if let searchTreeProfile {
+                return searchTreeProfile.record {
+                    searchTree.getUnchecked(
+                        temperature: temperature,
+                        humidity: humidity,
+                        continentalness: continentalness,
+                        erosion: erosion,
+                        weirdness: weirdness,
+                        depth: depth,
+                        using: lookupState
+                    )
+                }
+            }
             return searchTree.getUnchecked(
-                temperature: functions.temperature.sample(at: pos),
-                humidity: functions.humidity.sample(at: pos),
-                continentalness: functions.continentalness.sample(at: pos),
-                erosion: functions.erosion.sample(at: pos),
-                weirdness: functions.weirdness.sample(at: pos),
-                depth: functions.depth.sample(at: pos),
+                temperature: temperature,
+                humidity: humidity,
+                continentalness: continentalness,
+                erosion: erosion,
+                weirdness: weirdness,
+                depth: depth,
                 using: lookupState
             )
         }
@@ -2986,6 +3147,187 @@ public final class WorldGenerator {
             quartBiomesOnlyNanos: quartBiomesOnlyNanos,
             blockBiomesOnlyNanos: blockBiomesOnlyNanos,
             fullGenerateIntoNanos: fullGenerateIntoNanos
+        )
+    }
+
+    // Visible for testing/benchmarking only.
+    func benchmarkChunkGenerationDetailedProfile(at chunkPos: PosInt2D) throws -> ChunkGenerationDetailedProfileBenchmark {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
+        let config = try self.validatedTerrainConfig(for: "Detailed terrain generation benchmarking")
+        let minY = Int32(config.minY)
+        let height = Int32(config.height)
+        let biomeSampler = self.configuredChunkBiomeSampler()
+
+        func makeContext() throws -> (ProtoChunk, VanillaChunkTerrainSampler, ChunkGenerationDensityFunctions, UInt64, UInt64, UInt64) {
+            let chunk = ProtoChunk()
+            let configureStart = DispatchTime.now().uptimeNanoseconds
+            try chunk.configure(minY: minY, height: height)
+            let configureEnd = DispatchTime.now().uptimeNanoseconds
+
+            let samplerInitStart = DispatchTime.now().uptimeNanoseconds
+            let chunkSampler = VanillaChunkTerrainSampler(
+                chunkPos: chunkPos,
+                minY: minY,
+                height: height,
+                sizeHorizontal: config.sizeHorizontal,
+                sizeVertical: config.sizeVertical
+            )
+            let samplerInitEnd = DispatchTime.now().uptimeNanoseconds
+
+            let bakeStart = DispatchTime.now().uptimeNanoseconds
+            let densityFunctions = try self.bakeChunkGenerationDensityFunctions(
+                from: config.noiseRouter,
+                with: chunkSampler,
+                chunkPos: chunkPos,
+                minY: minY,
+                height: height,
+                sizeHorizontal: config.sizeHorizontal,
+                sizeVertical: config.sizeVertical
+            )
+            let bakeEnd = DispatchTime.now().uptimeNanoseconds
+
+            return (
+                chunk,
+                chunkSampler,
+                densityFunctions,
+                configureEnd - configureStart,
+                samplerInitEnd - samplerInitStart,
+                bakeEnd - bakeStart
+            )
+        }
+
+        func profiledBiomeFunctions(
+            _ functions: ChunkBiomeDensityFunctions,
+            using profile: MutableChunkBiomeGenerationDetailedBenchmark
+        ) -> ChunkBiomeDensityFunctions {
+            return ChunkBiomeDensityFunctions(
+                temperature: BenchmarkProfilingDensityFunction(wrapping: functions.temperature, profile: profile.temperature),
+                humidity: BenchmarkProfilingDensityFunction(wrapping: functions.humidity, profile: profile.humidity),
+                continentalness: BenchmarkProfilingDensityFunction(wrapping: functions.continentalness, profile: profile.continentalness),
+                erosion: BenchmarkProfilingDensityFunction(wrapping: functions.erosion, profile: profile.erosion),
+                weirdness: BenchmarkProfilingDensityFunction(wrapping: functions.weirdness, profile: profile.weirdness),
+                depth: BenchmarkProfilingDensityFunction(wrapping: functions.depth, profile: profile.depth)
+            )
+        }
+
+        let (_, _, _, configureNanos, samplerInitNanos, sharedBakeNanos) = try makeContext()
+
+        let terrainOnlyProfileState = MutableChunkTerrainGenerationDetailedBenchmark()
+        let (terrainChunk, terrainSampler, terrainFunctions, _, _, _) = try makeContext()
+        let terrainStart = DispatchTime.now().uptimeNanoseconds
+        terrainSampler.generateTerrain(
+            into: terrainChunk,
+            with: terrainFunctions.terrainDensity,
+            profiling: terrainOnlyProfileState.terrainDensity
+        )
+        let terrainOnlyNanos = DispatchTime.now().uptimeNanoseconds - terrainStart
+
+        var quartBiomesOnlyNanos: UInt64 = 0
+        var quartBiomesOnlyProfile: ChunkBiomeGenerationDetailedBenchmark? = nil
+        var blockBiomesOnlyNanos: UInt64 = 0
+        var blockBiomesOnlyProfile: ChunkBiomeGenerationDetailedBenchmark? = nil
+        if let biomeSampler {
+            let quartProfileState = MutableChunkBiomeGenerationDetailedBenchmark()
+            let (quartChunk, _, quartFunctions, _, _, _) = try makeContext()
+            let quartStart = DispatchTime.now().uptimeNanoseconds
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    quartChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: profiledBiomeFunctions(quartFunctions.biomeDensityFunctions, using: quartProfileState),
+                    mode: .quartOnly,
+                    searchTreeProfile: quartProfileState.searchTree
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    quartChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: profiledBiomeFunctions(quartFunctions.biomeDensityFunctions, using: quartProfileState),
+                    mode: .quartOnly
+                )
+            }
+            quartBiomesOnlyNanos = DispatchTime.now().uptimeNanoseconds - quartStart
+            quartBiomesOnlyProfile = quartProfileState.snapshot()
+
+            let blockProfileState = MutableChunkBiomeGenerationDetailedBenchmark()
+            let (blockChunk, _, blockFunctions, _, _, _) = try makeContext()
+            let blockStart = DispatchTime.now().uptimeNanoseconds
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    blockChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: profiledBiomeFunctions(blockFunctions.biomeDensityFunctions, using: blockProfileState),
+                    mode: .blockOnly,
+                    searchTreeProfile: blockProfileState.searchTree
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    blockChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: profiledBiomeFunctions(blockFunctions.biomeDensityFunctions, using: blockProfileState),
+                    mode: .blockOnly
+                )
+            }
+            blockBiomesOnlyNanos = DispatchTime.now().uptimeNanoseconds - blockStart
+            blockBiomesOnlyProfile = blockProfileState.snapshot()
+        }
+
+        let fullTerrainProfileState = MutableChunkTerrainGenerationDetailedBenchmark()
+        var fullBiomeProfile: ChunkBiomeGenerationDetailedBenchmark? = nil
+        let (fullChunk, fullSampler, fullFunctions, _, _, _) = try makeContext()
+        let fullStart = DispatchTime.now().uptimeNanoseconds
+        if let biomeSampler {
+            let fullBiomeProfileState = MutableChunkBiomeGenerationDetailedBenchmark()
+            switch biomeSampler {
+            case .searchTree(let searchTree):
+                self.generateBiomesIntoChunk(
+                    fullChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    using: searchTree,
+                    with: profiledBiomeFunctions(fullFunctions.biomeDensityFunctions, using: fullBiomeProfileState),
+                    searchTreeProfile: fullBiomeProfileState.searchTree
+                )
+            case .theEnd:
+                self.generateEndBiomesIntoChunk(
+                    fullChunk,
+                    at: chunkPos,
+                    minY: minY,
+                    with: profiledBiomeFunctions(fullFunctions.biomeDensityFunctions, using: fullBiomeProfileState)
+                )
+            }
+            fullBiomeProfile = fullBiomeProfileState.snapshot()
+        }
+        fullSampler.generateTerrain(
+            into: fullChunk,
+            with: fullFunctions.terrainDensity,
+            profiling: fullTerrainProfileState.terrainDensity
+        )
+        let fullGenerateIntoNanos = DispatchTime.now().uptimeNanoseconds - fullStart
+
+        return ChunkGenerationDetailedProfileBenchmark(
+            configureNanos: configureNanos,
+            samplerInitNanos: samplerInitNanos,
+            sharedBakeNanos: sharedBakeNanos,
+            terrainOnlyNanos: terrainOnlyNanos,
+            terrainOnlyProfile: terrainOnlyProfileState.snapshot(),
+            quartBiomesOnlyNanos: quartBiomesOnlyNanos,
+            quartBiomesOnlyProfile: quartBiomesOnlyProfile,
+            blockBiomesOnlyNanos: blockBiomesOnlyNanos,
+            blockBiomesOnlyProfile: blockBiomesOnlyProfile,
+            fullGenerateIntoNanos: fullGenerateIntoNanos,
+            fullTerrainProfile: fullTerrainProfileState.snapshot(),
+            fullBiomeProfile: fullBiomeProfile
         )
     }
 

@@ -1,6 +1,16 @@
+/// A single tag entry, either a direct registry ID or a reference to another tag.
 public enum TagValue: Codable, Equatable {
     case rawID(String)
     case tagID(String)
+
+    /// Normalizes a raw tag entry from datapack JSON.
+    init(rawValue: String) {
+        if rawValue.first == "#" {
+            self = .tagID(addDefaultNamespace(String(rawValue.dropFirst())))
+        } else {
+            self = .rawID(addDefaultNamespace(rawValue))
+        }
+    }
 
     public init(from decoder: any Decoder) throws {
         let rawValue: String
@@ -12,11 +22,7 @@ public enum TagValue: Codable, Equatable {
             rawValue = try container.decode(String.self, forKey: .id)
         }
 
-        if rawValue.first == "#" {
-            self = .tagID(addDefaultNamespace(String(rawValue.dropFirst())))
-        } else {
-            self = .rawID(addDefaultNamespace(rawValue))
-        }
+        self.init(rawValue: rawValue)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -34,10 +40,14 @@ public enum TagValue: Codable, Equatable {
     }
 }
 
+/// A decoded tag definition from `data/*/tags`.
 public struct TagDefinition: Codable {
+    /// Whether this tag replaces lower-priority definitions instead of merging with them.
     let replace: Bool
+    /// The tag's direct entries.
     let values: [TagValue]
 
+    /// Creates a tag definition.
     init(replace: Bool = false, values: [TagValue]) {
         self.replace = replace
         self.values = values

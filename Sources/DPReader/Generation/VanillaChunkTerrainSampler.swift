@@ -103,6 +103,46 @@ private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFuncti
     }
 }
 
+private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFunction, DensityFunctionWrapperIntrospectable {
+    private let delegate: any DensityFunction
+    private let profile: MutableTimedComponentBenchmark
+
+    init(wrapping delegate: any DensityFunction, profile: MutableTimedComponentBenchmark) {
+        self.delegate = delegate
+        self.profile = profile
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.delegate
+    }
+
+    func sample(at pos: PosInt3D) -> Double {
+        return self.profile.record {
+            self.delegate.sample(at: pos)
+        }
+    }
+
+    func lowerBoundValue() -> Double {
+        return self.delegate.lowerBoundValue()
+    }
+
+    func upperBoundValue() -> Double {
+        return self.delegate.upperBoundValue()
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw terrainRuntimeOnlyDecodeError(decoder, forType: "VanillaChunkBenchmarkProfilingDensityFunction")
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw terrainRuntimeOnlyEncodeError(encoder, forType: "VanillaChunkBenchmarkProfilingDensityFunction")
+    }
+}
+
 private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let startBiomeX: Int32
@@ -1454,9 +1494,21 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    func generateTerrain(into chunk: ProtoChunk, with terrainDensity: any DensityFunction) {
+    func generateTerrain(
+        into chunk: ProtoChunk,
+        with terrainDensity: any DensityFunction,
+        profiling terrainDensityProfile: MutableTimedComponentBenchmark? = nil
+    ) {
         let directSamplingTerrainDensity = self.strippedTerrainSamplingFunction(from: terrainDensity)
-        let terrainInterpolator = VanillaChunkTerrainInterpolator(delegate: directSamplingTerrainDensity, using: self)
+        let terrainInterpolator = VanillaChunkTerrainInterpolator(
+            delegate: terrainDensityProfile != nil
+                ? VanillaChunkBenchmarkProfilingDensityFunction(
+                    wrapping: directSamplingTerrainDensity,
+                    profile: terrainDensityProfile!
+                )
+                : directSamplingTerrainDensity,
+            using: self
+        )
         let usesFullHorizontalCells =
             Int32(self.horizontalCellCount) * self.horizontalCellBlockCount == Int32(ProtoChunk.sideLength)
             && self.startCellX * self.horizontalCellBlockCount == self.chunkStartX

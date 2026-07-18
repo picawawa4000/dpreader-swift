@@ -125,6 +125,28 @@ private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
     #expect(biomeTag.values == [.rawID("test:plains"), .tagID("test:is_special")])
 }
 
+@Test func testLoadingForEnchantments() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/Enchantments/enchantments")
+    let dataPack = try DataPack(
+        fromRootPath: packURL,
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructures, .noStructureSets]
+    )
+
+    guard let enchantment = dataPack.enchantmentRegistry.get(RegistryKey(referencing: "test:edge")) else {
+        throw Errors.enchantmentNotFound("test:edge")
+    }
+
+    #expect(enchantment.description == .object(["text": .string("Edge")]))
+    #expect(enchantment.supportedItems == RegistryReferenceList(values: [.tagID("test:weapon_like")]))
+    #expect(enchantment.primaryItems == RegistryReferenceList(values: [.tagID("test:primary_weapon")]))
+    #expect(enchantment.weight == 7)
+    #expect(enchantment.maxLevel == 3)
+    #expect(enchantment.minCost == EnchantmentCost(base: 1, perLevelAboveFirst: 1))
+    #expect(enchantment.maxCost == EnchantmentCost(base: 100, perLevelAboveFirst: 1))
+    #expect(enchantment.exclusiveSet == RegistryReferenceList(values: [.tagID("test:exclusive_set/edge")]))
+    #expect(enchantment.slots == ["mainhand"])
+}
+
 @Test func testLoadingForStructures() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Structures/structures")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructureSets])
@@ -637,6 +659,7 @@ fileprivate enum Errors: Error {
     case densityFunctionNotFound(String)
     case densityFunctionWrongType(String)
 
+    case enchantmentNotFound(String)
     case noiseNotFound(String)
     case noiseSettingsNotFound(String)
 

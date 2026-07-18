@@ -1,0 +1,34 @@
+{
+  "functions": [
+    {
+      "function": "minecraft:set_name",
+      "name": {
+        "text": "debug-table"
+      }
+    }
+  ],
+  "pools": [
+    {
+      "rolls": 1,
+      "entries": [
+        {
+          "type": "minecraft:loot_table",
+          "value": "test:chests/subtable",
+          "functions": [
+            {
+              "function": "minecraft:set_count",
+              "count": 2,
+              "add": true
+            }
+          ]
+        }
+      ],
+      "functions": [
+        {
+          "function": "minecraft:set_item",
+          "item": "minecraft:golden_apple"
+        }
+      ]
+    }
+  ]
+}
