@@ -33,7 +33,7 @@ public final class Registry<T> {
     /// - Parameter other: The other registry.
     public func mergeDown(with other: Registry<T>) {
         other.forEach { (key, value) in
-            self.registry[key] = value
+            self.register(value, forKey: key)
         }
     }
 

@@ -63,7 +63,7 @@ enum TestingError: Error {
 /// an identifier of a tag (`tagID`),
 /// or a list of identifiers (`idList`).
 enum Identifiers: Codable, Equatable {
-    case rawID(String), tagID(String), idList([String])
+    case rawID(String), tagID(String), idList([Identifiers])
 
     init(from: any Decoder) throws {
         let value = try from.singleValueContainer()
@@ -76,8 +76,7 @@ enum Identifiers: Codable, Equatable {
                 self = Identifiers.rawID(addDefaultNamespace(stringValue))
             }
         } catch DecodingError.typeMismatch {
-            let arrayValue = try value.decode([String].self)
-            self = Identifiers.idList(arrayValue.map(addDefaultNamespace))
+            self = Identifiers.idList(try value.decode([Identifiers].self))
         }
     }
 

@@ -201,6 +201,27 @@ public struct BoundingBox: Equatable {
     }
 }
 
+func makeBoundingBox(
+    x: Int32,
+    y: Int32,
+    z: Int32,
+    orientation: HorizontalDirection,
+    width: Int32,
+    height: Int32,
+    depth: Int32
+) -> BoundingBox {
+    switch orientation {
+    case .north:
+        return BoundingBox(minX: x, minY: y, minZ: z - depth + 1, maxX: x + width - 1, maxY: y + height - 1, maxZ: z)
+    case .south:
+        return BoundingBox(minX: x, minY: y, minZ: z, maxX: x + width - 1, maxY: y + height - 1, maxZ: z + depth - 1)
+    case .west:
+        return BoundingBox(minX: x - depth + 1, minY: y, minZ: z, maxX: x, maxY: y + height - 1, maxZ: z + width - 1)
+    case .east:
+        return BoundingBox(minX: x, minY: y, minZ: z, maxX: x + depth - 1, maxY: y + height - 1, maxZ: z + width - 1)
+    }
+}
+
 public struct PieceGraph<Kind> {
     public let startChunk: PosInt2D
     public let orientation: CardinalDirection
@@ -725,4 +746,20 @@ final class StructureWorldView {
 
 func getRandomWithCarverSeed(worldSeed: WorldSeed, chunkX: Int32, chunkZ: Int32) -> CheckedRandom {
     checkedRandomForChunkGeneration(worldSeed: worldSeed, chunkX: chunkX, chunkZ: chunkZ)
+}
+
+func getStructureGenerationRandom(
+    worldSeed: WorldSeed,
+    chunkX: Int32,
+    chunkZ: Int32,
+    decoratorIndex: Int32,
+    decoratorStep: Int32
+) -> XoroshiroChunkRandom {
+    xoroshiroRandomForDecoratorGeneration(
+        worldSeed: worldSeed,
+        blockX: chunkX &* 16,
+        blockZ: chunkZ &* 16,
+        index: decoratorIndex,
+        step: decoratorStep
+    )
 }

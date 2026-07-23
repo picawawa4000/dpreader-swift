@@ -65,17 +65,13 @@ public struct CheckedRandom: Random {
     }
 
     public mutating func nextLong() -> UInt64 {
-        return (UInt64(self.next(bits: 32)) << 32) | UInt64(self.next(bits: 32))
+        let high = Int64(Int32(bitPattern: self.next(bits: 32)))
+        let low = Int64(Int32(bitPattern: self.next(bits: 32)))
+        return UInt64(bitPattern: (high << 32) &+ low)
     }
 
     public mutating func nextInt32() -> Int32 {
         Int32(bitPattern: self.next(bits: 32))
-    }
-
-    mutating func nextLongExact() -> UInt64 {
-        let high = Int64(Int32(bitPattern: self.next(bits: 32)))
-        let low = Int64(Int32(bitPattern: self.next(bits: 32)))
-        return UInt64(bitPattern: (high << 32) | low)
     }
 
     public mutating func nextFloat() -> Float {
@@ -106,12 +102,126 @@ public struct CheckedRandom: Random {
 
 @inline(__always) func checkedRandomForChunkGeneration(worldSeed: WorldSeed, chunkX: Int32, chunkZ: Int32) -> CheckedRandom {
     var random = CheckedRandom(seed: worldSeed)
-    let multiplierX = random.nextLongExact()
-    let multiplierZ = random.nextLongExact()
+    let multiplierX = random.nextLong()
+    let multiplierZ = random.nextLong()
     let mixed = (multiplierX &* overflow(Int64(chunkX)))
         ^ (multiplierZ &* overflow(Int64(chunkZ)))
         ^ worldSeed
     return CheckedRandom(seed: mixed)
+}
+
+@inline(__always) private func checkedPopulationSeed(worldSeed: WorldSeed, blockX: Int32, blockZ: Int32) -> WorldSeed {
+    var random = CheckedRandom(seed: worldSeed)
+    let multiplierX = random.nextLong() | 1
+    let multiplierZ = random.nextLong() | 1
+    return (UInt64(bitPattern: Int64(blockX)) &* multiplierX)
+        &+ (UInt64(bitPattern: Int64(blockZ)) &* multiplierZ)
+        ^ worldSeed
+}
+
+@inline(__always) func checkedRandomForDecoratorGeneration(
+    worldSeed: WorldSeed,
+    blockX: Int32,
+    blockZ: Int32,
+    index: Int32,
+    step: Int32
+) -> CheckedRandom {
+    let populationSeed = checkedPopulationSeed(worldSeed: worldSeed, blockX: blockX, blockZ: blockZ)
+    let decoratorSeed = populationSeed
+        &+ UInt64(bitPattern: Int64(index))
+        &+ UInt64(bitPattern: Int64(step) &* 10_000)
+    return CheckedRandom(seed: decoratorSeed)
+}
+
+public struct XoroshiroChunkRandom: Random {
+    private var baseRandom: XoroshiroRandom
+
+    public init(seed: UInt64) {
+        self.baseRandom = XoroshiroRandom(seed: seed)
+    }
+
+    public mutating func setSeed(newSeed seed: UInt64) {
+        self.baseRandom = XoroshiroRandom(seed: seed)
+    }
+
+    private mutating func next(bits: UInt8) -> UInt32 {
+        UInt32(truncatingIfNeeded: self.baseRandom.nextLong() >> (64 - bits))
+    }
+
+    public mutating func next(bound: UInt32) -> UInt32 {
+        if ((bound & (bound &- 1)) == 0) {
+            return UInt32((UInt64(bound) * UInt64(self.next(bits: 31))) >> 31)
+        }
+
+        var j, k: Int32
+        repeat {
+            j = Int32(self.next(bits: 31))
+            k = j % Int32(bound)
+        } while j &- k &+ Int32(bound &- 1) < 0
+        return UInt32(k)
+    }
+
+    public mutating func nextLong() -> UInt64 {
+        let high = Int64(Int32(bitPattern: self.next(bits: 32)))
+        let low = Int64(Int32(bitPattern: self.next(bits: 32)))
+        return UInt64(bitPattern: (high << 32) &+ low)
+    }
+
+    public mutating func nextInt32() -> Int32 {
+        Int32(bitPattern: self.next(bits: 32))
+    }
+
+    public mutating func nextFloat() -> Float {
+        Float(self.next(bits: 24)) * 5.9604645e-8
+    }
+
+    public mutating func nextDouble() -> Double {
+        let i = UInt64(self.next(bits: 26))
+        let j = UInt64(self.next(bits: 27))
+        let l = (i << 27) + j
+        return Double(l) * 1.110223E-16
+    }
+
+    public mutating func nextSplitter() -> XoroshiroRandomSplitter {
+        XoroshiroRandomSplitter(seedLo: self.baseRandom.nextLong(), seedHi: self.baseRandom.nextLong())
+    }
+
+    public mutating func skip(calls: UInt) {
+        for _ in 0..<calls {
+            let _ = self.next(bits: 32)
+        }
+    }
+
+    public mutating func setPopulationSeed(worldSeed: UInt64, blockX: Int32, blockZ: Int32) -> UInt64 {
+        self.setSeed(newSeed: worldSeed)
+        let multiplierX = self.nextLong() | 1
+        let multiplierZ = self.nextLong() | 1
+        let populationSeed = (UInt64(bitPattern: Int64(blockX)) &* multiplierX)
+            &+ (UInt64(bitPattern: Int64(blockZ)) &* multiplierZ)
+            ^ worldSeed
+        self.setSeed(newSeed: populationSeed)
+        return populationSeed
+    }
+
+    public mutating func setDecoratorSeed(populationSeed: UInt64, index: Int32, step: Int32) {
+        let decoratorSeed = populationSeed
+            &+ UInt64(bitPattern: Int64(index))
+            &+ UInt64(bitPattern: Int64(step) &* 10_000)
+        self.setSeed(newSeed: decoratorSeed)
+    }
+}
+
+@inline(__always) func xoroshiroRandomForDecoratorGeneration(
+    worldSeed: WorldSeed,
+    blockX: Int32,
+    blockZ: Int32,
+    index: Int32,
+    step: Int32
+) -> XoroshiroChunkRandom {
+    var random = XoroshiroChunkRandom(seed: 0)
+    let populationSeed = random.setPopulationSeed(worldSeed: worldSeed, blockX: blockX, blockZ: blockZ)
+    random.setDecoratorSeed(populationSeed: populationSeed, index: index, step: step)
+    return random
 }
 
 public struct CheckedRandomSplitter: RandomSplitter {
@@ -124,8 +234,10 @@ public struct CheckedRandomSplitter: RandomSplitter {
     }
 
     public func split(usingPos pos: PosInt3D) -> ReturnedRandom {
-        let l: UInt64 = UInt64(pos.x) &* 3129871 ^ UInt64(pos.z) &* 116129781 ^ UInt64(pos.y)
-        let m = l &* l &* 42317861 + l &* 11
+        let l = overflow(Int64(pos.x)) &* 3129871
+            ^ overflow(Int64(pos.z)) &* 116129781
+            ^ overflow(Int64(pos.y))
+        let m = l &* l &* 42317861 &+ l &* 11
         return CheckedRandom(seed: (m >> 16) ^ self.seed)
     }
 
@@ -237,8 +349,10 @@ public struct XoroshiroRandomSplitter: RandomSplitter {
     }
 
     public func split(usingPos pos: PosInt3D) -> ReturnedRandom {
-        let l: UInt64 = UInt64(pos.x) * 3129871 ^ UInt64(pos.z) * 116129781 ^ UInt64(pos.y)
-        let m = l * l * 42317861 + l * 11
+        let l = overflow(Int64(pos.x)) &* 3129871
+            ^ overflow(Int64(pos.z)) &* 116129781
+            ^ overflow(Int64(pos.y))
+        let m = l &* l &* 42317861 &+ l &* 11
         return XoroshiroRandom(seedLo: m ^ self.seedLo, seedHi: self.seedHi)
     }
 

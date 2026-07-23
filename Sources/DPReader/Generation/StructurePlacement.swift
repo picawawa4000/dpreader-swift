@@ -217,7 +217,12 @@ public final class StructurePlacementSampler {
         case .tagID(let tag):
             return try self.registryEntry(entryName, isInTag: tag, in: registryPath, visitedTags: [])
         case .idList(let ids):
-            return ids.contains(entryName)
+            for identifier in ids {
+                if try self.registryEntry(entryName, matches: identifier, in: registryPath) {
+                    return true
+                }
+            }
+            return false
         }
     }
 
