@@ -402,13 +402,6 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
-@inline(__always) private func floorDiv(_ value: Int32, by divisor: Int32) -> Int32 {
-    precondition(divisor > 0, "divisor must be positive")
-    let quotient = value / divisor
-    let remainder = value % divisor
-    return remainder < 0 ? quotient - 1 : quotient
-}
-
 @inline(__always) private func clampToInt32(_ value: Int64) -> Int32 {
     if value < Int64(Int32.min) {
         return Int32.min

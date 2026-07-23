@@ -1,30 +1,5 @@
 import Foundation
 
-/// Samples the existing world state for ocean monument generation.
-///
-/// The generator only needs three pieces of external world context:
-/// - `seaLevel`, because vanilla monument water boxes emit air above sea level and water below it.
-/// - `minimumWorldY`, because the support pillars use a downward fill operation that must know when to stop.
-/// - `blockSampler`, because both water-box filling and support pillars depend on the pre-existing block state.
-///
-/// Everything else, including the room graph, orientation, piece bounds, and local block layout, is generated
-/// directly from the structure seed and the start chunk.
-public struct OceanMonumentGenerationContext {
-    public let seaLevel: Int32
-    public let minimumWorldY: Int32
-    public let blockSampler: (PosInt3D) -> BlockState
-
-    public init(
-        seaLevel: Int32,
-        minimumWorldY: Int32,
-        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) }
-    ) {
-        self.seaLevel = seaLevel
-        self.minimumWorldY = minimumWorldY
-        self.blockSampler = blockSampler
-    }
-}
-
 /// The public, inspectable piece graph for a monument.
 ///
 /// The graph mirrors the vanilla piece layout:
@@ -34,12 +9,9 @@ public struct OceanMonumentGenerationContext {
 /// - one penthouse
 ///
 /// Piece order matches generation order, which matters for overlapping writes.
-public struct OceanMonumentPieceGraph {
-    public let startChunk: PosInt2D
-    public let orientation: OceanMonumentOrientation
-    public let boundingBox: OceanMonumentBoundingBox
-    public let pieces: [OceanMonumentGraphPiece]
-}
+public typealias OceanMonumentPieceGraph = PieceGraph<OceanMonumentPieceKind>
+
+public typealias OceanMonumentGenerationContext = StructureGenerationContext
 
 /// A room-grid coordinate within the monument's internal 5x3x5 room lattice.
 ///
@@ -67,18 +39,12 @@ struct OceanMonumentRoomPieceSnapshot {
 /// A test-facing projection of the merged room-piece graph.
 struct OceanMonumentRoomPieceGraphSnapshot {
     let startChunk: PosInt2D
-    let orientation: OceanMonumentOrientation
+    let orientation: CardinalDirection
     let pieces: [OceanMonumentRoomPieceSnapshot]
 }
 
 /// One generated piece in the public graph view.
-public struct OceanMonumentGraphPiece {
-    public let kind: OceanMonumentPieceKind
-    public let orientation: OceanMonumentOrientation
-    public let boundingBox: OceanMonumentBoundingBox
-    public let roomIndex: Int?
-    public let design: Int?
-}
+public typealias OceanMonumentGraphPiece = StructurePiece<OceanMonumentPieceKind>
 
 public enum OceanMonumentPieceKind: String {
     case monumentBuilding
@@ -95,38 +61,6 @@ public enum OceanMonumentPieceKind: String {
     case penthouse
 }
 
-public enum OceanMonumentOrientation: String {
-    case north
-    case east
-    case south
-    case west
-}
-
-/// A public bounding box type used by the monument APIs.
-public struct OceanMonumentBoundingBox: Equatable {
-    public let minX: Int32
-    public let minY: Int32
-    public let minZ: Int32
-    public let maxX: Int32
-    public let maxY: Int32
-    public let maxZ: Int32
-
-    public init(minX: Int32, minY: Int32, minZ: Int32, maxX: Int32, maxY: Int32, maxZ: Int32) {
-        self.minX = minX
-        self.minY = minY
-        self.minZ = minZ
-        self.maxX = maxX
-        self.maxY = maxY
-        self.maxZ = maxZ
-    }
-
-    public func contains(_ pos: PosInt3D) -> Bool {
-        pos.x >= self.minX && pos.x <= self.maxX
-            && pos.y >= self.minY && pos.y <= self.maxY
-            && pos.z >= self.minZ && pos.z <= self.maxZ
-    }
-}
-
 /// The generated monument output.
 ///
 /// `blocks` stores only the written structure blocks in a sparse, paletted, sectioned volume.
@@ -134,121 +68,8 @@ public struct OceanMonumentBoundingBox: Equatable {
 /// existing ice and stop support pillars on real terrain without copying an entire chunk region.
 public struct OceanMonumentGenerationResult {
     public let graph: OceanMonumentPieceGraph
-    public let blocks: OceanMonumentBlockVolume
+    public let blocks: StructureBlockVolume
     public let elderGuardians: [PosInt3D]
-}
-
-/// A sparse block volume backed by per-section paletted storage.
-///
-/// The storage is intentionally simple:
-/// - the world is divided into 16x16x16 sections
-/// - each touched section stores a dense palette/index array plus a touched bitset
-/// - untouched cells read through to the caller-provided world sampler
-///
-/// This keeps the implementation compact while still giving structure generation the same
-/// "read world, then overlay writes" model that vanilla piece code expects.
-public final class OceanMonumentBlockVolume {
-    public let bounds: OceanMonumentBoundingBox
-
-    private struct SectionKey: Hashable {
-        let x: Int32
-        let y: Int32
-        let z: Int32
-    }
-
-    private final class Section {
-        private let storage = PalettedChunkBlockStorage(filledWith: OceanMonumentBlocks.airState)
-        private var touched = [UInt64](repeating: 0, count: 64)
-
-        func set(_ state: BlockState, at localPos: PosInt3D) {
-            self.storage.setBlock(state, at: localPos)
-            let index = (Int(localPos.y) << 8) | (Int(localPos.z) << 4) | Int(localPos.x)
-            self.touched[index >> 6] |= UInt64(1) << UInt64(index & 63)
-        }
-
-        func get(at localPos: PosInt3D) -> BlockState? {
-            let index = (Int(localPos.y) << 8) | (Int(localPos.z) << 4) | Int(localPos.x)
-            let mask = UInt64(1) << UInt64(index & 63)
-            guard (self.touched[index >> 6] & mask) != 0 else {
-                return nil
-            }
-            return self.storage.getBlock(at: localPos)
-        }
-    }
-
-    private let fallbackSampler: (PosInt3D) -> BlockState
-    private var sections: [SectionKey: Section] = [:]
-
-    public init(bounds: OceanMonumentBoundingBox, fallbackSampler: @escaping (PosInt3D) -> BlockState) {
-        self.bounds = bounds
-        self.fallbackSampler = fallbackSampler
-    }
-
-    public func block(at pos: PosInt3D) -> BlockState {
-        guard self.bounds.contains(pos) else {
-            return self.fallbackSampler(pos)
-        }
-        let (key, localPos) = self.sectionKeyAndLocalPos(for: pos)
-        if let section = self.sections[key], let state = section.get(at: localPos) {
-            return state
-        }
-        return self.fallbackSampler(pos)
-    }
-
-    public func setBlock(_ state: BlockState, at pos: PosInt3D) {
-        guard self.bounds.contains(pos) else {
-            return
-        }
-        let (key, localPos) = self.sectionKeyAndLocalPos(for: pos)
-        let section: Section
-        if let existing = self.sections[key] {
-            section = existing
-        } else {
-            let created = Section()
-            self.sections[key] = created
-            section = created
-        }
-        section.set(state, at: localPos)
-    }
-
-    public func allTouchedBlocks() -> [(PosInt3D, BlockState)] {
-        var result: [(PosInt3D, BlockState)] = []
-        for (key, section) in self.sections {
-            for localY in 0..<16 {
-                for localZ in 0..<16 {
-                    for localX in 0..<16 {
-                        let local = PosInt3D(x: Int32(localX), y: Int32(localY), z: Int32(localZ))
-                        guard let state = section.get(at: local) else { continue }
-                        let worldPos = PosInt3D(
-                            x: key.x &* 16 &+ Int32(localX),
-                            y: key.y &* 16 &+ Int32(localY),
-                            z: key.z &* 16 &+ Int32(localZ)
-                        )
-                        result.append((worldPos, state))
-                    }
-                }
-            }
-        }
-        result.sort { left, right in
-            if left.0.y != right.0.y { return left.0.y < right.0.y }
-            if left.0.z != right.0.z { return left.0.z < right.0.z }
-            return left.0.x < right.0.x
-        }
-        return result
-    }
-
-    private func sectionKeyAndLocalPos(for pos: PosInt3D) -> (SectionKey, PosInt3D) {
-        let sectionX = monumentFloorDiv(pos.x, 16)
-        let sectionY = monumentFloorDiv(pos.y, 16)
-        let sectionZ = monumentFloorDiv(pos.z, 16)
-        let localX = pos.x - sectionX * 16
-        let localY = pos.y - sectionY * 16
-        let localZ = pos.z - sectionZ * 16
-        return (
-            SectionKey(x: sectionX, y: sectionY, z: sectionZ),
-            PosInt3D(x: localX, y: localY, z: localZ)
-        )
-    }
 }
 
 /// Namespace for monument generation.
@@ -262,34 +83,32 @@ public final class OceanMonumentBlockVolume {
 ///   where this implementation may diverge from a literal chunk-by-chunk vanilla execution.
 public enum OceanMonument {
     public static func generatePieceGraph(worldSeed: WorldSeed, startChunk: PosInt2D) -> OceanMonumentPieceGraph {
-        var random = monumentLargeFeatureRandom(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
-        let root = MonumentBuilding(startChunk: startChunk, random: &random)
+        let root = makeRoot(worldSeed: worldSeed, startChunk: startChunk)
         return pieceGraph(from: root, startChunk: startChunk)
     }
 
     static func generateRoomPieceGraph(worldSeed: WorldSeed, startChunk: PosInt2D) -> OceanMonumentRoomPieceGraphSnapshot {
-        var random = monumentLargeFeatureRandom(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
-        let root = MonumentBuilding(startChunk: startChunk, random: &random)
+        let root = makeRoot(worldSeed: worldSeed, startChunk: startChunk)
         return roomPieceGraph(from: root, startChunk: startChunk)
     }
 
     public static func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
-        context: OceanMonumentGenerationContext
+        context: StructureGenerationContext
     ) -> OceanMonumentGenerationResult {
-        var random = monumentLargeFeatureRandom(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
+        var random = getRandomWithCarverSeed(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
         let root = MonumentBuilding(startChunk: startChunk, random: &random)
         let graph = pieceGraph(from: root, startChunk: startChunk)
 
         let writeBounds = expandedWriteBounds(for: root, minimumWorldY: context.minimumWorldY)
-        let volume = OceanMonumentBlockVolume(bounds: writeBounds.publicValue, fallbackSampler: context.blockSampler)
-        let world = MonumentWorld(
+        let volume = StructureBlockVolume(bounds: writeBounds, fallbackSampler: context.blockSampler)
+        let world = StructureWorldView(
             seaLevel: context.seaLevel,
             minimumWorldY: context.minimumWorldY,
             volume: volume
         )
-        root.postProcess(in: world, chunkBox: writeBounds, random: &random)
+        root.write(in: world, chunkBox: writeBounds, random: &random)
         return OceanMonumentGenerationResult(
             graph: graph,
             blocks: volume,
@@ -297,24 +116,33 @@ public enum OceanMonument {
         )
     }
 
-    private static func pieceGraph(from root: MonumentBuilding, startChunk: PosInt2D) -> OceanMonumentPieceGraph {
-        let pieces = ([root] + root.childPieces).map { $0.graphPiece() }
-        let bounds = ([root] + root.childPieces).reduce(root.boundingBox) { partialResult, piece in
+    private static func makeRoot(worldSeed: WorldSeed, startChunk: PosInt2D) -> MonumentBuilding {
+        var random = getRandomWithCarverSeed(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
+        return MonumentBuilding(startChunk: startChunk, random: &random)
+    }
+
+    private static func allPieces(from root: MonumentBuilding) -> [MonumentPiece] {
+        [root] + root.childPieces
+    }
+
+    private static func combinedBounds(for root: MonumentBuilding) -> BoundingBox {
+        allPieces(from: root).dropFirst().reduce(root.boundingBox) { partialResult, piece in
             partialResult.union(piece.boundingBox)
         }
+    }
+
+    private static func pieceGraph(from root: MonumentBuilding, startChunk: PosInt2D) -> OceanMonumentPieceGraph {
         return OceanMonumentPieceGraph(
             startChunk: startChunk,
-            orientation: root.orientation.publicValue,
-            boundingBox: bounds.publicValue,
-            pieces: pieces
+            orientation: root.orientation,
+            boundingBox: combinedBounds(for: root),
+            pieces: allPieces(from: root)
         )
     }
 
-    private static func expandedWriteBounds(for root: MonumentBuilding, minimumWorldY: Int32) -> MonumentBoundingBox {
-        let union = ([root] + root.childPieces).reduce(root.boundingBox) { partialResult, piece in
-            partialResult.union(piece.boundingBox)
-        }
-        return MonumentBoundingBox(
+    private static func expandedWriteBounds(for root: MonumentBuilding, minimumWorldY: Int32) -> BoundingBox {
+        let union = combinedBounds(for: root)
+        return BoundingBox(
             minX: union.minX - 5,
             minY: min(minimumWorldY + 1, union.minY - 1),
             minZ: union.minZ - 5,
@@ -368,7 +196,7 @@ public enum OceanMonument {
 
         return OceanMonumentRoomPieceGraphSnapshot(
             startChunk: startChunk,
-            orientation: root.orientation.publicValue,
+            orientation: root.orientation,
             pieces: pieces.sorted { left, right in
                 left.roomIndex < right.roomIndex
             }
@@ -384,168 +212,6 @@ public enum OceanMonument {
     }
 }
 
-private enum OceanMonumentBlocks {
-    static let air = Block(withID: "minecraft:air")
-    static let water = Block(withID: "minecraft:water")
-    static let prismarine = Block(withID: "minecraft:prismarine")
-    static let prismarineBricks = Block(withID: "minecraft:prismarine_bricks")
-    static let darkPrismarine = Block(withID: "minecraft:dark_prismarine")
-    static let seaLantern = Block(withID: "minecraft:sea_lantern")
-    static let ice = Block(withID: "minecraft:ice")
-    static let packedIce = Block(withID: "minecraft:packed_ice")
-    static let blueIce = Block(withID: "minecraft:blue_ice")
-    static let goldBlock = Block(withID: "minecraft:gold_block")
-    static let wetSponge = Block(withID: "minecraft:wet_sponge")
-    static let kelp = Block(withID: "minecraft:kelp")
-    static let kelpPlant = Block(withID: "minecraft:kelp_plant")
-    static let seagrass = Block(withID: "minecraft:seagrass")
-    static let tallSeagrass = Block(withID: "minecraft:tall_seagrass")
-
-    static let airState = BlockState(type: air)
-    static let waterState = BlockState(type: water)
-    static let prismarineState = BlockState(type: prismarine)
-    static let prismarineBricksState = BlockState(type: prismarineBricks)
-    static let darkPrismarineState = BlockState(type: darkPrismarine)
-    static let seaLanternState = BlockState(type: seaLantern)
-    static let goldBlockState = BlockState(type: goldBlock)
-    static let wetSpongeState = BlockState(type: wetSponge)
-}
-
-private enum MonumentDirection: Int, CaseIterable {
-    case down = 0
-    case up = 1
-    case north = 2
-    case south = 3
-    case west = 4
-    case east = 5
-
-    var opposite: MonumentDirection {
-        switch self {
-        case .down: return .up
-        case .up: return .down
-        case .north: return .south
-        case .south: return .north
-        case .west: return .east
-        case .east: return .west
-        }
-    }
-
-    var stepX: Int32 {
-        switch self {
-        case .west: return -1
-        case .east: return 1
-        default: return 0
-        }
-    }
-
-    var stepY: Int32 {
-        switch self {
-        case .down: return -1
-        case .up: return 1
-        default: return 0
-        }
-    }
-
-    var stepZ: Int32 {
-        switch self {
-        case .north: return -1
-        case .south: return 1
-        default: return 0
-        }
-    }
-}
-
-private enum HorizontalDirection: CaseIterable {
-    case north
-    case east
-    case south
-    case west
-
-    var publicValue: OceanMonumentOrientation {
-        switch self {
-        case .north: return .north
-        case .east: return .east
-        case .south: return .south
-        case .west: return .west
-        }
-    }
-
-    static func random(using random: inout CheckedRandom) -> HorizontalDirection {
-        switch Int(random.next(bound: 4)) {
-        case 0: return .north
-        case 1: return .east
-        case 2: return .south
-        default: return .west
-        }
-    }
-}
-
-private struct MonumentBoundingBox: Equatable {
-    var minX: Int32
-    var minY: Int32
-    var minZ: Int32
-    var maxX: Int32
-    var maxY: Int32
-    var maxZ: Int32
-
-    var publicValue: OceanMonumentBoundingBox {
-        OceanMonumentBoundingBox(minX: self.minX, minY: self.minY, minZ: self.minZ, maxX: self.maxX, maxY: self.maxY, maxZ: self.maxZ)
-    }
-
-    mutating func move(_ dx: Int32, _ dy: Int32, _ dz: Int32) {
-        self.minX += dx
-        self.maxX += dx
-        self.minY += dy
-        self.maxY += dy
-        self.minZ += dz
-        self.maxZ += dz
-    }
-
-    func union(_ other: MonumentBoundingBox) -> MonumentBoundingBox {
-        MonumentBoundingBox(
-            minX: min(self.minX, other.minX),
-            minY: min(self.minY, other.minY),
-            minZ: min(self.minZ, other.minZ),
-            maxX: max(self.maxX, other.maxX),
-            maxY: max(self.maxY, other.maxY),
-            maxZ: max(self.maxZ, other.maxZ)
-        )
-    }
-
-    func intersects(_ other: MonumentBoundingBox) -> Bool {
-        self.maxX >= other.minX
-            && self.minX <= other.maxX
-            && self.maxY >= other.minY
-            && self.minY <= other.maxY
-            && self.maxZ >= other.minZ
-            && self.minZ <= other.maxZ
-    }
-
-    func intersects(minX: Int32, minZ: Int32, maxX: Int32, maxZ: Int32) -> Bool {
-        self.maxX >= minX
-            && self.minX <= maxX
-            && self.maxZ >= minZ
-            && self.minZ <= maxZ
-    }
-
-    func contains(_ pos: PosInt3D) -> Bool {
-        pos.x >= self.minX && pos.x <= self.maxX
-            && pos.y >= self.minY && pos.y <= self.maxY
-            && pos.z >= self.minZ && pos.z <= self.maxZ
-    }
-
-    static func fromCorners(_ a: PosInt3D, _ b: PosInt3D) -> MonumentBoundingBox {
-        MonumentBoundingBox(
-            minX: min(a.x, b.x),
-            minY: min(a.y, b.y),
-            minZ: min(a.z, b.z),
-            maxX: max(a.x, b.x),
-            maxY: max(a.y, b.y),
-            maxZ: max(a.z, b.z)
-        )
-    }
-}
-
 private func makeBoundingBox(
     x: Int32,
     y: Int32,
@@ -554,49 +220,16 @@ private func makeBoundingBox(
     width: Int32,
     height: Int32,
     depth: Int32
-) -> MonumentBoundingBox {
+) -> BoundingBox {
     switch orientation {
     case .north:
-        return MonumentBoundingBox(minX: x, minY: y, minZ: z - depth + 1, maxX: x + width - 1, maxY: y + height - 1, maxZ: z)
+        return BoundingBox(minX: x, minY: y, minZ: z - depth + 1, maxX: x + width - 1, maxY: y + height - 1, maxZ: z)
     case .south:
-        return MonumentBoundingBox(minX: x, minY: y, minZ: z, maxX: x + width - 1, maxY: y + height - 1, maxZ: z + depth - 1)
+        return BoundingBox(minX: x, minY: y, minZ: z, maxX: x + width - 1, maxY: y + height - 1, maxZ: z + depth - 1)
     case .west:
-        return MonumentBoundingBox(minX: x - depth + 1, minY: y, minZ: z, maxX: x, maxY: y + height - 1, maxZ: z + width - 1)
+        return BoundingBox(minX: x - depth + 1, minY: y, minZ: z, maxX: x, maxY: y + height - 1, maxZ: z + width - 1)
     case .east:
-        return MonumentBoundingBox(minX: x, minY: y, minZ: z, maxX: x + depth - 1, maxY: y + height - 1, maxZ: z + width - 1)
-    }
-}
-
-private final class MonumentWorld {
-    let seaLevel: Int32
-    let minimumWorldY: Int32
-    let volume: OceanMonumentBlockVolume
-    var elderGuardians: [PosInt3D] = []
-
-    init(seaLevel: Int32, minimumWorldY: Int32, volume: OceanMonumentBlockVolume) {
-        self.seaLevel = seaLevel
-        self.minimumWorldY = minimumWorldY
-        self.volume = volume
-    }
-
-    func block(at pos: PosInt3D) -> BlockState {
-        self.volume.block(at: pos)
-    }
-
-    func setBlock(_ state: BlockState, at pos: PosInt3D) {
-        self.volume.setBlock(state, at: pos)
-    }
-
-    func isReplaceableForStructure(_ state: BlockState) -> Bool {
-        let id = state.type.id
-        return state.type.isAir
-            || id == "minecraft:water"
-            || id == "minecraft:lava"
-            || id == "minecraft:kelp"
-            || id == "minecraft:kelp_plant"
-            || id == "minecraft:seagrass"
-            || id == "minecraft:tall_seagrass"
-            || id == "minecraft:bubble_column"
+        return BoundingBox(minX: x, minY: y, minZ: z, maxX: x + depth - 1, maxY: y + height - 1, maxZ: z + width - 1)
     }
 }
 
@@ -612,7 +245,7 @@ private final class RoomDefinition {
         self.index = index
     }
 
-    func setConnection(_ direction: MonumentDirection, _ definition: RoomDefinition) {
+    func setConnection(_ direction: LocalDirection, _ definition: RoomDefinition) {
         self.connections[direction.rawValue] = definition
         definition.connections[direction.opposite.rawValue] = self
     }
@@ -654,91 +287,91 @@ private final class RoomDefinition {
 
 private protocol MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece
 }
 
 private struct FitDoubleXRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool {
-        definition.hasOpening[MonumentDirection.east.rawValue] && !(definition.connections[MonumentDirection.east.rawValue]?.claimed ?? true)
+        definition.hasOpening[LocalDirection.east.rawValue] && !(definition.connections[LocalDirection.east.rawValue]?.claimed ?? true)
     }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
-        definition.connections[MonumentDirection.east.rawValue]?.claimed = true
+        definition.connections[LocalDirection.east.rawValue]?.claimed = true
         return OceanMonumentDoubleXRoom(orientation: orientation, definition: definition)
     }
 }
 
 private struct FitDoubleXYRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool {
-        guard definition.hasOpening[MonumentDirection.east.rawValue],
-              !(definition.connections[MonumentDirection.east.rawValue]?.claimed ?? true),
-              definition.hasOpening[MonumentDirection.up.rawValue],
-              !(definition.connections[MonumentDirection.up.rawValue]?.claimed ?? true),
-              let east = definition.connections[MonumentDirection.east.rawValue]
+        guard definition.hasOpening[LocalDirection.east.rawValue],
+              !(definition.connections[LocalDirection.east.rawValue]?.claimed ?? true),
+              definition.hasOpening[LocalDirection.up.rawValue],
+              !(definition.connections[LocalDirection.up.rawValue]?.claimed ?? true),
+              let east = definition.connections[LocalDirection.east.rawValue]
         else {
             return false
         }
-        return east.hasOpening[MonumentDirection.up.rawValue] && !(east.connections[MonumentDirection.up.rawValue]?.claimed ?? true)
+        return east.hasOpening[LocalDirection.up.rawValue] && !(east.connections[LocalDirection.up.rawValue]?.claimed ?? true)
     }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
-        definition.connections[MonumentDirection.east.rawValue]?.claimed = true
-        definition.connections[MonumentDirection.up.rawValue]?.claimed = true
-        definition.connections[MonumentDirection.east.rawValue]?.connections[MonumentDirection.up.rawValue]?.claimed = true
+        definition.connections[LocalDirection.east.rawValue]?.claimed = true
+        definition.connections[LocalDirection.up.rawValue]?.claimed = true
+        definition.connections[LocalDirection.east.rawValue]?.connections[LocalDirection.up.rawValue]?.claimed = true
         return OceanMonumentDoubleXYRoom(orientation: orientation, definition: definition)
     }
 }
 
 private struct FitDoubleYRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool {
-        definition.hasOpening[MonumentDirection.up.rawValue] && !(definition.connections[MonumentDirection.up.rawValue]?.claimed ?? true)
+        definition.hasOpening[LocalDirection.up.rawValue] && !(definition.connections[LocalDirection.up.rawValue]?.claimed ?? true)
     }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
-        definition.connections[MonumentDirection.up.rawValue]?.claimed = true
+        definition.connections[LocalDirection.up.rawValue]?.claimed = true
         return OceanMonumentDoubleYRoom(orientation: orientation, definition: definition)
     }
 }
 
 private struct FitDoubleYZRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool {
-        guard definition.hasOpening[MonumentDirection.north.rawValue],
-              !(definition.connections[MonumentDirection.north.rawValue]?.claimed ?? true),
-              definition.hasOpening[MonumentDirection.up.rawValue],
-              !(definition.connections[MonumentDirection.up.rawValue]?.claimed ?? true),
-              let north = definition.connections[MonumentDirection.north.rawValue]
+        guard definition.hasOpening[LocalDirection.north.rawValue],
+              !(definition.connections[LocalDirection.north.rawValue]?.claimed ?? true),
+              definition.hasOpening[LocalDirection.up.rawValue],
+              !(definition.connections[LocalDirection.up.rawValue]?.claimed ?? true),
+              let north = definition.connections[LocalDirection.north.rawValue]
         else {
             return false
         }
-        return north.hasOpening[MonumentDirection.up.rawValue] && !(north.connections[MonumentDirection.up.rawValue]?.claimed ?? true)
+        return north.hasOpening[LocalDirection.up.rawValue] && !(north.connections[LocalDirection.up.rawValue]?.claimed ?? true)
     }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
-        definition.connections[MonumentDirection.north.rawValue]?.claimed = true
-        definition.connections[MonumentDirection.up.rawValue]?.claimed = true
-        definition.connections[MonumentDirection.north.rawValue]?.connections[MonumentDirection.up.rawValue]?.claimed = true
+        definition.connections[LocalDirection.north.rawValue]?.claimed = true
+        definition.connections[LocalDirection.up.rawValue]?.claimed = true
+        definition.connections[LocalDirection.north.rawValue]?.connections[LocalDirection.up.rawValue]?.claimed = true
         return OceanMonumentDoubleYZRoom(orientation: orientation, definition: definition)
     }
 }
 
 private struct FitDoubleZRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool {
-        definition.hasOpening[MonumentDirection.north.rawValue] && !(definition.connections[MonumentDirection.north.rawValue]?.claimed ?? true)
+        definition.hasOpening[LocalDirection.north.rawValue] && !(definition.connections[LocalDirection.north.rawValue]?.claimed ?? true)
     }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         let source: RoomDefinition
-        if !definition.hasOpening[MonumentDirection.north.rawValue] || (definition.connections[MonumentDirection.north.rawValue]?.claimed ?? true) {
-            source = definition.connections[MonumentDirection.south.rawValue]!
+        if !definition.hasOpening[LocalDirection.north.rawValue] || (definition.connections[LocalDirection.north.rawValue]?.claimed ?? true) {
+            source = definition.connections[LocalDirection.south.rawValue]!
         } else {
             source = definition
         }
         source.claimed = true
-        source.connections[MonumentDirection.north.rawValue]?.claimed = true
+        source.connections[LocalDirection.north.rawValue]?.claimed = true
         return OceanMonumentDoubleZRoom(orientation: orientation, definition: source)
     }
 }
@@ -746,7 +379,7 @@ private struct FitDoubleZRoom: MonumentRoomFitter {
 private struct FitSimpleRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool { true }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
         return OceanMonumentSimpleRoom(orientation: orientation, definition: definition, random: &random)
     }
@@ -754,54 +387,46 @@ private struct FitSimpleRoom: MonumentRoomFitter {
 
 private struct FitSimpleTopRoom: MonumentRoomFitter {
     func fits(_ definition: RoomDefinition) -> Bool {
-        !definition.hasOpening[MonumentDirection.west.rawValue]
-            && !definition.hasOpening[MonumentDirection.east.rawValue]
-            && !definition.hasOpening[MonumentDirection.north.rawValue]
-            && !definition.hasOpening[MonumentDirection.south.rawValue]
-            && !definition.hasOpening[MonumentDirection.up.rawValue]
+        !definition.hasOpening[LocalDirection.west.rawValue]
+            && !definition.hasOpening[LocalDirection.east.rawValue]
+            && !definition.hasOpening[LocalDirection.north.rawValue]
+            && !definition.hasOpening[LocalDirection.south.rawValue]
+            && !definition.hasOpening[LocalDirection.up.rawValue]
     }
 
-    func create(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) -> PlacedPiece {
+    func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
         return OceanMonumentSimpleTopRoom(orientation: orientation, definition: definition)
     }
 }
 
-private class PlacedPiece {
-    static let baseGray = OceanMonumentBlocks.prismarineState
-    static let baseLight = OceanMonumentBlocks.prismarineBricksState
-    static let baseBlack = OceanMonumentBlocks.darkPrismarineState
-    static let dotDecoration = OceanMonumentBlocks.prismarineBricksState
-    static let lampBlock = OceanMonumentBlocks.seaLanternState
-    static let fillBlock = OceanMonumentBlocks.waterState
-    static let fillKeep: Set<String> = [
-        "minecraft:ice",
-        "minecraft:packed_ice",
-        "minecraft:blue_ice",
-        "minecraft:water"
-    ]
+private class MonumentPiece: StructurePiece<OceanMonumentPieceKind> {
+    static let baseGray = Blocks.prismarineState
+    static let baseLight = Blocks.prismarineBricksState
+    static let baseBlack = Blocks.darkPrismarineState
+    static let dotDecoration = Blocks.prismarineBricksState
+    static let lampBlock = Blocks.seaLanternState
 
-    let kind: OceanMonumentPieceKind
-    let orientation: HorizontalDirection
-    var boundingBox: MonumentBoundingBox
     let roomDefinition: RoomDefinition?
     let occupiedRooms: [RoomDefinition]
-    let design: Int?
 
     init(
         kind: OceanMonumentPieceKind,
         orientation: HorizontalDirection,
-        boundingBox: MonumentBoundingBox,
+        boundingBox: BoundingBox,
         roomDefinition: RoomDefinition? = nil,
         occupiedRooms: [RoomDefinition] = [],
         design: Int? = nil
     ) {
-        self.kind = kind
-        self.orientation = orientation
-        self.boundingBox = boundingBox
         self.roomDefinition = roomDefinition
         self.occupiedRooms = occupiedRooms
-        self.design = design
+        super.init(
+            kind: kind,
+            orientation: orientation.publicValue,
+            boundingBox: boundingBox,
+            roomIndex: roomDefinition?.index,
+            design: design
+        )
     }
 
     init(
@@ -814,18 +439,21 @@ private class PlacedPiece {
         roomDepth: Int32,
         design: Int? = nil
     ) {
-        self.kind = kind
-        self.orientation = orientation
-        self.boundingBox = PlacedPiece.roomBoundingBox(
-            orientation: orientation,
-            roomDefinition: roomDefinition,
-            roomWidth: roomWidth,
-            roomHeight: roomHeight,
-            roomDepth: roomDepth
-        )
         self.roomDefinition = roomDefinition
         self.occupiedRooms = occupiedRooms ?? [roomDefinition]
-        self.design = design
+        super.init(
+            kind: kind,
+            orientation: orientation.publicValue,
+            boundingBox: MonumentPiece.roomBoundingBox(
+                orientation: orientation,
+                roomDefinition: roomDefinition,
+                roomWidth: roomWidth,
+                roomHeight: roomHeight,
+                roomDepth: roomDepth
+            ),
+            roomIndex: roomDefinition.index,
+            design: design
+        )
     }
 
     class func roomBoundingBox(
@@ -834,7 +462,7 @@ private class PlacedPiece {
         roomWidth: Int32,
         roomHeight: Int32,
         roomDepth: Int32
-    ) -> MonumentBoundingBox {
+    ) -> BoundingBox {
         let roomIndex = roomDefinition.index
         let roomX = Int32(roomIndex % 5)
         let roomZ = Int32((roomIndex / 5) % 5)
@@ -861,143 +489,7 @@ private class PlacedPiece {
         return box
     }
 
-    func graphPiece() -> OceanMonumentGraphPiece {
-        OceanMonumentGraphPiece(
-            kind: self.kind,
-            orientation: self.orientation.publicValue,
-            boundingBox: self.boundingBox.publicValue,
-            roomIndex: self.roomDefinition?.index,
-            design: self.design
-        )
-    }
-
-    func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
-    }
-
-    func getWorldX(_ x: Int32, _ z: Int32) -> Int32 {
-        switch self.orientation {
-        case .north, .south:
-            return self.boundingBox.minX + x
-        case .west:
-            return self.boundingBox.maxX - z
-        case .east:
-            return self.boundingBox.minX + z
-        }
-    }
-
-    func getWorldY(_ y: Int32) -> Int32 {
-        self.boundingBox.minY + y
-    }
-
-    func getWorldZ(_ x: Int32, _ z: Int32) -> Int32 {
-        switch self.orientation {
-        case .north:
-            return self.boundingBox.maxZ - z
-        case .south:
-            return self.boundingBox.minZ + z
-        case .west, .east:
-            return self.boundingBox.minZ + x
-        }
-    }
-
-    func getWorldPos(_ x: Int32, _ y: Int32, _ z: Int32) -> PosInt3D {
-        PosInt3D(x: self.getWorldX(x, z), y: self.getWorldY(y), z: self.getWorldZ(x, z))
-    }
-
-    func placeBlock(_ world: MonumentWorld, _ state: BlockState, _ x: Int32, _ y: Int32, _ z: Int32, _ chunkBox: MonumentBoundingBox) {
-        let pos = self.getWorldPos(x, y, z)
-        guard chunkBox.contains(pos) else { return }
-        world.setBlock(state, at: pos)
-    }
-
-    func getBlock(_ world: MonumentWorld, _ x: Int32, _ y: Int32, _ z: Int32, _ chunkBox: MonumentBoundingBox) -> BlockState {
-        let pos = self.getWorldPos(x, y, z)
-        guard chunkBox.contains(pos) else {
-            return OceanMonumentBlocks.airState
-        }
-        return world.block(at: pos)
-    }
-
-    func generateBox(
-        _ world: MonumentWorld,
-        _ chunkBox: MonumentBoundingBox,
-        _ x0: Int32,
-        _ y0: Int32,
-        _ z0: Int32,
-        _ x1: Int32,
-        _ y1: Int32,
-        _ z1: Int32,
-        _ boundary: BlockState,
-        _ interior: BlockState
-    ) {
-        for y in y0...y1 {
-            for x in x0...x1 {
-                for z in z0...z1 {
-                    let block = (x == x0 || x == x1 || y == y0 || y == y1 || z == z0 || z == z1) ? boundary : interior
-                    self.placeBlock(world, block, x, y, z, chunkBox)
-                }
-            }
-        }
-    }
-
-    func generateWaterBox(
-        _ world: MonumentWorld,
-        _ chunkBox: MonumentBoundingBox,
-        _ x0: Int32,
-        _ y0: Int32,
-        _ z0: Int32,
-        _ x1: Int32,
-        _ y1: Int32,
-        _ z1: Int32
-    ) {
-        for y in y0...y1 {
-            for x in x0...x1 {
-                for z in z0...z1 {
-                    let block = self.getBlock(world, x, y, z, chunkBox)
-                    if !Self.fillKeep.contains(block.type.id) {
-                        if self.getWorldY(y) >= world.seaLevel && !statesEqual(block, Self.fillBlock) {
-                            self.placeBlock(world, OceanMonumentBlocks.airState, x, y, z, chunkBox)
-                        } else {
-                            self.placeBlock(world, Self.fillBlock, x, y, z, chunkBox)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    func generateBoxOnFillOnly(
-        _ world: MonumentWorld,
-        _ chunkBox: MonumentBoundingBox,
-        _ x0: Int32,
-        _ y0: Int32,
-        _ z0: Int32,
-        _ x1: Int32,
-        _ y1: Int32,
-        _ z1: Int32,
-        _ state: BlockState
-    ) {
-        for y in y0...y1 {
-            for x in x0...x1 {
-                for z in z0...z1 {
-                    if statesEqual(self.getBlock(world, x, y, z, chunkBox), Self.fillBlock) {
-                        self.placeBlock(world, state, x, y, z, chunkBox)
-                    }
-                }
-            }
-        }
-    }
-
-    func fillColumnDown(_ world: MonumentWorld, _ state: BlockState, _ x: Int32, _ y: Int32, _ z: Int32, _ chunkBox: MonumentBoundingBox) {
-        var pos = self.getWorldPos(x, y, z)
-        guard chunkBox.contains(pos) else { return }
-        while pos.y > world.minimumWorldY + 1 && world.isReplaceableForStructure(world.block(at: pos)) {
-            world.setBlock(state, at: pos)
-            pos = PosInt3D(x: pos.x, y: pos.y - 1, z: pos.z)
-        }
-    }
-
-    func generateDefaultFloor(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox, _ xOff: Int32, _ zOff: Int32, _ downOpening: Bool) {
+    func generateDefaultFloor(_ world: StructureWorldView, _ chunkBox: BoundingBox, _ xOff: Int32, _ zOff: Int32, _ downOpening: Bool) {
         if downOpening {
             self.generateBox(world, chunkBox, xOff + 0, 0, zOff + 0, xOff + 2, 0, zOff + 7, Self.baseGray, Self.baseGray)
             self.generateBox(world, chunkBox, xOff + 5, 0, zOff + 0, xOff + 7, 0, zOff + 7, Self.baseGray, Self.baseGray)
@@ -1011,29 +503,15 @@ private class PlacedPiece {
             self.generateBox(world, chunkBox, xOff + 0, 0, zOff + 0, xOff + 7, 0, zOff + 7, Self.baseGray, Self.baseGray)
         }
     }
-
-    func chunkIntersects(_ chunkBox: MonumentBoundingBox, _ x0: Int32, _ z0: Int32, _ x1: Int32, _ z1: Int32) -> Bool {
-        let wx0 = self.getWorldX(x0, z0)
-        let wz0 = self.getWorldZ(x0, z0)
-        let wx1 = self.getWorldX(x1, z1)
-        let wz1 = self.getWorldZ(x1, z1)
-        return chunkBox.intersects(minX: min(wx0, wx1), minZ: min(wz0, wz1), maxX: max(wx0, wx1), maxZ: max(wz0, wz1))
-    }
-
-    func spawnElder(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox, _ x: Int32, _ y: Int32, _ z: Int32) {
-        let pos = self.getWorldPos(x, y, z)
-        guard chunkBox.contains(pos) else { return }
-        world.elderGuardians.append(pos)
-    }
 }
 
-private final class MonumentBuilding: PlacedPiece {
+private final class MonumentBuilding: MonumentPiece {
     static let biomeRangeCheck = 29
     var sourceRoom: RoomDefinition
     var coreRoom: RoomDefinition
-    var childPieces: [PlacedPiece] = []
+    var childPieces: [MonumentPiece] = []
 
-    init(startChunk: PosInt2D, random: inout CheckedRandom) {
+    init<R: Random>(startChunk: PosInt2D, random: inout R) {
         let orientation = HorizontalDirection.random(using: &random)
         let west = startChunk.x * 16 - 29
         let north = startChunk.z * 16 - 29
@@ -1074,17 +552,17 @@ private final class MonumentBuilding: PlacedPiece {
             child.boundingBox.move(offset.x, offset.y, offset.z)
         }
 
-        let leftWing = MonumentBoundingBox.fromCorners(self.getWorldPos(1, 1, 1), self.getWorldPos(23, 8, 21))
-        let rightWing = MonumentBoundingBox.fromCorners(self.getWorldPos(34, 1, 1), self.getWorldPos(56, 8, 21))
-        let penthouse = MonumentBoundingBox.fromCorners(self.getWorldPos(22, 13, 22), self.getWorldPos(35, 17, 35))
-        var wingRandom = Int32(bitPattern: random.next(bits: 32))
+        let leftWing = BoundingBox.fromCorners(self.getWorldPos(1, 1, 1), self.getWorldPos(23, 8, 21))
+        let rightWing = BoundingBox.fromCorners(self.getWorldPos(34, 1, 1), self.getWorldPos(56, 8, 21))
+        let penthouse = BoundingBox.fromCorners(self.getWorldPos(22, 13, 22), self.getWorldPos(35, 17, 35))
+        var wingRandom = random.nextInt32()
         self.childPieces.append(OceanMonumentWingRoom(orientation: orientation, boundingBox: leftWing, randomValue: wingRandom))
         wingRandom += 1
         self.childPieces.append(OceanMonumentWingRoom(orientation: orientation, boundingBox: rightWing, randomValue: wingRandom))
         self.childPieces.append(OceanMonumentPenthouse(orientation: orientation, boundingBox: penthouse))
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         let waterHeight = max(world.seaLevel, 64) - self.boundingBox.minY
         self.generateWaterBox(world, chunkBox, 0, 0, 0, 58, waterHeight, 58)
         self.generateWing(false, 0, world, chunkBox)
@@ -1123,11 +601,11 @@ private final class MonumentBuilding: PlacedPiece {
         }
 
         for child in self.childPieces where child.boundingBox.intersects(chunkBox) {
-            child.postProcess(in: world, chunkBox: chunkBox, random: &random)
+            child.write(in: world, chunkBox: chunkBox, random: &random)
         }
     }
 
-    private static func generateRoomGraph(random: inout CheckedRandom, sourceRoom: inout RoomDefinition?, coreRoom: inout RoomDefinition?) -> [RoomDefinition] {
+    private static func generateRoomGraph<R: Random>(random: inout R, sourceRoom: inout RoomDefinition?, coreRoom: inout RoomDefinition?) -> [RoomDefinition] {
         var roomGrid: [RoomDefinition?] = Array(repeating: nil, count: 75)
 
         for x in 0..<5 {
@@ -1156,7 +634,7 @@ private final class MonumentBuilding: PlacedPiece {
                 for y in 0..<3 {
                     let pos = Self.getRoomIndex(roomX: x, roomY: y, roomZ: z)
                     guard let room = roomGrid[pos] else { continue }
-                    for direction in MonumentDirection.allCases {
+                    for direction in LocalDirection.allCases {
                         let neighX = x + Int(direction.stepX)
                         let neighY = y + Int(direction.stepY)
                         let neighZ = z + Int(direction.stepZ)
@@ -1187,13 +665,13 @@ private final class MonumentBuilding: PlacedPiece {
         let core = roomGrid[Self.getRoomIndex(roomX: Int(random.next(bound: 4)), roomY: 0, roomZ: 2)]!
         coreRoom = core
         core.claimed = true
-        core.connections[MonumentDirection.east.rawValue]!.claimed = true
-        core.connections[MonumentDirection.north.rawValue]!.claimed = true
-        core.connections[MonumentDirection.east.rawValue]!.connections[MonumentDirection.north.rawValue]!.claimed = true
-        core.connections[MonumentDirection.up.rawValue]!.claimed = true
-        core.connections[MonumentDirection.east.rawValue]!.connections[MonumentDirection.up.rawValue]!.claimed = true
-        core.connections[MonumentDirection.north.rawValue]!.connections[MonumentDirection.up.rawValue]!.claimed = true
-        core.connections[MonumentDirection.east.rawValue]!.connections[MonumentDirection.north.rawValue]!.connections[MonumentDirection.up.rawValue]!.claimed = true
+        core.connections[LocalDirection.east.rawValue]!.claimed = true
+        core.connections[LocalDirection.north.rawValue]!.claimed = true
+        core.connections[LocalDirection.east.rawValue]!.connections[LocalDirection.north.rawValue]!.claimed = true
+        core.connections[LocalDirection.up.rawValue]!.claimed = true
+        core.connections[LocalDirection.east.rawValue]!.connections[LocalDirection.up.rawValue]!.claimed = true
+        core.connections[LocalDirection.north.rawValue]!.connections[LocalDirection.up.rawValue]!.claimed = true
+        core.connections[LocalDirection.east.rawValue]!.connections[LocalDirection.north.rawValue]!.connections[LocalDirection.up.rawValue]!.claimed = true
 
         var roomDefs: [RoomDefinition] = []
         for definition in roomGrid.compactMap({ $0 }) {
@@ -1211,7 +689,7 @@ private final class MonumentBuilding: PlacedPiece {
                 attemptCount += 1
                 let f = Int(random.next(bound: 6))
                 if definition.hasOpening[f] {
-                    let of = MonumentDirection(rawValue: f)!.opposite.rawValue
+                    let of = LocalDirection(rawValue: f)!.opposite.rawValue
                     definition.hasOpening[f] = false
                     definition.connections[f]!.hasOpening[of] = false
                     if definition.findSource(scanIndex) && definition.connections[f]!.findSource(scanIndex + 1) {
@@ -1241,7 +719,7 @@ private final class MonumentBuilding: PlacedPiece {
     private static let gridRoomLeftWingConnectIndex = getRoomIndex(roomX: 0, roomY: 1, roomZ: 0)
     private static let gridRoomRightWingConnectIndex = getRoomIndex(roomX: 4, roomY: 1, roomZ: 0)
 
-    private func generateWing(_ isFlipped: Bool, _ xoff: Int32, _ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateWing(_ isFlipped: Bool, _ xoff: Int32, _ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, xoff, 0, xoff + 23, 20) {
             self.generateBox(world, chunkBox, xoff + 0, 0, 0, xoff + 24, 0, 20, Self.baseGray, Self.baseGray)
             self.generateWaterBox(world, chunkBox, xoff + 0, 1, 0, xoff + 24, 10, 20)
@@ -1283,7 +761,7 @@ private final class MonumentBuilding: PlacedPiece {
         }
     }
 
-    private func generateEntranceArchs(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateEntranceArchs(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, 22, 5, 35, 17) {
             self.generateWaterBox(world, chunkBox, 25, 0, 0, 32, 8, 20)
             for i in 0..<4 {
@@ -1303,7 +781,7 @@ private final class MonumentBuilding: PlacedPiece {
         }
     }
 
-    private func generateEntranceWall(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateEntranceWall(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, 15, 20, 42, 21) {
             self.generateBox(world, chunkBox, 15, 0, 21, 42, 0, 21, Self.baseGray, Self.baseGray)
             self.generateWaterBox(world, chunkBox, 26, 1, 21, 31, 3, 21)
@@ -1360,7 +838,7 @@ private final class MonumentBuilding: PlacedPiece {
         }
     }
 
-    private func generateRoofPiece(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateRoofPiece(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, 21, 21, 36, 36) {
             self.generateBox(world, chunkBox, 21, 0, 22, 36, 0, 36, Self.baseGray, Self.baseGray)
             self.generateWaterBox(world, chunkBox, 21, 1, 22, 36, 23, 36)
@@ -1395,7 +873,7 @@ private final class MonumentBuilding: PlacedPiece {
         }
     }
 
-    private func generateLowerWall(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateLowerWall(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, 0, 21, 6, 58) {
             self.generateBox(world, chunkBox, 0, 0, 21, 6, 0, 57, Self.baseGray, Self.baseGray)
             self.generateWaterBox(world, chunkBox, 0, 1, 21, 6, 7, 57)
@@ -1440,7 +918,7 @@ private final class MonumentBuilding: PlacedPiece {
         }
     }
 
-    private func generateMiddleWall(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateMiddleWall(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, 7, 21, 13, 50) {
             self.generateBox(world, chunkBox, 7, 0, 21, 13, 0, 50, Self.baseGray, Self.baseGray)
             self.generateWaterBox(world, chunkBox, 7, 1, 21, 13, 10, 50)
@@ -1493,7 +971,7 @@ private final class MonumentBuilding: PlacedPiece {
         }
     }
 
-    private func generateUpperWall(_ world: MonumentWorld, _ chunkBox: MonumentBoundingBox) {
+    private func generateUpperWall(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
         if self.chunkIntersects(chunkBox, 14, 21, 20, 43) {
             self.generateBox(world, chunkBox, 14, 0, 21, 20, 0, 43, Self.baseGray, Self.baseGray)
             self.generateWaterBox(world, chunkBox, 14, 1, 22, 20, 14, 43)
@@ -1535,11 +1013,11 @@ private final class MonumentBuilding: PlacedPiece {
     }
 }
 
-private final class OceanMonumentCoreRoom: PlacedPiece {
+private final class OceanMonumentCoreRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        let east = definition.connections[MonumentDirection.east.rawValue]!
-        let north = definition.connections[MonumentDirection.north.rawValue]!
-        let up = definition.connections[MonumentDirection.up.rawValue]!
+        let east = definition.connections[LocalDirection.east.rawValue]!
+        let north = definition.connections[LocalDirection.north.rawValue]!
+        let up = definition.connections[LocalDirection.up.rawValue]!
         super.init(
             kind: .coreRoom,
             orientation: orientation,
@@ -1548,11 +1026,11 @@ private final class OceanMonumentCoreRoom: PlacedPiece {
                 definition,
                 east,
                 north,
-                east.connections[MonumentDirection.north.rawValue]!,
+                east.connections[LocalDirection.north.rawValue]!,
                 up,
-                east.connections[MonumentDirection.up.rawValue]!,
-                north.connections[MonumentDirection.up.rawValue]!,
-                east.connections[MonumentDirection.north.rawValue]!.connections[MonumentDirection.up.rawValue]!
+                east.connections[LocalDirection.up.rawValue]!,
+                north.connections[LocalDirection.up.rawValue]!,
+                east.connections[LocalDirection.north.rawValue]!.connections[LocalDirection.up.rawValue]!
             ],
             roomWidth: 2,
             roomHeight: 2,
@@ -1560,7 +1038,7 @@ private final class OceanMonumentCoreRoom: PlacedPiece {
         )
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         self.generateBoxOnFillOnly(world, chunkBox, 1, 8, 0, 14, 8, 14, Self.baseGray)
         self.generateBox(world, chunkBox, 0, 7, 0, 0, 7, 15, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 15, 7, 0, 15, 7, 15, Self.baseLight, Self.baseLight)
@@ -1579,7 +1057,7 @@ private final class OceanMonumentCoreRoom: PlacedPiece {
             self.generateBox(world, chunkBox, 1, Int32(y), 15, 14, Int32(y), 15, block, block)
         }
         self.generateBox(world, chunkBox, 6, 3, 6, 9, 6, 9, Self.baseBlack, Self.baseBlack)
-        self.generateBox(world, chunkBox, 7, 4, 7, 8, 5, 8, OceanMonumentBlocks.goldBlockState, OceanMonumentBlocks.goldBlockState)
+        self.generateBox(world, chunkBox, 7, 4, 7, 8, 5, 8, Blocks.goldBlockState, Blocks.goldBlockState)
         for y in stride(from: Int32(3), through: Int32(6), by: 3) {
             for x in stride(from: Int32(6), through: Int32(9), by: 3) {
                 self.placeBlock(world, Self.lampBlock, x, y, 6, chunkBox)
@@ -1617,30 +1095,30 @@ private final class OceanMonumentCoreRoom: PlacedPiece {
     }
 }
 
-private final class OceanMonumentDoubleXRoom: PlacedPiece {
+private final class OceanMonumentDoubleXRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(
             kind: .doubleXRoom,
             orientation: orientation,
             roomDefinition: definition,
-            occupiedRooms: [definition, definition.connections[MonumentDirection.east.rawValue]!],
+            occupiedRooms: [definition, definition.connections[LocalDirection.east.rawValue]!],
             roomWidth: 2,
             roomHeight: 1,
             roomDepth: 1
         )
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
-        let east = self.roomDefinition!.connections[MonumentDirection.east.rawValue]!
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        let east = self.roomDefinition!.connections[LocalDirection.east.rawValue]!
         let west = self.roomDefinition!
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 8, 0, east.hasOpening[MonumentDirection.down.rawValue])
-            self.generateDefaultFloor(world, chunkBox, 0, 0, west.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 8, 0, east.hasOpening[LocalDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, west.hasOpening[LocalDirection.down.rawValue])
         }
-        if west.connections[MonumentDirection.up.rawValue] == nil {
+        if west.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 4, 1, 7, 4, 6, Self.baseGray)
         }
-        if east.connections[MonumentDirection.up.rawValue] == nil {
+        if east.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 8, 4, 1, 14, 4, 6, Self.baseGray)
         }
         self.generateBox(world, chunkBox, 0, 3, 0, 0, 3, 7, Self.baseLight, Self.baseLight)
@@ -1660,18 +1138,18 @@ private final class OceanMonumentDoubleXRoom: PlacedPiece {
         self.generateBox(world, chunkBox, 5, 3, 0, 10, 3, 4, Self.baseLight, Self.baseLight)
         self.placeBlock(world, Self.lampBlock, 6, 2, 3, chunkBox)
         self.placeBlock(world, Self.lampBlock, 9, 2, 3, chunkBox)
-        if west.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
-        if west.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
-        if west.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
-        if east.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 0, 12, 2, 0) }
-        if east.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 7, 12, 2, 7) }
-        if east.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 15, 1, 3, 15, 2, 4) }
+        if west.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
+        if west.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
+        if west.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
+        if east.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 0, 12, 2, 0) }
+        if east.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 7, 12, 2, 7) }
+        if east.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 15, 1, 3, 15, 2, 4) }
     }
 }
 
-private final class OceanMonumentDoubleXYRoom: PlacedPiece {
+private final class OceanMonumentDoubleXYRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        let east = definition.connections[MonumentDirection.east.rawValue]!
+        let east = definition.connections[LocalDirection.east.rawValue]!
         super.init(
             kind: .doubleXYRoom,
             orientation: orientation,
@@ -1679,8 +1157,8 @@ private final class OceanMonumentDoubleXYRoom: PlacedPiece {
             occupiedRooms: [
                 definition,
                 east,
-                definition.connections[MonumentDirection.up.rawValue]!,
-                east.connections[MonumentDirection.up.rawValue]!
+                definition.connections[LocalDirection.up.rawValue]!,
+                east.connections[LocalDirection.up.rawValue]!
             ],
             roomWidth: 2,
             roomHeight: 2,
@@ -1688,19 +1166,19 @@ private final class OceanMonumentDoubleXYRoom: PlacedPiece {
         )
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
-        let east = self.roomDefinition!.connections[MonumentDirection.east.rawValue]!
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        let east = self.roomDefinition!.connections[LocalDirection.east.rawValue]!
         let west = self.roomDefinition!
-        let westUp = west.connections[MonumentDirection.up.rawValue]!
-        let eastUp = east.connections[MonumentDirection.up.rawValue]!
+        let westUp = west.connections[LocalDirection.up.rawValue]!
+        let eastUp = east.connections[LocalDirection.up.rawValue]!
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 8, 0, east.hasOpening[MonumentDirection.down.rawValue])
-            self.generateDefaultFloor(world, chunkBox, 0, 0, west.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 8, 0, east.hasOpening[LocalDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, west.hasOpening[LocalDirection.down.rawValue])
         }
-        if westUp.connections[MonumentDirection.up.rawValue] == nil {
+        if westUp.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 8, 1, 7, 8, 6, Self.baseGray)
         }
-        if eastUp.connections[MonumentDirection.up.rawValue] == nil {
+        if eastUp.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 8, 8, 1, 14, 8, 6, Self.baseGray)
         }
         for y in 1...7 {
@@ -1733,40 +1211,40 @@ private final class OceanMonumentDoubleXYRoom: PlacedPiece {
         self.placeBlock(world, Self.lampBlock, 5, 4, 5, chunkBox)
         self.placeBlock(world, Self.lampBlock, 10, 4, 2, chunkBox)
         self.placeBlock(world, Self.lampBlock, 10, 4, 5, chunkBox)
-        if west.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
-        if west.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
-        if west.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
-        if east.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 0, 12, 2, 0) }
-        if east.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 7, 12, 2, 7) }
-        if east.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 15, 1, 3, 15, 2, 4) }
-        if westUp.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 0, 4, 6, 0) }
-        if westUp.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 7, 4, 6, 7) }
-        if westUp.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 5, 3, 0, 6, 4) }
-        if eastUp.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 11, 5, 0, 12, 6, 0) }
-        if eastUp.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 11, 5, 7, 12, 6, 7) }
-        if eastUp.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 15, 5, 3, 15, 6, 4) }
+        if west.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
+        if west.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
+        if west.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
+        if east.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 0, 12, 2, 0) }
+        if east.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 11, 1, 7, 12, 2, 7) }
+        if east.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 15, 1, 3, 15, 2, 4) }
+        if westUp.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 0, 4, 6, 0) }
+        if westUp.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 7, 4, 6, 7) }
+        if westUp.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 5, 3, 0, 6, 4) }
+        if eastUp.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 11, 5, 0, 12, 6, 0) }
+        if eastUp.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 11, 5, 7, 12, 6, 7) }
+        if eastUp.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 15, 5, 3, 15, 6, 4) }
     }
 }
 
-private final class OceanMonumentDoubleYRoom: PlacedPiece {
+private final class OceanMonumentDoubleYRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(
             kind: .doubleYRoom,
             orientation: orientation,
             roomDefinition: definition,
-            occupiedRooms: [definition, definition.connections[MonumentDirection.up.rawValue]!],
+            occupiedRooms: [definition, definition.connections[LocalDirection.up.rawValue]!],
             roomWidth: 1,
             roomHeight: 2,
             roomDepth: 1
         )
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 0, 0, self.roomDefinition!.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, self.roomDefinition!.hasOpening[LocalDirection.down.rawValue])
         }
-        let above = self.roomDefinition!.connections[MonumentDirection.up.rawValue]!
-        if above.connections[MonumentDirection.up.rawValue] == nil {
+        let above = self.roomDefinition!.connections[LocalDirection.up.rawValue]!
+        if above.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 8, 1, 6, 8, 6, Self.baseGray)
         }
         self.generateBox(world, chunkBox, 0, 4, 0, 0, 4, 7, Self.baseLight, Self.baseLight)
@@ -1783,7 +1261,7 @@ private final class OceanMonumentDoubleYRoom: PlacedPiece {
         self.generateBox(world, chunkBox, 6, 4, 5, 6, 4, 5, Self.baseLight, Self.baseLight)
         var definition = self.roomDefinition!
         for y in stride(from: Int32(1), through: Int32(5), by: 4) {
-            if definition.hasOpening[MonumentDirection.south.rawValue] {
+            if definition.hasOpening[LocalDirection.south.rawValue] {
                 self.generateBox(world, chunkBox, 2, y, 0, 2, y + 2, 0, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 5, y, 0, 5, y + 2, 0, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 3, y + 2, 0, 4, y + 2, 0, Self.baseLight, Self.baseLight)
@@ -1791,7 +1269,7 @@ private final class OceanMonumentDoubleYRoom: PlacedPiece {
                 self.generateBox(world, chunkBox, 0, y, 0, 7, y + 2, 0, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, y + 1, 0, 7, y + 1, 0, Self.baseGray, Self.baseGray)
             }
-            if definition.hasOpening[MonumentDirection.north.rawValue] {
+            if definition.hasOpening[LocalDirection.north.rawValue] {
                 self.generateBox(world, chunkBox, 2, y, 7, 2, y + 2, 7, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 5, y, 7, 5, y + 2, 7, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 3, y + 2, 7, 4, y + 2, 7, Self.baseLight, Self.baseLight)
@@ -1799,7 +1277,7 @@ private final class OceanMonumentDoubleYRoom: PlacedPiece {
                 self.generateBox(world, chunkBox, 0, y, 7, 7, y + 2, 7, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, y + 1, 7, 7, y + 1, 7, Self.baseGray, Self.baseGray)
             }
-            if definition.hasOpening[MonumentDirection.west.rawValue] {
+            if definition.hasOpening[LocalDirection.west.rawValue] {
                 self.generateBox(world, chunkBox, 0, y, 2, 0, y + 2, 2, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, y, 5, 0, y + 2, 5, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, y + 2, 3, 0, y + 2, 4, Self.baseLight, Self.baseLight)
@@ -1807,7 +1285,7 @@ private final class OceanMonumentDoubleYRoom: PlacedPiece {
                 self.generateBox(world, chunkBox, 0, y, 0, 0, y + 2, 7, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, y + 1, 0, 0, y + 1, 7, Self.baseGray, Self.baseGray)
             }
-            if definition.hasOpening[MonumentDirection.east.rawValue] {
+            if definition.hasOpening[LocalDirection.east.rawValue] {
                 self.generateBox(world, chunkBox, 7, y, 2, 7, y + 2, 2, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 7, y, 5, 7, y + 2, 5, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 7, y + 2, 3, 7, y + 2, 4, Self.baseLight, Self.baseLight)
@@ -1820,9 +1298,9 @@ private final class OceanMonumentDoubleYRoom: PlacedPiece {
     }
 }
 
-private final class OceanMonumentDoubleYZRoom: PlacedPiece {
+private final class OceanMonumentDoubleYZRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        let north = definition.connections[MonumentDirection.north.rawValue]!
+        let north = definition.connections[LocalDirection.north.rawValue]!
         super.init(
             kind: .doubleYZRoom,
             orientation: orientation,
@@ -1830,8 +1308,8 @@ private final class OceanMonumentDoubleYZRoom: PlacedPiece {
             occupiedRooms: [
                 definition,
                 north,
-                definition.connections[MonumentDirection.up.rawValue]!,
-                north.connections[MonumentDirection.up.rawValue]!
+                definition.connections[LocalDirection.up.rawValue]!,
+                north.connections[LocalDirection.up.rawValue]!
             ],
             roomWidth: 1,
             roomHeight: 2,
@@ -1839,19 +1317,19 @@ private final class OceanMonumentDoubleYZRoom: PlacedPiece {
         )
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
-        let north = self.roomDefinition!.connections[MonumentDirection.north.rawValue]!
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        let north = self.roomDefinition!.connections[LocalDirection.north.rawValue]!
         let south = self.roomDefinition!
-        let northUp = north.connections[MonumentDirection.up.rawValue]!
-        let southUp = south.connections[MonumentDirection.up.rawValue]!
+        let northUp = north.connections[LocalDirection.up.rawValue]!
+        let southUp = south.connections[LocalDirection.up.rawValue]!
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 0, 8, north.hasOpening[MonumentDirection.down.rawValue])
-            self.generateDefaultFloor(world, chunkBox, 0, 0, south.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 8, north.hasOpening[LocalDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, south.hasOpening[LocalDirection.down.rawValue])
         }
-        if southUp.connections[MonumentDirection.up.rawValue] == nil {
+        if southUp.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 8, 1, 6, 8, 7, Self.baseGray)
         }
-        if northUp.connections[MonumentDirection.up.rawValue] == nil {
+        if northUp.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 8, 8, 6, 8, 14, Self.baseGray)
         }
         for y in 1...7 {
@@ -1865,33 +1343,33 @@ private final class OceanMonumentDoubleYZRoom: PlacedPiece {
             let block = (y == 2 || y == 6) ? Self.lampBlock : Self.baseBlack
             self.generateBox(world, chunkBox, 3, Int32(y), 7, 4, Int32(y), 8, block, block)
         }
-        if south.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
-        if south.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
-        if south.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
-        if north.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 15, 4, 2, 15) }
-        if north.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 11, 0, 2, 12) }
-        if north.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 11, 7, 2, 12) }
-        if southUp.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 0, 4, 6, 0) }
-        if southUp.hasOpening[MonumentDirection.east.rawValue] {
+        if south.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
+        if south.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
+        if south.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
+        if north.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 15, 4, 2, 15) }
+        if north.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 11, 0, 2, 12) }
+        if north.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 11, 7, 2, 12) }
+        if southUp.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 0, 4, 6, 0) }
+        if southUp.hasOpening[LocalDirection.east.rawValue] {
             self.generateWaterBox(world, chunkBox, 7, 5, 3, 7, 6, 4)
             self.generateBox(world, chunkBox, 5, 4, 2, 6, 4, 5, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 6, 1, 2, 6, 3, 2, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 6, 1, 5, 6, 3, 5, Self.baseLight, Self.baseLight)
         }
-        if southUp.hasOpening[MonumentDirection.west.rawValue] {
+        if southUp.hasOpening[LocalDirection.west.rawValue] {
             self.generateWaterBox(world, chunkBox, 0, 5, 3, 0, 6, 4)
             self.generateBox(world, chunkBox, 1, 4, 2, 2, 4, 5, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 1, 1, 2, 1, 3, 2, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 1, 1, 5, 1, 3, 5, Self.baseLight, Self.baseLight)
         }
-        if northUp.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 15, 4, 6, 15) }
-        if northUp.hasOpening[MonumentDirection.west.rawValue] {
+        if northUp.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 5, 15, 4, 6, 15) }
+        if northUp.hasOpening[LocalDirection.west.rawValue] {
             self.generateWaterBox(world, chunkBox, 0, 5, 11, 0, 6, 12)
             self.generateBox(world, chunkBox, 1, 4, 10, 2, 4, 13, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 1, 1, 10, 1, 3, 10, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 1, 1, 13, 1, 3, 13, Self.baseLight, Self.baseLight)
         }
-        if northUp.hasOpening[MonumentDirection.east.rawValue] {
+        if northUp.hasOpening[LocalDirection.east.rawValue] {
             self.generateWaterBox(world, chunkBox, 7, 5, 11, 7, 6, 12)
             self.generateBox(world, chunkBox, 5, 4, 10, 6, 4, 13, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 6, 1, 10, 6, 3, 10, Self.baseLight, Self.baseLight)
@@ -1900,30 +1378,30 @@ private final class OceanMonumentDoubleYZRoom: PlacedPiece {
     }
 }
 
-private final class OceanMonumentDoubleZRoom: PlacedPiece {
+private final class OceanMonumentDoubleZRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(
             kind: .doubleZRoom,
             orientation: orientation,
             roomDefinition: definition,
-            occupiedRooms: [definition, definition.connections[MonumentDirection.north.rawValue]!],
+            occupiedRooms: [definition, definition.connections[LocalDirection.north.rawValue]!],
             roomWidth: 1,
             roomHeight: 1,
             roomDepth: 2
         )
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
-        let north = self.roomDefinition!.connections[MonumentDirection.north.rawValue]!
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        let north = self.roomDefinition!.connections[LocalDirection.north.rawValue]!
         let south = self.roomDefinition!
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 0, 8, north.hasOpening[MonumentDirection.down.rawValue])
-            self.generateDefaultFloor(world, chunkBox, 0, 0, south.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 8, north.hasOpening[LocalDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, south.hasOpening[LocalDirection.down.rawValue])
         }
-        if south.connections[MonumentDirection.up.rawValue] == nil {
+        if south.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 4, 1, 6, 4, 7, Self.baseGray)
         }
-        if north.connections[MonumentDirection.up.rawValue] == nil {
+        if north.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 4, 8, 6, 4, 14, Self.baseGray)
         }
         self.generateBox(world, chunkBox, 0, 3, 0, 0, 3, 15, Self.baseLight, Self.baseLight)
@@ -1962,21 +1440,21 @@ private final class OceanMonumentDoubleZRoom: PlacedPiece {
         self.placeBlock(world, Self.baseLight, 5, 3, 5, chunkBox)
         self.placeBlock(world, Self.baseLight, 2, 3, 10, chunkBox)
         self.placeBlock(world, Self.baseLight, 5, 3, 10, chunkBox)
-        if south.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
-        if south.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
-        if south.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
-        if north.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 15, 4, 2, 15) }
-        if north.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 11, 0, 2, 12) }
-        if north.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 11, 7, 2, 12) }
+        if south.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
+        if south.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
+        if south.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
+        if north.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 15, 4, 2, 15) }
+        if north.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 11, 0, 2, 12) }
+        if north.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 11, 7, 2, 12) }
     }
 }
 
-private final class OceanMonumentEntryRoom: PlacedPiece {
+private final class OceanMonumentEntryRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(kind: .entryRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         self.generateBox(world, chunkBox, 0, 3, 0, 2, 3, 7, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 5, 3, 0, 7, 3, 7, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 0, 2, 0, 1, 2, 7, Self.baseLight, Self.baseLight)
@@ -1986,18 +1464,18 @@ private final class OceanMonumentEntryRoom: PlacedPiece {
         self.generateBox(world, chunkBox, 0, 1, 7, 7, 3, 7, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 1, 1, 0, 2, 3, 0, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 5, 1, 0, 6, 3, 0, Self.baseLight, Self.baseLight)
-        if self.roomDefinition!.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
-        if self.roomDefinition!.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 1, 2, 4) }
-        if self.roomDefinition!.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 6, 1, 3, 7, 2, 4) }
+        if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
+        if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 1, 2, 4) }
+        if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 6, 1, 3, 7, 2, 4) }
     }
 }
 
-private final class OceanMonumentPenthouse: PlacedPiece {
-    init(orientation: HorizontalDirection, boundingBox: MonumentBoundingBox) {
+private final class OceanMonumentPenthouse: MonumentPiece {
+    init(orientation: HorizontalDirection, boundingBox: BoundingBox) {
         super.init(kind: .penthouse, orientation: orientation, boundingBox: boundingBox)
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         self.generateBox(world, chunkBox, 2, -1, 2, 11, -1, 11, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 0, -1, 0, 1, -1, 11, Self.baseGray, Self.baseGray)
         self.generateBox(world, chunkBox, 12, -1, 0, 13, -1, 11, Self.baseGray, Self.baseGray)
@@ -2035,26 +1513,26 @@ private final class OceanMonumentPenthouse: PlacedPiece {
     }
 }
 
-private final class OceanMonumentSimpleRoom: PlacedPiece {
+private final class OceanMonumentSimpleRoom: MonumentPiece {
     private let mainDesign: Int
 
-    init(orientation: HorizontalDirection, definition: RoomDefinition, random: inout CheckedRandom) {
+    init<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) {
         let design = Int(random.next(bound: 3))
         self.mainDesign = design
         super.init(kind: .simpleRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1, design: design)
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 0, 0, self.roomDefinition!.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, self.roomDefinition!.hasOpening[LocalDirection.down.rawValue])
         }
-        if self.roomDefinition!.connections[MonumentDirection.up.rawValue] == nil {
+        if self.roomDefinition!.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 4, 1, 6, 4, 6, Self.baseGray)
         }
         let centerPillar = self.mainDesign != 0
             && random.next(bound: 2) == 0
-            && !self.roomDefinition!.hasOpening[MonumentDirection.down.rawValue]
-            && !self.roomDefinition!.hasOpening[MonumentDirection.up.rawValue]
+            && !self.roomDefinition!.hasOpening[LocalDirection.down.rawValue]
+            && !self.roomDefinition!.hasOpening[LocalDirection.up.rawValue]
             && self.roomDefinition!.countOpenings() > 1
         switch self.mainDesign {
         case 0:
@@ -2078,28 +1556,28 @@ private final class OceanMonumentSimpleRoom: PlacedPiece {
             self.generateBox(world, chunkBox, 7, 2, 5, 7, 2, 7, Self.baseGray, Self.baseGray)
             self.generateBox(world, chunkBox, 5, 2, 7, 6, 2, 7, Self.baseGray, Self.baseGray)
             self.placeBlock(world, Self.lampBlock, 6, 2, 6, chunkBox)
-            if self.roomDefinition!.hasOpening[MonumentDirection.south.rawValue] {
+            if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
                 self.generateBox(world, chunkBox, 3, 3, 0, 4, 3, 0, Self.baseLight, Self.baseLight)
             } else {
                 self.generateBox(world, chunkBox, 3, 3, 0, 4, 3, 1, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 3, 2, 0, 4, 2, 0, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 3, 1, 0, 4, 1, 1, Self.baseLight, Self.baseLight)
             }
-            if self.roomDefinition!.hasOpening[MonumentDirection.north.rawValue] {
+            if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] {
                 self.generateBox(world, chunkBox, 3, 3, 7, 4, 3, 7, Self.baseLight, Self.baseLight)
             } else {
                 self.generateBox(world, chunkBox, 3, 3, 6, 4, 3, 7, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 3, 2, 7, 4, 2, 7, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 3, 1, 6, 4, 1, 7, Self.baseLight, Self.baseLight)
             }
-            if self.roomDefinition!.hasOpening[MonumentDirection.west.rawValue] {
+            if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] {
                 self.generateBox(world, chunkBox, 0, 3, 3, 0, 3, 4, Self.baseLight, Self.baseLight)
             } else {
                 self.generateBox(world, chunkBox, 0, 3, 3, 1, 3, 4, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, 2, 3, 0, 2, 4, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 0, 1, 3, 1, 1, 4, Self.baseLight, Self.baseLight)
             }
-            if self.roomDefinition!.hasOpening[MonumentDirection.east.rawValue] {
+            if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] {
                 self.generateBox(world, chunkBox, 7, 3, 3, 7, 3, 4, Self.baseLight, Self.baseLight)
             } else {
                 self.generateBox(world, chunkBox, 6, 3, 3, 7, 3, 4, Self.baseLight, Self.baseLight)
@@ -2131,22 +1609,22 @@ private final class OceanMonumentSimpleRoom: PlacedPiece {
             self.placeBlock(world, Self.baseGray, 7, 2, 6, chunkBox)
             self.placeBlock(world, Self.baseGray, 6, 2, 0, chunkBox)
             self.placeBlock(world, Self.baseGray, 7, 2, 1, chunkBox)
-            if !self.roomDefinition!.hasOpening[MonumentDirection.south.rawValue] {
+            if !self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
                 self.generateBox(world, chunkBox, 1, 3, 0, 6, 3, 0, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 1, 2, 0, 6, 2, 0, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 1, 1, 0, 6, 1, 0, Self.baseLight, Self.baseLight)
             }
-            if !self.roomDefinition!.hasOpening[MonumentDirection.north.rawValue] {
+            if !self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] {
                 self.generateBox(world, chunkBox, 1, 3, 7, 6, 3, 7, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 1, 2, 7, 6, 2, 7, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 1, 1, 7, 6, 1, 7, Self.baseLight, Self.baseLight)
             }
-            if !self.roomDefinition!.hasOpening[MonumentDirection.west.rawValue] {
+            if !self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] {
                 self.generateBox(world, chunkBox, 0, 3, 1, 0, 3, 6, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 0, 2, 1, 0, 2, 6, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 0, 1, 1, 0, 1, 6, Self.baseLight, Self.baseLight)
             }
-            if !self.roomDefinition!.hasOpening[MonumentDirection.east.rawValue] {
+            if !self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] {
                 self.generateBox(world, chunkBox, 7, 3, 1, 7, 3, 6, Self.baseLight, Self.baseLight)
                 self.generateBox(world, chunkBox, 7, 2, 1, 7, 2, 6, Self.baseGray, Self.baseGray)
                 self.generateBox(world, chunkBox, 7, 1, 1, 7, 1, 6, Self.baseLight, Self.baseLight)
@@ -2168,10 +1646,10 @@ private final class OceanMonumentSimpleRoom: PlacedPiece {
             self.generateBox(world, chunkBox, 7, 1, 3, 7, 2, 4, Self.baseBlack, Self.baseBlack)
             self.generateBox(world, chunkBox, 3, 1, 0, 4, 2, 0, Self.baseBlack, Self.baseBlack)
             self.generateBox(world, chunkBox, 3, 1, 7, 4, 2, 7, Self.baseBlack, Self.baseBlack)
-            if self.roomDefinition!.hasOpening[MonumentDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
-            if self.roomDefinition!.hasOpening[MonumentDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
-            if self.roomDefinition!.hasOpening[MonumentDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
-            if self.roomDefinition!.hasOpening[MonumentDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
+            if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
+            if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
+            if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
+            if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
         }
         if centerPillar {
             self.generateBox(world, chunkBox, 3, 1, 3, 4, 1, 4, Self.baseLight, Self.baseLight)
@@ -2181,23 +1659,23 @@ private final class OceanMonumentSimpleRoom: PlacedPiece {
     }
 }
 
-private final class OceanMonumentSimpleTopRoom: PlacedPiece {
+private final class OceanMonumentSimpleTopRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(kind: .simpleTopRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         if self.roomDefinition!.index / 25 > 0 {
-            self.generateDefaultFloor(world, chunkBox, 0, 0, self.roomDefinition!.hasOpening[MonumentDirection.down.rawValue])
+            self.generateDefaultFloor(world, chunkBox, 0, 0, self.roomDefinition!.hasOpening[LocalDirection.down.rawValue])
         }
-        if self.roomDefinition!.connections[MonumentDirection.up.rawValue] == nil {
+        if self.roomDefinition!.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 4, 1, 6, 4, 6, Self.baseGray)
         }
         for x in 1...6 {
             for z in 1...6 {
                 if random.next(bound: 3) != 0 {
                     let y0: Int32 = 2 + (random.next(bound: 4) == 0 ? 0 : 1)
-                    self.generateBox(world, chunkBox, Int32(x), y0, Int32(z), Int32(x), 3, Int32(z), OceanMonumentBlocks.wetSpongeState, OceanMonumentBlocks.wetSpongeState)
+                    self.generateBox(world, chunkBox, Int32(x), y0, Int32(z), Int32(x), 3, Int32(z), Blocks.wetSpongeState, Blocks.wetSpongeState)
                 }
             }
         }
@@ -2217,21 +1695,21 @@ private final class OceanMonumentSimpleTopRoom: PlacedPiece {
         self.generateBox(world, chunkBox, 7, 1, 3, 7, 2, 4, Self.baseBlack, Self.baseBlack)
         self.generateBox(world, chunkBox, 3, 1, 0, 4, 2, 0, Self.baseBlack, Self.baseBlack)
         self.generateBox(world, chunkBox, 3, 1, 7, 4, 2, 7, Self.baseBlack, Self.baseBlack)
-        if self.roomDefinition!.hasOpening[MonumentDirection.south.rawValue] {
+        if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
             self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0)
         }
     }
 }
 
-private final class OceanMonumentWingRoom: PlacedPiece {
+private final class OceanMonumentWingRoom: MonumentPiece {
     private let mainDesign: Int
 
-    init(orientation: HorizontalDirection, boundingBox: MonumentBoundingBox, randomValue: Int32) {
+    init(orientation: HorizontalDirection, boundingBox: BoundingBox, randomValue: Int32) {
         self.mainDesign = Int(randomValue & 1)
         super.init(kind: .wingRoom, orientation: orientation, boundingBox: boundingBox, design: self.mainDesign)
     }
 
-    override func postProcess(in world: MonumentWorld, chunkBox: MonumentBoundingBox, random: inout CheckedRandom) {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         if self.mainDesign == 0 {
             for i in 0..<4 {
                 let ii = Int32(i)
@@ -2312,33 +1790,7 @@ private final class OceanMonumentWingRoom: PlacedPiece {
     }
 }
 
-private func monumentLargeFeatureRandom(worldSeed: WorldSeed, chunkX: Int32, chunkZ: Int32) -> CheckedRandom {
-    var random = CheckedRandom(seed: worldSeed)
-    let multiplierX = checkedRandomNextLongExact(&random)
-    let multiplierZ = checkedRandomNextLongExact(&random)
-    let mixed = (multiplierX &* overflow(Int64(chunkX)))
-        ^ (multiplierZ &* overflow(Int64(chunkZ)))
-        ^ worldSeed
-    return CheckedRandom(seed: mixed)
-}
-
-private func checkedRandomNextLongExact(_ random: inout CheckedRandom) -> UInt64 {
-    let high = Int64(Int32(bitPattern: random.next(bits: 32)))
-    let low = Int64(Int32(bitPattern: random.next(bits: 32)))
-    return UInt64(bitPattern: (high << 32) &+ low)
-}
-
-private func monumentFloorDiv(_ value: Int32, _ divisor: Int32) -> Int32 {
-    let quotient = value / divisor
-    let remainder = value % divisor
-    return remainder < 0 ? quotient - 1 : quotient
-}
-
-private func statesEqual(_ lhs: BlockState, _ rhs: BlockState) -> Bool {
-    lhs.type.id == rhs.type.id && lhs.properties == rhs.properties
-}
-
-private func monumentShuffle<T>(_ values: inout [T], random: inout CheckedRandom) {
+private func monumentShuffle<T, R: Random>(_ values: inout [T], random: inout R) {
     guard values.count > 1 else { return }
     for index in stride(from: values.count - 1, through: 1, by: -1) {
         let swapIndex = Int(random.next(bound: UInt32(index + 1)))

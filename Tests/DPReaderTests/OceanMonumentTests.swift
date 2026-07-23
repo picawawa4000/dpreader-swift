@@ -120,8 +120,8 @@ private func transformedDisplayCells(
 }
 
 @Test func testOceanMonumentBlockVolumeSamplerFallback() async throws {
-    let bounds = OceanMonumentBoundingBox(minX: 0, minY: 0, minZ: 0, maxX: 31, maxY: 31, maxZ: 31)
-    let volume = OceanMonumentBlockVolume(bounds: bounds) { _ in
+    let bounds = BoundingBox(minX: 0, minY: 0, minZ: 0, maxX: 31, maxY: 31, maxZ: 31)
+    let volume = StructureBlockVolume(bounds: bounds) { _ in
         BlockState(type: Block(withID: "minecraft:stone"))
     }
 
@@ -141,7 +141,7 @@ private func transformedDisplayCells(
     #expect(graphA.pieces.count == graphB.pieces.count)
     #expect(graphA.pieces.map(\.kind) == graphB.pieces.map(\.kind))
     #expect(graphA.pieces.count == 32)
-    #expect(graphA.boundingBox == OceanMonumentBoundingBox(minX: -29, minY: 39, minZ: -29, maxX: 28, maxY: 61, maxZ: 28))
+    #expect(graphA.boundingBox == BoundingBox(minX: -29, minY: 39, minZ: -29, maxX: 28, maxY: 61, maxZ: 28))
 }
 
 @Test func testOceanMonumentGenerationSnapshot() async throws {
@@ -168,7 +168,7 @@ private func transformedDisplayCells(
     }
 
     #expect(result.graph.pieces.count == 32)
-    #expect(result.graph.boundingBox == OceanMonumentBoundingBox(minX: -29, minY: 39, minZ: -29, maxX: 28, maxY: 61, maxZ: 28))
+    #expect(result.graph.boundingBox == BoundingBox(minX: -29, minY: 39, minZ: -29, maxX: 28, maxY: 61, maxZ: 28))
     #expect(result.blocks.allTouchedBlocks().count == 16547)
     #expect(
         result.elderGuardians == [

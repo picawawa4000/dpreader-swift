@@ -189,10 +189,10 @@ public final class StructurePlacementSampler {
         let maxChunkX = chunkPos.x &+ Int32(exclusionZone.chunkCount)
         let minChunkZ = chunkPos.z &- Int32(exclusionZone.chunkCount)
         let maxChunkZ = chunkPos.z &+ Int32(exclusionZone.chunkCount)
-        let minRegionX = structurePlacementFloorDiv(minChunkX, by: Int32(otherPlacement.spacing))
-        let maxRegionX = structurePlacementFloorDiv(maxChunkX, by: Int32(otherPlacement.spacing))
-        let minRegionZ = structurePlacementFloorDiv(minChunkZ, by: Int32(otherPlacement.spacing))
-        let maxRegionZ = structurePlacementFloorDiv(maxChunkZ, by: Int32(otherPlacement.spacing))
+        let minRegionX = floorDiv(minChunkX, by: Int32(otherPlacement.spacing))
+        let maxRegionX = floorDiv(maxChunkX, by: Int32(otherPlacement.spacing))
+        let minRegionZ = floorDiv(minChunkZ, by: Int32(otherPlacement.spacing))
+        let maxRegionZ = floorDiv(maxChunkZ, by: Int32(otherPlacement.spacing))
         var nextVisitedKeys = visitedKeys
         nextVisitedKeys.insert(structureSetKey.name)
 
@@ -356,13 +356,6 @@ public final class StructurePlacementSampler {
     }
 }
 
-@inline(__always) private func structurePlacementFloorDiv(_ value: Int32, by divisor: Int32) -> Int32 {
-    precondition(divisor > 0, "divisor must be positive")
-    let quotient = value / divisor
-    let remainder = value % divisor
-    return remainder < 0 ? quotient - 1 : quotient
-}
-
 @inline(__always) private func structurePlacementRandomSeed(worldSeed: WorldSeed, salt: Int, regionX: Int32, regionZ: Int32) -> WorldSeed {
     let signedSeed = Int64(bitPattern: worldSeed)
     let combined = signedSeed
@@ -370,22 +363,6 @@ public final class StructurePlacementSampler {
         &+ Int64(regionZ) &* 132897987541
         &+ Int64(salt)
     return overflow(combined)
-}
-
-@inline(__always) private func checkedRandomForChunkGeneration(worldSeed: WorldSeed, chunkX: Int32, chunkZ: Int32) -> CheckedRandom {
-    var random = CheckedRandom(seed: worldSeed)
-    let multiplierX = checkedRandomNextLongExact(&random)
-    let multiplierZ = checkedRandomNextLongExact(&random)
-    let mixed = (multiplierX &* overflow(Int64(chunkX)))
-        ^ (multiplierZ &* overflow(Int64(chunkZ)))
-        ^ worldSeed
-    return CheckedRandom(seed: mixed)
-}
-
-@inline(__always) private func checkedRandomNextLongExact(_ random: inout CheckedRandom) -> UInt64 {
-    let high = Int64(Int32(bitPattern: random.next(bits: 32)))
-    let low = Int64(Int32(bitPattern: random.next(bits: 32)))
-    return UInt64(bitPattern: (high << 32) &+ low)
 }
 
 @inline(__always) private func structurePlacementTagKey(forRegistryPath registryPath: String, tagName: String) -> String {

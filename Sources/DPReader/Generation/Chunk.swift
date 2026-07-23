@@ -1,5 +1,12 @@
 /// TODO: should this be a struct or a class?
-public final class Block: @unchecked Sendable {
+public final class Block: @unchecked Sendable, Equatable {
+    /// Equality testing via block ID.
+    /// In reality, there should only be one instance of `Block` with a given `id` anyways.
+    /// TODO: make it like that
+    public static func == (lhs: Block, rhs: Block) -> Bool {
+        lhs.id == rhs.id
+    }
+
     public let id: String
 
     /// It is recommended to use the `Blocks` interface to get vanilla block references,
@@ -17,12 +24,8 @@ public final class Block: @unchecked Sendable {
     }
 }
 
-public actor Blocks {
-    public static let AIR = Block(withID: "minecraft:air")
-}
-
 /// TODO: should this be a struct or a class?
-public struct BlockState: Sendable {
+public struct BlockState: Sendable, Equatable {
     public let type: Block
     public var properties: [String: String]? = nil
 

@@ -13,6 +13,7 @@ public protocol Random {
 
     mutating func next(bound: UInt32) -> UInt32
     mutating func nextLong() -> UInt64
+    mutating func nextInt32() -> Int32
     mutating func nextFloat() -> Float
     mutating func nextDouble() -> Double
     mutating func nextSplitter() -> Splitter
@@ -64,7 +65,17 @@ public struct CheckedRandom: Random {
     }
 
     public mutating func nextLong() -> UInt64 {
-        return (UInt64(self.next(bits: 32)) << 32) + UInt64(self.next(bits: 32))
+        return (UInt64(self.next(bits: 32)) << 32) | UInt64(self.next(bits: 32))
+    }
+
+    public mutating func nextInt32() -> Int32 {
+        Int32(bitPattern: self.next(bits: 32))
+    }
+
+    mutating func nextLongExact() -> UInt64 {
+        let high = Int64(Int32(bitPattern: self.next(bits: 32)))
+        let low = Int64(Int32(bitPattern: self.next(bits: 32)))
+        return UInt64(bitPattern: (high << 32) | low)
     }
 
     public mutating func nextFloat() -> Float {
@@ -91,6 +102,16 @@ public struct CheckedRandom: Random {
     func compareForTest(expectedSeed: UInt64) -> Bool {
         return self.seed == expectedSeed
     }
+}
+
+@inline(__always) func checkedRandomForChunkGeneration(worldSeed: WorldSeed, chunkX: Int32, chunkZ: Int32) -> CheckedRandom {
+    var random = CheckedRandom(seed: worldSeed)
+    let multiplierX = random.nextLongExact()
+    let multiplierZ = random.nextLongExact()
+    let mixed = (multiplierX &* overflow(Int64(chunkX)))
+        ^ (multiplierZ &* overflow(Int64(chunkZ)))
+        ^ worldSeed
+    return CheckedRandom(seed: mixed)
 }
 
 public struct CheckedRandomSplitter: RandomSplitter {
@@ -157,6 +178,10 @@ public struct XoroshiroRandom: Random {
 
     public mutating func nextInt() -> UInt32 {
         return UInt32(truncatingIfNeeded: self.nextLong())
+    }
+
+    public mutating func nextInt32() -> Int32 {
+        Int32(bitPattern: UInt32(truncatingIfNeeded: self.nextLong()))
     }
 
     private static let BITMASK_32: UInt64 = (1 << 32) - 1

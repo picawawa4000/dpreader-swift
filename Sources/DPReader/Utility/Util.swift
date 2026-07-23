@@ -29,6 +29,13 @@ func clamp<T: Comparable>(value: T, lowerBound: T, upperBound: T) -> T {
                 end: lerp2(deltaX: deltaX, deltaY: deltaY, x0y0: x0y0z1, x1y0: x1y0z1, x0y1: x0y1z1, x1y1: x1y1z1))
 }
 
+@inline(__always) func floorDiv(_ value: Int32, by divisor: Int32) -> Int32 {
+    precondition(divisor > 0, "divisor must be positive")
+    let quotient = value / divisor
+    let remainder = value % divisor
+    return remainder < 0 ? quotient - 1 : quotient
+}
+
 func clampedLerp(delta: Double, start: Double, end: Double) -> Double {
     return delta <= 0.0 ? start : (delta >= 1.0 ? end : lerp(delta: delta, start: start, end: end))
 }
