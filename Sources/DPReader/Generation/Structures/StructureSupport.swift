@@ -4,21 +4,49 @@
 ///
 /// Desert pyramids only need `seaLevel`, `minimumWorldY`, and `blockSampler`.
 /// Ocean monuments only need `seaLevel`, `minimumWorldY`, and `blockSampler`.
+/// Woodland mansions only need `seaLevel`, `minimumWorldY`, `blockStateSampler`, and `structureTemplateProvider`.
 ///
 /// Everything else is generated directly from the structure seed and the start chunk.
 public struct StructureGenerationContext {
     public let seaLevel: Int32
     public let minimumWorldY: Int32
     public let blockSampler: (PosInt3D) -> BlockState
+    public let structureTemplateProvider: (String) -> StructureTemplate?
 
     public init(
         seaLevel: Int32,
         minimumWorldY: Int32,
-        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) }
+        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) },
+        structureTemplateProvider: @escaping (String) -> StructureTemplate? = { _ in nil }
     ) {
         self.seaLevel = seaLevel
         self.minimumWorldY = minimumWorldY
         self.blockSampler = blockSampler
+        self.structureTemplateProvider = structureTemplateProvider
+    }
+
+    public init(
+        seaLevel: Int32,
+        minimumWorldY: Int32,
+        usingDataPacks dataPacks: [DataPack],
+        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) }
+    ) {
+        let templateRegistry = Registry<StructureTemplate>()
+        for dataPack in dataPacks {
+            templateRegistry.mergeDown(with: dataPack.structureTemplateRegistry)
+        }
+        self.init(
+            seaLevel: seaLevel,
+            minimumWorldY: minimumWorldY,
+            blockSampler: blockSampler,
+            structureTemplateProvider: { identifier in
+                templateRegistry.get(RegistryKey(referencing: addDefaultNamespace(identifier)))
+            }
+        )
+    }
+
+    public func structureTemplate(named identifier: String) -> StructureTemplate? {
+        self.structureTemplateProvider(addDefaultNamespace(identifier))
     }
 }
 

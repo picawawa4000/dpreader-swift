@@ -1,10 +1,12 @@
 public enum StructureGeneratedResult {
     case desertPyramid(DesertPyramidGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
+    case woodlandMansion(WoodlandMansionGenerationResult)
 }
 
 public enum StructureGenerationError: Error, Equatable {
     case unsupportedStructureType(String)
+    case missingStructureTemplate(String)
 }
 
 public final class Structure: Codable {
@@ -119,6 +121,12 @@ public final class Structure: Codable {
             )
         case "minecraft:ocean_monument":
             return OceanMonument.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk)
+        case "minecraft:woodland_mansion":
+            return try WoodlandMansion.generatePieceGraph(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
         default:
             throw StructureGenerationError.unsupportedStructureType(self.type)
         }
@@ -143,6 +151,15 @@ public final class Structure: Codable {
             return .oceanMonument(
                 OceanMonument.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
             )
+        case "minecraft:woodland_mansion":
+            guard let result = try WoodlandMansion.generate(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            ) else {
+                return nil
+            }
+            return .woodlandMansion(result)
         default:
             throw StructureGenerationError.unsupportedStructureType(self.type)
         }

@@ -29,6 +29,7 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
     public static let noStructures = DataPackRegistryLoadingOptions(rawValue: 1 << 5)
     public static let noStructureSets = DataPackRegistryLoadingOptions(rawValue: 1 << 6)
     public static let noEnchantments = DataPackRegistryLoadingOptions(rawValue: 1 << 7)
+    public static let noStructureTemplates = DataPackRegistryLoadingOptions(rawValue: 1 << 8)
 }
 
 /// Represents a data pack.
@@ -42,6 +43,7 @@ public final class DataPack {
     public let tagRegistry = Registry<TagDefinition>()
     public let structureRegistry = Registry<Structure>()
     public let structureSetRegistry = Registry<StructureSet>()
+    public let structureTemplateRegistry = Registry<StructureTemplate>()
     public let versioning: PackVersioning
     public var packFormat: Version { versioning.selectedVersion }
 
@@ -92,6 +94,7 @@ public final class DataPack {
             try self.loadTags(fromNamespaceURL: namespaceURL, withNamespace: namespace)
             if !options.contains(.noEnchantments) { try self.loadEnchantments(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
             if !options.contains(.noDimensions) { try self.loadDimensions(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
+            if !options.contains(.noStructureTemplates) { try self.loadStructureTemplates(fromNamespaceURL: namespaceURL, withNamespace: namespace) }
 
             let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
 
@@ -131,6 +134,10 @@ public final class DataPack {
 
     private static func shouldDecodeFile(at filepath: URL) -> Bool {
         !filepath.isDirectory && filepath.pathExtension.lowercased() == "json"
+    }
+
+    private static func shouldDecodeStructureTemplate(at filepath: URL) -> Bool {
+        !filepath.isDirectory && filepath.pathExtension.lowercased() == "nbt"
     }
 
     private static func loadVersioning(fromRootPath rootPath: URL, decodingVersion: Version?) throws -> PackVersioning {
@@ -289,6 +296,24 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("tags")
+        }
+    }
+
+    private func loadStructureTemplates(fromNamespaceURL namespaceURL: URL, withNamespace namespace: String) throws {
+        let root = namespaceURL.appendingDirectory(path: "structure")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
+
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
+            for case let filepath as URL in enumerator {
+                if !Self.shouldDecodeStructureTemplate(at: filepath) { continue }
+                let template = try StructureTemplate(fromFileAt: filepath)
+                let id = RegistryKey<StructureTemplate>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
+                self.structureTemplateRegistry.register(template, forKey: id)
+            }
+        } else {
+            throw LoadingErrors.failedToEnumerateDirectory("structure")
         }
     }
 

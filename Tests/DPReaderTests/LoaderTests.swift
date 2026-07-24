@@ -257,6 +257,33 @@ private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
     #expect(strongholdPlacement.spread == 3)
 }
 
+@Test func testLoadingForStructureTemplates() async throws {
+    let packURL = repositoryRootURL().appendingPathComponent("vanilla/1.21.11")
+    let dataPack = try DataPack(
+        fromRootPath: packURL,
+        loadingOptions: [
+            .noDensityFunctions,
+            .noNoises,
+            .noNoiseSettings,
+            .noDimensions,
+            .noBiomes,
+            .noStructures,
+            .noStructureSets,
+            .noEnchantments
+        ]
+    )
+
+    guard let entrance = dataPack.structureTemplateRegistry.get(RegistryKey(referencing: "minecraft:woodland_mansion/entrance")) else {
+        throw Errors.structureNotFound("minecraft:woodland_mansion/entrance")
+    }
+
+    #expect(entrance.size.x > 0)
+    #expect(entrance.size.y > 0)
+    #expect(entrance.size.z > 0)
+    #expect(!entrance.blocks.isEmpty)
+    #expect(entrance.palette.contains { !$0.type.isAir })
+}
+
 @Test func testLoadingForTerralith26() async throws {
     let packURL = repositoryRootURL().appendingPathComponent("vanilla/nonvanilla/Terralith_26")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])

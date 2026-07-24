@@ -78,6 +78,10 @@ public struct CheckedRandom: Random {
         return Float(self.next(bits: 24)) * 5.9604645e-8
     }
 
+    public mutating func nextBoolean() -> Bool {
+        self.next(bits: 1) != 0
+    }
+
     public mutating func nextDouble() -> Double {
         let i: UInt64 = UInt64(self.next(bits: 26));
         let j: UInt64 = UInt64(self.next(bits: 27));
