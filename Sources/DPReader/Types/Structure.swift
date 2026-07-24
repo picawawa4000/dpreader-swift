@@ -1,8 +1,3 @@
-public enum StructureGeneratedPieceGraph {
-    case desertPyramid(DesertPyramidPieceGraph)
-    case oceanMonument(OceanMonumentPieceGraph)
-}
-
 public enum StructureGeneratedResult {
     case desertPyramid(DesertPyramidGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
@@ -114,21 +109,16 @@ public final class Structure: Codable {
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
         context: StructureGenerationContext
-    ) throws -> StructureGeneratedPieceGraph? {
+    ) throws -> PieceGraph? {
         switch self.type {
         case "minecraft:desert_pyramid":
-            guard let graph = DesertPyramid.generatePieceGraph(
+            return DesertPyramid.generatePieceGraph(
                 worldSeed: worldSeed,
                 startChunk: startChunk,
                 context: context
-            ) else {
-                return nil
-            }
-            return .desertPyramid(graph)
-        case "minecraft:ocean_monument":
-            return .oceanMonument(
-                OceanMonument.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk)
             )
+        case "minecraft:ocean_monument":
+            return OceanMonument.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk)
         default:
             throw StructureGenerationError.unsupportedStructureType(self.type)
         }

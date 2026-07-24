@@ -31,7 +31,7 @@ private func structureDispatchContext() -> StructureGenerationContext {
         context: context
     )
 
-    guard case .desertPyramid(let generatedGraph)? = graph else {
+    guard let generatedGraph = graph else {
         Issue.record("Expected desert pyramid piece graph")
         return
     }
@@ -66,7 +66,7 @@ private func structureDispatchContext() -> StructureGenerationContext {
         context: context
     )
 
-    guard case .oceanMonument(let generatedGraph)? = graph else {
+    guard let generatedGraph = graph else {
         Issue.record("Expected ocean monument piece graph")
         return
     }

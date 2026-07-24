@@ -9,7 +9,7 @@ import Foundation
 /// - one penthouse
 ///
 /// Piece order matches generation order, which matters for overlapping writes.
-public typealias OceanMonumentPieceGraph = PieceGraph<OceanMonumentPieceKind>
+public typealias OceanMonumentPieceGraph = PieceGraph
 
 public typealias OceanMonumentGenerationContext = StructureGenerationContext
 
@@ -33,7 +33,7 @@ struct OceanMonumentRoomPieceSnapshot {
     let roomIndex: Int
     let occupiedRoomCells: Set<OceanMonumentRoomCell>
     let connectedPieceRoomIndices: Set<Int>
-    let design: Int?
+    let supportsCenterPillar: Bool
 }
 
 /// A test-facing projection of the merged room-piece graph.
@@ -44,7 +44,7 @@ struct OceanMonumentRoomPieceGraphSnapshot {
 }
 
 /// One generated piece in the public graph view.
-public typealias OceanMonumentGraphPiece = StructurePiece<OceanMonumentPieceKind>
+public typealias OceanMonumentGraphPiece = StructurePiece
 
 public enum OceanMonumentPieceKind: String {
     case monumentBuilding
@@ -55,9 +55,12 @@ public enum OceanMonumentPieceKind: String {
     case doubleYRoom
     case doubleYZRoom
     case doubleZRoom
-    case simpleRoom
+    case simpleRoomDesign0
+    case simpleRoomDesign1
+    case simpleRoomDesign2
     case simpleTopRoom
-    case wingRoom
+    case wingRoomDesign0
+    case wingRoomDesign1
     case penthouse
 }
 
@@ -69,7 +72,7 @@ public enum OceanMonumentPieceKind: String {
 public struct OceanMonumentGenerationResult {
     public let graph: OceanMonumentPieceGraph
     public let blocks: StructureBlockVolume
-    public let elderGuardians: [PosInt3D]
+    public let markers: [StructureMarker]
 }
 
 /// Namespace for monument generation.
@@ -81,6 +84,8 @@ public struct OceanMonumentGenerationResult {
 ///   This code currently drives post-processing randomness from the monument's large-feature RNG stream.
 ///   That is enough to keep the generator deterministic and self-contained, but it is the main remaining place
 ///   where this implementation may diverge from a literal chunk-by-chunk vanilla execution.
+///   In vanilla, chunk-local reprocessing can make optional room details such as center pillars disagree
+///   across chunk boundaries when a room is split between multiple chunk `postProcess` calls.
 public enum OceanMonument {
     public static func generatePieceGraph(worldSeed: WorldSeed, startChunk: PosInt2D) -> OceanMonumentPieceGraph {
         let root = makeRoot(worldSeed: worldSeed, startChunk: startChunk)
@@ -112,7 +117,7 @@ public enum OceanMonument {
         return OceanMonumentGenerationResult(
             graph: graph,
             blocks: volume,
-            elderGuardians: world.elderGuardians
+            markers: world.markers
         )
     }
 
@@ -186,11 +191,11 @@ public enum OceanMonument {
                 }
             }
             return OceanMonumentRoomPieceSnapshot(
-                kind: piece.kind,
+                kind: pieceKind(for: piece),
                 roomIndex: roomIndex,
                 occupiedRoomCells: occupiedRoomCells,
                 connectedPieceRoomIndices: connectedPieceRoomIndices,
-                design: piece.design
+                supportsCenterPillar: pieceSupportsCenterPillar(piece)
             )
         }
 
@@ -209,6 +214,72 @@ public enum OceanMonument {
             y: roomIndex / 25,
             z: (roomIndex / 5) % 5
         )
+    }
+
+    private static func pieceKind(for piece: MonumentPiece) -> OceanMonumentPieceKind {
+        switch piece {
+        case is OceanMonumentEntryRoom:
+            return .entryRoom
+        case is OceanMonumentCoreRoom:
+            return .coreRoom
+        case is OceanMonumentDoubleXYRoom:
+            return .doubleXYRoom
+        case is OceanMonumentDoubleYZRoom:
+            return .doubleYZRoom
+        case is OceanMonumentDoubleXRoom:
+            return .doubleXRoom
+        case is OceanMonumentDoubleYRoom:
+            return .doubleYRoom
+        case is OceanMonumentDoubleZRoom:
+            return .doubleZRoom
+        case is OceanMonumentSimpleTopRoom:
+            return .simpleTopRoom
+        case is OceanMonumentSimpleRoomDesign0:
+            return .simpleRoomDesign0
+        case is OceanMonumentSimpleRoomDesign1:
+            return .simpleRoomDesign1
+        case is OceanMonumentSimpleRoomDesign2:
+            return .simpleRoomDesign2
+        case is OceanMonumentWingRoomDesign0:
+            return .wingRoomDesign0
+        case is OceanMonumentWingRoomDesign1:
+            return .wingRoomDesign1
+        case is OceanMonumentPenthouse:
+            return .penthouse
+        case is MonumentBuilding:
+            return .monumentBuilding
+        default:
+            fatalError("Unknown monument piece type: \(type(of: piece))")
+        }
+    }
+
+    static func pieceHasCenterPillar(_ piece: StructurePiece) -> Bool {
+        (piece as? OceanMonumentSimpleRoomBase)?.hasCenterPillar ?? false
+    }
+
+    static func makeCenterPillarTestPiece(kind: OceanMonumentPieceKind) -> StructurePiece {
+        let roomDefinition = RoomDefinition(index: 0)
+        roomDefinition.hasOpening[LocalDirection.west.rawValue] = true
+        roomDefinition.hasOpening[LocalDirection.east.rawValue] = true
+        switch kind {
+        case .simpleRoomDesign1:
+            return OceanMonumentSimpleRoomDesign1(orientation: .north, definition: roomDefinition)
+        case .simpleRoomDesign2:
+            return OceanMonumentSimpleRoomDesign2(orientation: .north, definition: roomDefinition)
+        default:
+            preconditionFailure("Center pillar test piece only supports simple room designs 1 and 2")
+        }
+    }
+
+    private static func pieceSupportsCenterPillar(_ piece: MonumentPiece) -> Bool {
+        guard piece is OceanMonumentSimpleRoomWithOptionalPillar,
+              let roomDefinition = piece.roomDefinition
+        else {
+            return false
+        }
+        return !roomDefinition.hasOpening[LocalDirection.down.rawValue]
+            && !roomDefinition.hasOpening[LocalDirection.up.rawValue]
+            && roomDefinition.countOpenings() > 1
     }
 }
 
@@ -360,7 +431,7 @@ private struct FitSimpleRoom: MonumentRoomFitter {
 
     func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
         definition.claimed = true
-        return OceanMonumentSimpleRoom(orientation: orientation, definition: definition, random: &random)
+        return OceanMonumentSimpleRoomBase.create(orientation: orientation, definition: definition, random: &random)
     }
 }
 
@@ -379,7 +450,7 @@ private struct FitSimpleTopRoom: MonumentRoomFitter {
     }
 }
 
-private class MonumentPiece: StructurePiece<OceanMonumentPieceKind> {
+private class MonumentPiece: StructurePiece {
     static let baseGray = Blocks.prismarineState
     static let baseLight = Blocks.prismarineBricksState
     static let baseBlack = Blocks.darkPrismarineState
@@ -390,38 +461,31 @@ private class MonumentPiece: StructurePiece<OceanMonumentPieceKind> {
     let occupiedRooms: [RoomDefinition]
 
     init(
-        kind: OceanMonumentPieceKind,
         orientation: HorizontalDirection,
         boundingBox: BoundingBox,
         roomDefinition: RoomDefinition? = nil,
-        occupiedRooms: [RoomDefinition] = [],
-        design: Int? = nil
+        occupiedRooms: [RoomDefinition] = []
     ) {
         self.roomDefinition = roomDefinition
         self.occupiedRooms = occupiedRooms
         super.init(
-            kind: kind,
             orientation: orientation.publicValue,
             boundingBox: boundingBox,
-            roomIndex: roomDefinition?.index,
-            design: design
+            roomIndex: roomDefinition?.index
         )
     }
 
     init(
-        kind: OceanMonumentPieceKind,
         orientation: HorizontalDirection,
         roomDefinition: RoomDefinition,
         occupiedRooms: [RoomDefinition]? = nil,
         roomWidth: Int32,
         roomHeight: Int32,
-        roomDepth: Int32,
-        design: Int? = nil
+        roomDepth: Int32
     ) {
         self.roomDefinition = roomDefinition
         self.occupiedRooms = occupiedRooms ?? [roomDefinition]
         super.init(
-            kind: kind,
             orientation: orientation.publicValue,
             boundingBox: MonumentPiece.roomBoundingBox(
                 orientation: orientation,
@@ -430,8 +494,7 @@ private class MonumentPiece: StructurePiece<OceanMonumentPieceKind> {
                 roomHeight: roomHeight,
                 roomDepth: roomDepth
             ),
-            roomIndex: roomDefinition.index,
-            design: design
+            roomIndex: roomDefinition.index
         )
     }
 
@@ -500,7 +563,7 @@ private final class MonumentBuilding: MonumentPiece {
         var coreRoomRef: RoomDefinition?
         self.sourceRoom = RoomDefinition(index: 0)
         self.coreRoom = RoomDefinition(index: 0)
-        super.init(kind: .monumentBuilding, orientation: orientation, boundingBox: box)
+        super.init(orientation: orientation, boundingBox: box)
 
         let roomDefinitions = MonumentBuilding.generateRoomGraph(random: &random, sourceRoom: &sourceRoomRef, coreRoom: &coreRoomRef)
         self.sourceRoom = sourceRoomRef!
@@ -535,9 +598,9 @@ private final class MonumentBuilding: MonumentPiece {
         let rightWing = BoundingBox.fromCorners(self.getWorldPos(34, 1, 1), self.getWorldPos(56, 8, 21))
         let penthouse = BoundingBox.fromCorners(self.getWorldPos(22, 13, 22), self.getWorldPos(35, 17, 35))
         var wingRandom = random.nextInt32()
-        self.childPieces.append(OceanMonumentWingRoom(orientation: orientation, boundingBox: leftWing, randomValue: wingRandom))
+        self.childPieces.append(OceanMonumentWingRoomBase.create(orientation: orientation, boundingBox: leftWing, randomValue: wingRandom))
         wingRandom += 1
-        self.childPieces.append(OceanMonumentWingRoom(orientation: orientation, boundingBox: rightWing, randomValue: wingRandom))
+        self.childPieces.append(OceanMonumentWingRoomBase.create(orientation: orientation, boundingBox: rightWing, randomValue: wingRandom))
         self.childPieces.append(OceanMonumentPenthouse(orientation: orientation, boundingBox: penthouse))
     }
 
@@ -998,7 +1061,6 @@ private final class OceanMonumentCoreRoom: MonumentPiece {
         let north = definition.connections[LocalDirection.north.rawValue]!
         let up = definition.connections[LocalDirection.up.rawValue]!
         super.init(
-            kind: .coreRoom,
             orientation: orientation,
             roomDefinition: definition,
             occupiedRooms: [
@@ -1077,7 +1139,6 @@ private final class OceanMonumentCoreRoom: MonumentPiece {
 private final class OceanMonumentDoubleXRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(
-            kind: .doubleXRoom,
             orientation: orientation,
             roomDefinition: definition,
             occupiedRooms: [definition, definition.connections[LocalDirection.east.rawValue]!],
@@ -1130,7 +1191,6 @@ private final class OceanMonumentDoubleXYRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         let east = definition.connections[LocalDirection.east.rawValue]!
         super.init(
-            kind: .doubleXYRoom,
             orientation: orientation,
             roomDefinition: definition,
             occupiedRooms: [
@@ -1208,7 +1268,6 @@ private final class OceanMonumentDoubleXYRoom: MonumentPiece {
 private final class OceanMonumentDoubleYRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(
-            kind: .doubleYRoom,
             orientation: orientation,
             roomDefinition: definition,
             occupiedRooms: [definition, definition.connections[LocalDirection.up.rawValue]!],
@@ -1281,7 +1340,6 @@ private final class OceanMonumentDoubleYZRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         let north = definition.connections[LocalDirection.north.rawValue]!
         super.init(
-            kind: .doubleYZRoom,
             orientation: orientation,
             roomDefinition: definition,
             occupiedRooms: [
@@ -1360,7 +1418,6 @@ private final class OceanMonumentDoubleYZRoom: MonumentPiece {
 private final class OceanMonumentDoubleZRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
         super.init(
-            kind: .doubleZRoom,
             orientation: orientation,
             roomDefinition: definition,
             occupiedRooms: [definition, definition.connections[LocalDirection.north.rawValue]!],
@@ -1430,7 +1487,7 @@ private final class OceanMonumentDoubleZRoom: MonumentPiece {
 
 private final class OceanMonumentEntryRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .entryRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
+        super.init(orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
     }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
@@ -1451,7 +1508,7 @@ private final class OceanMonumentEntryRoom: MonumentPiece {
 
 private final class OceanMonumentPenthouse: MonumentPiece {
     init(orientation: HorizontalDirection, boundingBox: BoundingBox) {
-        super.init(kind: .penthouse, orientation: orientation, boundingBox: boundingBox)
+        super.init(orientation: orientation, boundingBox: boundingBox)
     }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
@@ -1488,18 +1545,29 @@ private final class OceanMonumentPenthouse: MonumentPiece {
         self.generateBox(world, chunkBox, 8, 0, 10, 8, 2, 10, Self.baseLight, Self.baseLight)
         self.generateBox(world, chunkBox, 6, -1, 7, 7, -1, 8, Self.baseBlack, Self.baseBlack)
         self.generateWaterBox(world, chunkBox, 6, -1, 3, 7, -1, 4)
-        self.spawnElder(world, chunkBox, 6, 1, 6)
+        self.placeMarker(world, chunkBox, 6, 1, 6, represents: "minecraft:elder_guardian")
     }
 }
 
-private final class OceanMonumentSimpleRoom: MonumentPiece {
-    private let mainDesign: Int
+private class OceanMonumentSimpleRoomBase: MonumentPiece {
+    private(set) var hasCenterPillar = false
 
-    init<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) {
-        let design = Int(random.next(bound: 3))
-        self.mainDesign = design
-        super.init(kind: .simpleRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1, design: design)
+    init(orientation: HorizontalDirection, definition: RoomDefinition) {
+        super.init(orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
     }
+
+    class func create<R: Random>(orientation: HorizontalDirection, definition: RoomDefinition, random: inout R) -> MonumentPiece {
+        switch random.next(bound: 3) {
+        case 0:
+            return OceanMonumentSimpleRoomDesign0(orientation: orientation, definition: definition)
+        case 1:
+            return OceanMonumentSimpleRoomDesign1(orientation: orientation, definition: definition)
+        default:
+            return OceanMonumentSimpleRoomDesign2(orientation: orientation, definition: definition)
+        }
+    }
+
+    var supportsCenterPillar: Bool { false }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         if self.roomDefinition!.index / 25 > 0 {
@@ -1508,139 +1576,166 @@ private final class OceanMonumentSimpleRoom: MonumentPiece {
         if self.roomDefinition!.connections[LocalDirection.up.rawValue] == nil {
             self.generateBoxOnFillOnly(world, chunkBox, 1, 4, 1, 6, 4, 6, Self.baseGray)
         }
-        let centerPillar = self.mainDesign != 0
-            && random.next(bound: 2) == 0
-            && !self.roomDefinition!.hasOpening[LocalDirection.down.rawValue]
-            && !self.roomDefinition!.hasOpening[LocalDirection.up.rawValue]
-            && self.roomDefinition!.countOpenings() > 1
-        switch self.mainDesign {
-        case 0:
-            self.generateBox(world, chunkBox, 0, 1, 0, 2, 1, 2, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 3, 0, 2, 3, 2, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 2, 0, 0, 2, 2, Self.baseGray, Self.baseGray)
-            self.generateBox(world, chunkBox, 1, 2, 0, 2, 2, 0, Self.baseGray, Self.baseGray)
-            self.placeBlock(world, Self.lampBlock, 1, 2, 1, chunkBox)
-            self.generateBox(world, chunkBox, 5, 1, 0, 7, 1, 2, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 5, 3, 0, 7, 3, 2, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 2, 0, 7, 2, 2, Self.baseGray, Self.baseGray)
-            self.generateBox(world, chunkBox, 5, 2, 0, 6, 2, 0, Self.baseGray, Self.baseGray)
-            self.placeBlock(world, Self.lampBlock, 6, 2, 1, chunkBox)
-            self.generateBox(world, chunkBox, 0, 1, 5, 2, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 3, 5, 2, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 2, 5, 0, 2, 7, Self.baseGray, Self.baseGray)
-            self.generateBox(world, chunkBox, 1, 2, 7, 2, 2, 7, Self.baseGray, Self.baseGray)
-            self.placeBlock(world, Self.lampBlock, 1, 2, 6, chunkBox)
-            self.generateBox(world, chunkBox, 5, 1, 5, 7, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 5, 3, 5, 7, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 2, 5, 7, 2, 7, Self.baseGray, Self.baseGray)
-            self.generateBox(world, chunkBox, 5, 2, 7, 6, 2, 7, Self.baseGray, Self.baseGray)
-            self.placeBlock(world, Self.lampBlock, 6, 2, 6, chunkBox)
-            if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
-                self.generateBox(world, chunkBox, 3, 3, 0, 4, 3, 0, Self.baseLight, Self.baseLight)
-            } else {
-                self.generateBox(world, chunkBox, 3, 3, 0, 4, 3, 1, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 3, 2, 0, 4, 2, 0, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 3, 1, 0, 4, 1, 1, Self.baseLight, Self.baseLight)
-            }
-            if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] {
-                self.generateBox(world, chunkBox, 3, 3, 7, 4, 3, 7, Self.baseLight, Self.baseLight)
-            } else {
-                self.generateBox(world, chunkBox, 3, 3, 6, 4, 3, 7, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 3, 2, 7, 4, 2, 7, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 3, 1, 6, 4, 1, 7, Self.baseLight, Self.baseLight)
-            }
-            if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] {
-                self.generateBox(world, chunkBox, 0, 3, 3, 0, 3, 4, Self.baseLight, Self.baseLight)
-            } else {
-                self.generateBox(world, chunkBox, 0, 3, 3, 1, 3, 4, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 0, 2, 3, 0, 2, 4, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 0, 1, 3, 1, 1, 4, Self.baseLight, Self.baseLight)
-            }
-            if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] {
-                self.generateBox(world, chunkBox, 7, 3, 3, 7, 3, 4, Self.baseLight, Self.baseLight)
-            } else {
-                self.generateBox(world, chunkBox, 6, 3, 3, 7, 3, 4, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 7, 2, 3, 7, 2, 4, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 6, 1, 3, 7, 1, 4, Self.baseLight, Self.baseLight)
-            }
-        case 1:
-            self.generateBox(world, chunkBox, 2, 1, 2, 2, 3, 2, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 2, 1, 5, 2, 3, 5, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 5, 1, 5, 5, 3, 5, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 5, 1, 2, 5, 3, 2, Self.baseLight, Self.baseLight)
-            self.placeBlock(world, Self.lampBlock, 2, 2, 2, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 2, 2, 5, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 5, 2, 5, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 5, 2, 2, chunkBox)
-            self.generateBox(world, chunkBox, 0, 1, 0, 1, 3, 0, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 1, 1, 0, 3, 1, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 1, 7, 1, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 1, 6, 0, 3, 6, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 6, 1, 7, 7, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 1, 6, 7, 3, 6, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 6, 1, 0, 7, 3, 0, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 1, 1, 7, 3, 1, Self.baseLight, Self.baseLight)
-            self.placeBlock(world, Self.baseGray, 1, 2, 0, chunkBox)
-            self.placeBlock(world, Self.baseGray, 0, 2, 1, chunkBox)
-            self.placeBlock(world, Self.baseGray, 1, 2, 7, chunkBox)
-            self.placeBlock(world, Self.baseGray, 0, 2, 6, chunkBox)
-            self.placeBlock(world, Self.baseGray, 6, 2, 7, chunkBox)
-            self.placeBlock(world, Self.baseGray, 7, 2, 6, chunkBox)
-            self.placeBlock(world, Self.baseGray, 6, 2, 0, chunkBox)
-            self.placeBlock(world, Self.baseGray, 7, 2, 1, chunkBox)
-            if !self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
-                self.generateBox(world, chunkBox, 1, 3, 0, 6, 3, 0, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 1, 2, 0, 6, 2, 0, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 1, 1, 0, 6, 1, 0, Self.baseLight, Self.baseLight)
-            }
-            if !self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] {
-                self.generateBox(world, chunkBox, 1, 3, 7, 6, 3, 7, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 1, 2, 7, 6, 2, 7, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 1, 1, 7, 6, 1, 7, Self.baseLight, Self.baseLight)
-            }
-            if !self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] {
-                self.generateBox(world, chunkBox, 0, 3, 1, 0, 3, 6, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 0, 2, 1, 0, 2, 6, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 0, 1, 1, 0, 1, 6, Self.baseLight, Self.baseLight)
-            }
-            if !self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] {
-                self.generateBox(world, chunkBox, 7, 3, 1, 7, 3, 6, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, 7, 2, 1, 7, 2, 6, Self.baseGray, Self.baseGray)
-                self.generateBox(world, chunkBox, 7, 1, 1, 7, 1, 6, Self.baseLight, Self.baseLight)
-            }
-        default:
-            self.generateBox(world, chunkBox, 0, 1, 0, 0, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 1, 0, 7, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 1, 1, 0, 6, 1, 0, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 1, 1, 7, 6, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 2, 0, 0, 2, 7, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 7, 2, 0, 7, 2, 7, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 1, 2, 0, 6, 2, 0, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 1, 2, 7, 6, 2, 7, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 0, 3, 0, 0, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 3, 0, 7, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 1, 3, 0, 6, 3, 0, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 1, 3, 7, 6, 3, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 0, 1, 3, 0, 2, 4, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 7, 1, 3, 7, 2, 4, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 3, 1, 0, 4, 2, 0, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 3, 1, 7, 4, 2, 7, Self.baseBlack, Self.baseBlack)
-            if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
-            if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
-            if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
-            if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
-        }
-        if centerPillar {
+
+        let hasCenterPillar = self.shouldGenerateCenterPillar(using: &random)
+        self.hasCenterPillar = hasCenterPillar
+        self.generateInterior(world, chunkBox)
+
+        if hasCenterPillar {
             self.generateBox(world, chunkBox, 3, 1, 3, 4, 1, 4, Self.baseLight, Self.baseLight)
             self.generateBox(world, chunkBox, 3, 2, 3, 4, 2, 4, Self.baseGray, Self.baseGray)
             self.generateBox(world, chunkBox, 3, 3, 3, 4, 3, 4, Self.baseLight, Self.baseLight)
         }
     }
+
+    private func shouldGenerateCenterPillar<R: Random>(using random: inout R) -> Bool {
+        guard self.supportsCenterPillar else { return false }
+        let pillarRollMatches = random.next(bound: 2) == 0
+        return pillarRollMatches
+            && !self.roomDefinition!.hasOpening[LocalDirection.down.rawValue]
+            && !self.roomDefinition!.hasOpening[LocalDirection.up.rawValue]
+            && self.roomDefinition!.countOpenings() > 1
+    }
+
+    func generateInterior(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
+        fatalError("Subclasses must implement generateInterior")
+    }
+}
+
+private final class OceanMonumentSimpleRoomDesign0: OceanMonumentSimpleRoomBase {
+    override func generateInterior(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
+        self.generateBox(world, chunkBox, 0, 1, 0, 2, 1, 2, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 3, 0, 2, 3, 2, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 2, 0, 0, 2, 2, Self.baseGray, Self.baseGray)
+        self.generateBox(world, chunkBox, 1, 2, 0, 2, 2, 0, Self.baseGray, Self.baseGray)
+        self.placeBlock(world, Self.lampBlock, 1, 2, 1, chunkBox)
+        self.generateBox(world, chunkBox, 5, 1, 0, 7, 1, 2, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 5, 3, 0, 7, 3, 2, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 2, 0, 7, 2, 2, Self.baseGray, Self.baseGray)
+        self.generateBox(world, chunkBox, 5, 2, 0, 6, 2, 0, Self.baseGray, Self.baseGray)
+        self.placeBlock(world, Self.lampBlock, 6, 2, 1, chunkBox)
+        self.generateBox(world, chunkBox, 0, 1, 5, 2, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 3, 5, 2, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 2, 5, 0, 2, 7, Self.baseGray, Self.baseGray)
+        self.generateBox(world, chunkBox, 1, 2, 7, 2, 2, 7, Self.baseGray, Self.baseGray)
+        self.placeBlock(world, Self.lampBlock, 1, 2, 6, chunkBox)
+        self.generateBox(world, chunkBox, 5, 1, 5, 7, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 5, 3, 5, 7, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 2, 5, 7, 2, 7, Self.baseGray, Self.baseGray)
+        self.generateBox(world, chunkBox, 5, 2, 7, 6, 2, 7, Self.baseGray, Self.baseGray)
+        self.placeBlock(world, Self.lampBlock, 6, 2, 6, chunkBox)
+        if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
+            self.generateBox(world, chunkBox, 3, 3, 0, 4, 3, 0, Self.baseLight, Self.baseLight)
+        } else {
+            self.generateBox(world, chunkBox, 3, 3, 0, 4, 3, 1, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 3, 2, 0, 4, 2, 0, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 3, 1, 0, 4, 1, 1, Self.baseLight, Self.baseLight)
+        }
+        if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] {
+            self.generateBox(world, chunkBox, 3, 3, 7, 4, 3, 7, Self.baseLight, Self.baseLight)
+        } else {
+            self.generateBox(world, chunkBox, 3, 3, 6, 4, 3, 7, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 3, 2, 7, 4, 2, 7, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 3, 1, 6, 4, 1, 7, Self.baseLight, Self.baseLight)
+        }
+        if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] {
+            self.generateBox(world, chunkBox, 0, 3, 3, 0, 3, 4, Self.baseLight, Self.baseLight)
+        } else {
+            self.generateBox(world, chunkBox, 0, 3, 3, 1, 3, 4, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 0, 2, 3, 0, 2, 4, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 0, 1, 3, 1, 1, 4, Self.baseLight, Self.baseLight)
+        }
+        if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] {
+            self.generateBox(world, chunkBox, 7, 3, 3, 7, 3, 4, Self.baseLight, Self.baseLight)
+        } else {
+            self.generateBox(world, chunkBox, 6, 3, 3, 7, 3, 4, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 7, 2, 3, 7, 2, 4, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 6, 1, 3, 7, 1, 4, Self.baseLight, Self.baseLight)
+        }
+    }
+}
+
+private class OceanMonumentSimpleRoomWithOptionalPillar: OceanMonumentSimpleRoomBase {
+    override var supportsCenterPillar: Bool { true }
+}
+
+private final class OceanMonumentSimpleRoomDesign1: OceanMonumentSimpleRoomWithOptionalPillar {
+    override func generateInterior(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
+        self.generateBox(world, chunkBox, 2, 1, 2, 2, 3, 2, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 2, 1, 5, 2, 3, 5, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 5, 1, 5, 5, 3, 5, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 5, 1, 2, 5, 3, 2, Self.baseLight, Self.baseLight)
+        self.placeBlock(world, Self.lampBlock, 2, 2, 2, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 2, 2, 5, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 5, 2, 5, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 5, 2, 2, chunkBox)
+        self.generateBox(world, chunkBox, 0, 1, 0, 1, 3, 0, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 1, 1, 0, 3, 1, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 1, 7, 1, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 1, 6, 0, 3, 6, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 6, 1, 7, 7, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 1, 6, 7, 3, 6, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 6, 1, 0, 7, 3, 0, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 1, 1, 7, 3, 1, Self.baseLight, Self.baseLight)
+        self.placeBlock(world, Self.baseGray, 1, 2, 0, chunkBox)
+        self.placeBlock(world, Self.baseGray, 0, 2, 1, chunkBox)
+        self.placeBlock(world, Self.baseGray, 1, 2, 7, chunkBox)
+        self.placeBlock(world, Self.baseGray, 0, 2, 6, chunkBox)
+        self.placeBlock(world, Self.baseGray, 6, 2, 7, chunkBox)
+        self.placeBlock(world, Self.baseGray, 7, 2, 6, chunkBox)
+        self.placeBlock(world, Self.baseGray, 6, 2, 0, chunkBox)
+        self.placeBlock(world, Self.baseGray, 7, 2, 1, chunkBox)
+        if !self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] {
+            self.generateBox(world, chunkBox, 1, 3, 0, 6, 3, 0, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 1, 2, 0, 6, 2, 0, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 1, 1, 0, 6, 1, 0, Self.baseLight, Self.baseLight)
+        }
+        if !self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] {
+            self.generateBox(world, chunkBox, 1, 3, 7, 6, 3, 7, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 1, 2, 7, 6, 2, 7, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 1, 1, 7, 6, 1, 7, Self.baseLight, Self.baseLight)
+        }
+        if !self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] {
+            self.generateBox(world, chunkBox, 0, 3, 1, 0, 3, 6, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 0, 2, 1, 0, 2, 6, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 0, 1, 1, 0, 1, 6, Self.baseLight, Self.baseLight)
+        }
+        if !self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] {
+            self.generateBox(world, chunkBox, 7, 3, 1, 7, 3, 6, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, 7, 2, 1, 7, 2, 6, Self.baseGray, Self.baseGray)
+            self.generateBox(world, chunkBox, 7, 1, 1, 7, 1, 6, Self.baseLight, Self.baseLight)
+        }
+    }
+}
+
+private final class OceanMonumentSimpleRoomDesign2: OceanMonumentSimpleRoomWithOptionalPillar {
+    override func generateInterior(_ world: StructureWorldView, _ chunkBox: BoundingBox) {
+        self.generateBox(world, chunkBox, 0, 1, 0, 0, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 1, 0, 7, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 1, 1, 0, 6, 1, 0, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 1, 1, 7, 6, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 2, 0, 0, 2, 7, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 7, 2, 0, 7, 2, 7, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 1, 2, 0, 6, 2, 0, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 1, 2, 7, 6, 2, 7, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 0, 3, 0, 0, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 3, 0, 7, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 1, 3, 0, 6, 3, 0, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 1, 3, 7, 6, 3, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 0, 1, 3, 0, 2, 4, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 7, 1, 3, 7, 2, 4, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 3, 1, 0, 4, 2, 0, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 3, 1, 7, 4, 2, 7, Self.baseBlack, Self.baseBlack)
+        if self.roomDefinition!.hasOpening[LocalDirection.south.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 0, 4, 2, 0) }
+        if self.roomDefinition!.hasOpening[LocalDirection.north.rawValue] { self.generateWaterBox(world, chunkBox, 3, 1, 7, 4, 2, 7) }
+        if self.roomDefinition!.hasOpening[LocalDirection.west.rawValue] { self.generateWaterBox(world, chunkBox, 0, 1, 3, 0, 2, 4) }
+        if self.roomDefinition!.hasOpening[LocalDirection.east.rawValue] { self.generateWaterBox(world, chunkBox, 7, 1, 3, 7, 2, 4) }
+    }
 }
 
 private final class OceanMonumentSimpleTopRoom: MonumentPiece {
     init(orientation: HorizontalDirection, definition: RoomDefinition) {
-        super.init(kind: .simpleTopRoom, orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
+        super.init(orientation: orientation, roomDefinition: definition, roomWidth: 1, roomHeight: 1, roomDepth: 1)
     }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
@@ -1680,92 +1775,100 @@ private final class OceanMonumentSimpleTopRoom: MonumentPiece {
     }
 }
 
-private final class OceanMonumentWingRoom: MonumentPiece {
-    private let mainDesign: Int
-
-    init(orientation: HorizontalDirection, boundingBox: BoundingBox, randomValue: Int32) {
-        self.mainDesign = Int(randomValue & 1)
-        super.init(kind: .wingRoom, orientation: orientation, boundingBox: boundingBox, design: self.mainDesign)
+private class OceanMonumentWingRoomBase: MonumentPiece {
+    init(orientation: HorizontalDirection, boundingBox: BoundingBox) {
+        super.init(orientation: orientation, boundingBox: boundingBox)
     }
 
-    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
-        if self.mainDesign == 0 {
-            for i in 0..<4 {
-                let ii = Int32(i)
-                self.generateBox(world, chunkBox, 10 - ii, 3 - ii, 20 - ii, 12 + ii, 3 - ii, 20, Self.baseLight, Self.baseLight)
-            }
-            self.generateBox(world, chunkBox, 7, 0, 6, 15, 0, 16, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 6, 0, 6, 6, 3, 20, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 16, 0, 6, 16, 3, 20, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 1, 7, 7, 1, 20, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 15, 1, 7, 15, 1, 20, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 7, 1, 6, 9, 3, 6, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 13, 1, 6, 15, 3, 6, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 8, 1, 7, 9, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 13, 1, 7, 14, 1, 7, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 9, 0, 5, 13, 0, 5, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 10, 0, 7, 12, 0, 7, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 8, 0, 10, 8, 0, 12, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 14, 0, 10, 14, 0, 12, Self.baseBlack, Self.baseBlack)
-            for z in stride(from: Int32(18), through: Int32(7), by: -3) {
-                self.placeBlock(world, Self.lampBlock, 6, 3, z, chunkBox)
-                self.placeBlock(world, Self.lampBlock, 16, 3, z, chunkBox)
-            }
-            self.placeBlock(world, Self.lampBlock, 10, 0, 10, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 12, 0, 10, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 10, 0, 12, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 12, 0, 12, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 8, 3, 6, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 14, 3, 6, chunkBox)
-            self.placeBlock(world, Self.baseLight, 4, 2, 4, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 4, 1, 4, chunkBox)
-            self.placeBlock(world, Self.baseLight, 4, 0, 4, chunkBox)
-            self.placeBlock(world, Self.baseLight, 18, 2, 4, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 18, 1, 4, chunkBox)
-            self.placeBlock(world, Self.baseLight, 18, 0, 4, chunkBox)
-            self.placeBlock(world, Self.baseLight, 4, 2, 18, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 4, 1, 18, chunkBox)
-            self.placeBlock(world, Self.baseLight, 4, 0, 18, chunkBox)
-            self.placeBlock(world, Self.baseLight, 18, 2, 18, chunkBox)
-            self.placeBlock(world, Self.lampBlock, 18, 1, 18, chunkBox)
-            self.placeBlock(world, Self.baseLight, 18, 0, 18, chunkBox)
-            self.placeBlock(world, Self.baseLight, 9, 7, 20, chunkBox)
-            self.placeBlock(world, Self.baseLight, 13, 7, 20, chunkBox)
-            self.generateBox(world, chunkBox, 6, 0, 21, 7, 4, 21, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 15, 0, 21, 16, 4, 21, Self.baseLight, Self.baseLight)
-            self.spawnElder(world, chunkBox, 11, 2, 16)
-        } else {
-            self.generateBox(world, chunkBox, 9, 3, 18, 13, 3, 20, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 9, 0, 18, 9, 2, 18, Self.baseLight, Self.baseLight)
-            self.generateBox(world, chunkBox, 13, 0, 18, 13, 2, 18, Self.baseLight, Self.baseLight)
-            var x: Int32 = 9
-            for _ in 0..<2 {
-                self.placeBlock(world, Self.baseLight, x, 6, 20, chunkBox)
-                self.placeBlock(world, Self.lampBlock, x, 5, 20, chunkBox)
-                self.placeBlock(world, Self.baseLight, x, 4, 20, chunkBox)
-                x = 13
-            }
-            self.generateBox(world, chunkBox, 7, 3, 7, 15, 3, 14, Self.baseLight, Self.baseLight)
-            var var14: Int32 = 10
-            for _ in 0..<2 {
-                self.generateBox(world, chunkBox, var14, 0, 10, var14, 6, 10, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, var14, 0, 12, var14, 6, 12, Self.baseLight, Self.baseLight)
-                self.placeBlock(world, Self.lampBlock, var14, 0, 10, chunkBox)
-                self.placeBlock(world, Self.lampBlock, var14, 0, 12, chunkBox)
-                self.placeBlock(world, Self.lampBlock, var14, 4, 10, chunkBox)
-                self.placeBlock(world, Self.lampBlock, var14, 4, 12, chunkBox)
-                var14 = 12
-            }
-            var14 = 8
-            for _ in 0..<2 {
-                self.generateBox(world, chunkBox, var14, 0, 7, var14, 2, 7, Self.baseLight, Self.baseLight)
-                self.generateBox(world, chunkBox, var14, 0, 14, var14, 2, 14, Self.baseLight, Self.baseLight)
-                var14 = 14
-            }
-            self.generateBox(world, chunkBox, 8, 3, 8, 8, 3, 13, Self.baseBlack, Self.baseBlack)
-            self.generateBox(world, chunkBox, 14, 3, 8, 14, 3, 13, Self.baseBlack, Self.baseBlack)
-            self.spawnElder(world, chunkBox, 11, 5, 13)
+    class func create(orientation: HorizontalDirection, boundingBox: BoundingBox, randomValue: Int32) -> MonumentPiece {
+        if randomValue & 1 == 0 {
+            return OceanMonumentWingRoomDesign0(orientation: orientation, boundingBox: boundingBox)
         }
+        return OceanMonumentWingRoomDesign1(orientation: orientation, boundingBox: boundingBox)
+    }
+}
+
+private final class OceanMonumentWingRoomDesign0: OceanMonumentWingRoomBase {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        for i in 0..<4 {
+            let ii = Int32(i)
+            self.generateBox(world, chunkBox, 10 - ii, 3 - ii, 20 - ii, 12 + ii, 3 - ii, 20, Self.baseLight, Self.baseLight)
+        }
+        self.generateBox(world, chunkBox, 7, 0, 6, 15, 0, 16, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 6, 0, 6, 6, 3, 20, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 16, 0, 6, 16, 3, 20, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 1, 7, 7, 1, 20, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 15, 1, 7, 15, 1, 20, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 7, 1, 6, 9, 3, 6, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 13, 1, 6, 15, 3, 6, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 8, 1, 7, 9, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 13, 1, 7, 14, 1, 7, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 9, 0, 5, 13, 0, 5, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 10, 0, 7, 12, 0, 7, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 8, 0, 10, 8, 0, 12, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 14, 0, 10, 14, 0, 12, Self.baseBlack, Self.baseBlack)
+        for z in stride(from: Int32(18), through: Int32(7), by: -3) {
+            self.placeBlock(world, Self.lampBlock, 6, 3, z, chunkBox)
+            self.placeBlock(world, Self.lampBlock, 16, 3, z, chunkBox)
+        }
+        self.placeBlock(world, Self.lampBlock, 10, 0, 10, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 12, 0, 10, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 10, 0, 12, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 12, 0, 12, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 8, 3, 6, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 14, 3, 6, chunkBox)
+        self.placeBlock(world, Self.baseLight, 4, 2, 4, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 4, 1, 4, chunkBox)
+        self.placeBlock(world, Self.baseLight, 4, 0, 4, chunkBox)
+        self.placeBlock(world, Self.baseLight, 18, 2, 4, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 18, 1, 4, chunkBox)
+        self.placeBlock(world, Self.baseLight, 18, 0, 4, chunkBox)
+        self.placeBlock(world, Self.baseLight, 4, 2, 18, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 4, 1, 18, chunkBox)
+        self.placeBlock(world, Self.baseLight, 4, 0, 18, chunkBox)
+        self.placeBlock(world, Self.baseLight, 18, 2, 18, chunkBox)
+        self.placeBlock(world, Self.lampBlock, 18, 1, 18, chunkBox)
+        self.placeBlock(world, Self.baseLight, 18, 0, 18, chunkBox)
+        self.placeBlock(world, Self.baseLight, 9, 7, 20, chunkBox)
+        self.placeBlock(world, Self.baseLight, 13, 7, 20, chunkBox)
+        self.generateBox(world, chunkBox, 6, 0, 21, 7, 4, 21, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 15, 0, 21, 16, 4, 21, Self.baseLight, Self.baseLight)
+        self.placeMarker(world, chunkBox, 11, 2, 16, represents: "minecraft:elder_guardian")
+    }
+}
+
+private final class OceanMonumentWingRoomDesign1: OceanMonumentWingRoomBase {
+    override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        self.generateBox(world, chunkBox, 9, 3, 18, 13, 3, 20, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 9, 0, 18, 9, 2, 18, Self.baseLight, Self.baseLight)
+        self.generateBox(world, chunkBox, 13, 0, 18, 13, 2, 18, Self.baseLight, Self.baseLight)
+        var x: Int32 = 9
+        for _ in 0..<2 {
+            self.placeBlock(world, Self.baseLight, x, 6, 20, chunkBox)
+            self.placeBlock(world, Self.lampBlock, x, 5, 20, chunkBox)
+            self.placeBlock(world, Self.baseLight, x, 4, 20, chunkBox)
+            x = 13
+        }
+        self.generateBox(world, chunkBox, 7, 3, 7, 15, 3, 14, Self.baseLight, Self.baseLight)
+        var var14: Int32 = 10
+        for _ in 0..<2 {
+            self.generateBox(world, chunkBox, var14, 0, 10, var14, 6, 10, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, var14, 0, 12, var14, 6, 12, Self.baseLight, Self.baseLight)
+            self.placeBlock(world, Self.lampBlock, var14, 0, 10, chunkBox)
+            self.placeBlock(world, Self.lampBlock, var14, 0, 12, chunkBox)
+            self.placeBlock(world, Self.lampBlock, var14, 4, 10, chunkBox)
+            self.placeBlock(world, Self.lampBlock, var14, 4, 12, chunkBox)
+            var14 = 12
+        }
+        var14 = 8
+        for _ in 0..<2 {
+            self.generateBox(world, chunkBox, var14, 0, 7, var14, 2, 7, Self.baseLight, Self.baseLight)
+            self.generateBox(world, chunkBox, var14, 0, 14, var14, 2, 14, Self.baseLight, Self.baseLight)
+            var14 = 14
+        }
+        self.generateBox(world, chunkBox, 8, 3, 8, 8, 3, 13, Self.baseBlack, Self.baseBlack)
+        self.generateBox(world, chunkBox, 14, 3, 8, 14, 3, 13, Self.baseBlack, Self.baseBlack)
+        self.placeMarker(world, chunkBox, 11, 5, 13, represents: "minecraft:elder_guardian")
     }
 }
 

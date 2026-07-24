@@ -222,11 +222,16 @@ func makeBoundingBox(
     }
 }
 
-public struct PieceGraph<Kind> {
+public struct PieceGraph {
     public let startChunk: PosInt2D
     public let orientation: CardinalDirection
     public let boundingBox: BoundingBox
-    public let pieces: [StructurePiece<Kind>]
+    public let pieces: [StructurePiece]
+}
+
+public struct StructureMarker: Equatable {
+    public let pos: PosInt3D
+    public let represents: String
 }
 
 private struct LocalStructurePosition {
@@ -250,13 +255,13 @@ private enum StructurePieceOperation {
     case waterBox(LocalStructureBox)
     case boxOnFillOnly(LocalStructureBox, state: BlockState)
     case fillColumnDown(LocalStructurePosition, state: BlockState)
-    case spawnElder(LocalStructurePosition)
+    case marker(LocalStructurePosition, represents: String)
 }
 
 private struct StructurePieceContents {
     let operations: [StructurePieceOperation]
 
-    func write<Kind>(piece: StructurePiece<Kind>, into world: StructureWorldView, chunkBox: BoundingBox) {
+    func write(piece: StructurePiece, into world: StructureWorldView, chunkBox: BoundingBox) {
         for operation in self.operations {
             switch operation {
             case .block(let pos, let state):
@@ -299,8 +304,8 @@ private struct StructurePieceContents {
                 )
             case .fillColumnDown(let pos, let state):
                 piece.applyFillColumnDown(world, state, pos.x, pos.y, pos.z, chunkBox)
-            case .spawnElder(let pos):
-                piece.applySpawnElder(world, chunkBox, pos.x, pos.y, pos.z)
+            case .marker(let pos, let represents):
+                piece.applyMarker(world, chunkBox, pos.x, pos.y, pos.z, represents: represents)
             }
         }
     }
@@ -314,28 +319,22 @@ private final class StructurePieceContentsRecorder {
     }
 }
 
-public class StructurePiece<Kind> {
-    public let kind: Kind
+public class StructurePiece {
     public let orientation: CardinalDirection
     public var boundingBox: BoundingBox
     public let roomIndex: Int?
-    public let design: Int?
 
     private var storedContents: StructurePieceContents?
     private var recorder: StructurePieceContentsRecorder?
 
     init(
-        kind: Kind,
         orientation: CardinalDirection,
         boundingBox: BoundingBox,
-        roomIndex: Int? = nil,
-        design: Int? = nil
+        roomIndex: Int? = nil
     ) {
-        self.kind = kind
         self.orientation = orientation
         self.boundingBox = boundingBox
         self.roomIndex = roomIndex
-        self.design = design
     }
 
     class var fillBlock: BlockState { Blocks.waterState }
@@ -477,9 +476,16 @@ public class StructurePiece<Kind> {
         return chunkBox.intersects(minX: min(wx0, wx1), minZ: min(wz0, wz1), maxX: max(wx0, wx1), maxZ: max(wz0, wz1))
     }
 
-    func spawnElder(_ world: StructureWorldView, _ chunkBox: BoundingBox, _ x: Int32, _ y: Int32, _ z: Int32) {
-        self.record(.spawnElder(LocalStructurePosition(x: x, y: y, z: z)))
-        self.applySpawnElder(world, chunkBox, x, y, z)
+    func placeMarker(
+        _ world: StructureWorldView,
+        _ chunkBox: BoundingBox,
+        _ x: Int32,
+        _ y: Int32,
+        _ z: Int32,
+        represents: String
+    ) {
+        self.record(.marker(LocalStructurePosition(x: x, y: y, z: z), represents: represents))
+        self.applyMarker(world, chunkBox, x, y, z, represents: represents)
     }
 
     fileprivate func applyBlock(
@@ -581,16 +587,17 @@ public class StructurePiece<Kind> {
         }
     }
 
-    fileprivate func applySpawnElder(
+    fileprivate func applyMarker(
         _ world: StructureWorldView,
         _ chunkBox: BoundingBox,
         _ x: Int32,
         _ y: Int32,
-        _ z: Int32
+        _ z: Int32,
+        represents: String
     ) {
         let pos = self.getWorldPos(x, y, z)
         guard chunkBox.contains(pos) else { return }
-        world.elderGuardians.append(pos)
+        world.markers.append(StructureMarker(pos: pos, represents: represents))
     }
 
     private func record(_ operation: StructurePieceOperation) {
@@ -715,7 +722,7 @@ final class StructureWorldView {
     let seaLevel: Int32
     let minimumWorldY: Int32
     let volume: StructureBlockVolume
-    var elderGuardians: [PosInt3D] = []
+    var markers: [StructureMarker] = []
 
     init(seaLevel: Int32, minimumWorldY: Int32, volume: StructureBlockVolume) {
         self.seaLevel = seaLevel

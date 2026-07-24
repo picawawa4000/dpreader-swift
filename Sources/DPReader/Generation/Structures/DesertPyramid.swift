@@ -1,10 +1,6 @@
 import Foundation
 
-public typealias DesertPyramidPieceGraph = PieceGraph<DesertPyramidPieceKind>
-
-public enum DesertPyramidPieceKind: String {
-    case desertPyramid
-}
+public typealias DesertPyramidPieceGraph = PieceGraph
 
 public struct DesertPyramidLootMarker {
     public let pos: PosInt3D
@@ -139,7 +135,7 @@ public enum DesertPyramid {
     }
 }
 
-private final class DesertPyramidPiece: StructurePiece<DesertPyramidPieceKind> {
+private final class DesertPyramidPiece: StructurePiece {
     static let width: Int32 = 21
     static let height: Int32 = 15
     static let depth: Int32 = 21
@@ -180,7 +176,7 @@ private final class DesertPyramidPiece: StructurePiece<DesertPyramidPieceKind> {
             height: Self.height,
             depth: Self.depth
         )
-        super.init(kind: .desertPyramid, orientation: orientation.publicValue, boundingBox: boundingBox)
+        super.init(orientation: orientation.publicValue, boundingBox: boundingBox)
     }
 
     func adjustToMinHeight<R: Random>(context: StructureGenerationContext, random: inout R) -> Bool {
