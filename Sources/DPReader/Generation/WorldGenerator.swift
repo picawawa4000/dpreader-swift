@@ -2800,7 +2800,15 @@ public final class WorldGenerator {
     ///     For debugging only (will usually lead to poorly-optimised results).
     /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.
     /// - Returns: An X-major array of biomes (indexed by [Z*(to.x-from.x)+X]).
-    public func generateBiomesInSquare(from fromPos: PosInt2D, to toPos: PosInt2D, atY y: Int32, in dim: RegistryKey<Dimension>, scale: Int32 = 4, forceNoBaking: Bool = false) throws -> [RegistryKey<Biome>]? {
+    public func generateBiomesInSquare(
+        from fromPos: PosInt2D,
+        to toPos: PosInt2D,
+        atY y: Int32,
+        in dim: RegistryKey<Dimension>,
+        scale: Int32 = 4,
+        forceNoBaking: Bool = false,
+        forceBaking: Bool = false
+    ) throws -> [RegistryKey<Biome>]? {
         if scale <= 0 {
             throw WorldGenerationErrors.invalidScale
         }
@@ -2830,7 +2838,7 @@ public final class WorldGenerator {
 
         let directNoiseRouter = self.config?.noiseRouter
 
-        if area <= smallAreaThreshold || self.config == nil || forceNoBaking {
+        if (!forceBaking && area <= smallAreaThreshold) || self.config == nil || forceNoBaking {
             if useScale {
                 let startWorldX = fromX * scale
                 var worldZ = fromZ * scale

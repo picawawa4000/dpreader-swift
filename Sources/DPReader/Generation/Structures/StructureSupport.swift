@@ -67,6 +67,12 @@ public enum Blocks {
     static let kelpPlant = Block(withID: "minecraft:kelp_plant")
     static let seagrass = Block(withID: "minecraft:seagrass")
     static let tallSeagrass = Block(withID: "minecraft:tall_seagrass")
+    static let stoneBricks = Block(withID: "minecraft:stone_bricks")
+    static let crackedStoneBricks = Block(withID: "minecraft:cracked_stone_bricks")
+    static let mossyStoneBricks = Block(withID: "minecraft:mossy_stone_bricks")
+    static let infestedStoneBricks = Block(withID: "minecraft:infested_stone_bricks")
+    static let caveAir = Block(withID: "minecraft:cave_air")
+    static let wallTorch = Block(withID: "minecraft:wall_torch")
 
     static let airState = BlockState(type: air)
     static let waterState = BlockState(type: water)
@@ -76,6 +82,11 @@ public enum Blocks {
     static let seaLanternState = BlockState(type: seaLantern)
     static let goldBlockState = BlockState(type: goldBlock)
     static let wetSpongeState = BlockState(type: wetSponge)
+    static let stoneBricksState = BlockState(type: stoneBricks)
+    static let crackedStoneBricksState = BlockState(type: crackedStoneBricks)
+    static let mossyStoneBricksState = BlockState(type: mossyStoneBricks)
+    static let infestedStoneBricksState = BlockState(type: infestedStoneBricks)
+    static let caveAirState = BlockState(type: caveAir)
 }
 
 /// A cardinal direction in world space.
@@ -376,7 +387,15 @@ public class StructurePiece {
         ]
     }
 
+    var cachesGeneratedContents: Bool {
+        true
+    }
+
     func write<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
+        guard self.cachesGeneratedContents else {
+            self.postProcess(in: world, chunkBox: chunkBox, random: &random)
+            return
+        }
         if let storedContents = self.storedContents {
             storedContents.write(piece: self, into: world, chunkBox: chunkBox)
             return

@@ -14,6 +14,72 @@ private enum MansionReferenceError: Error {
     case invalidRoomMapping(String)
 }
 
+private let mansionReferenceText = #"""
+mansion at (-7232, 288) on 4609964304437707654
+
+first floor
+
+-----------
+-AA       -
+-AA JJ  K -
+-BB JJLL**-
+-BB MMNN**-
+-   EE  F -
+-CCDD     -
+-CC--GHHII-
+-----------
+
+A = 2x2_a1
+B = 2x2_a3
+C = 2x2_a2
+D = 1x2_b4 (loot seed -7633204163614576248)
+E = 1x2_a8
+F = 1x1_a2
+G = 1x1_a4 (loot seed 8989461160035876180)
+H = 1x2_a2
+I = 1x2_a5
+J = 2x2_a3
+K = 1x1_a2
+L = 1x2_a9
+M = 1x2_b3 (loot seed 1359470290335969847)
+N = 1x2_a8
+
+second floor
+
+-----------
+-AA       -
+-BB KK  L -
+-BB NNMM**-
+-CC NNMM**-
+-   EE  J -
+-^^FF     -
+-EE--GGHHI-
+-----------
+
+A = 1x2_d2
+B = 2x2_b4
+C = 1x2_d4
+E = 1x2_se1 (loot seeds 1946659658194553513, 5432081203293451251)
+F = 1x2_c1
+G = 1x2_c2
+H = 1x2_c1
+I = 1x1_b1
+J = 1x1_b1
+K = 1x2_c4
+L = 1x1_b3
+M = 2x2_b2
+N = 2x2_b1
+
+third floor
+
+----
+-^^-
+-A -
+----
+
+A = 1x1_b4
+"""#
+
 private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
     URL(fileURLWithPath: "\(filePath)")
         .deletingLastPathComponent()
@@ -83,9 +149,7 @@ private func parseLootSeeds(from line: String) -> [Int64] {
 }
 
 private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
-    let referenceURL = repositoryRootURL().appendingPathComponent("vanilla/mansion/mansion_ref.txt")
-    let contents = try String(contentsOf: referenceURL)
-    let lines = contents.components(separatedBy: .newlines)
+    let lines = mansionReferenceText.components(separatedBy: .newlines)
 
     let floorIndexByName: [String: Int] = [
         "first floor": 0,
@@ -227,6 +291,43 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
 
     #expect(generatedGraph.pieces.count > 1)
     #expect(generatedResult.graph.boundingBox == generatedGraph.boundingBox)
+}
+
+@Test func testStructureDispatchGeneratesStronghold() async throws {
+    let structure = Structure(
+        type: "minecraft:stronghold",
+        biomes: .rawID("minecraft:plains"),
+        spawnOverrides: [:],
+        step: "surface_structures"
+    )
+    let context = structureDispatchContext()
+
+    let graph = try structure.generatePieceGraph(
+        worldSeed: 503815372,
+        startChunk: PosInt2D(x: 0, z: 0),
+        context: context
+    )
+    let result = try structure.generate(
+        worldSeed: 503815372,
+        startChunk: PosInt2D(x: 0, z: 0),
+        context: context
+    )
+
+    guard let generatedGraph = graph else {
+        Issue.record("Expected stronghold piece graph")
+        return
+    }
+    guard case .stronghold(let generatedResult)? = result else {
+        Issue.record("Expected stronghold generation result")
+        return
+    }
+
+    #expect(generatedGraph.pieces.count > 5)
+    #expect(generatedResult.graph.boundingBox == generatedGraph.boundingBox)
+    #expect(!generatedResult.blocks.allTouchedBlocks().isEmpty)
+    #expect(!generatedResult.chestLootMarkers.isEmpty)
+    #expect(generatedResult.markers.contains { $0.represents == "minecraft:silverfish_spawner" })
+    #expect(generatedGraph.pieces.contains { String(describing: type(of: $0)).contains("PortalRoom") })
 }
 
 @Test func testStructureDispatchGeneratesWoodlandMansion() async throws {

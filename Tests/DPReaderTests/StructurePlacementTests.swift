@@ -120,21 +120,34 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     #expect(excluded == nil)
 }
 
-@Test func testConcentricRingsStructurePlacementIsDeferred() async throws {
+@Test func testVanillaConcentricRingsStructurePlacementMatchesCubiomesReference() async throws {
     let pack = try DataPack(
         fromRootPath: try vanillaStructurePlacementPackURL(),
         loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructures]
     )
     let sampler = StructurePlacementSampler(withWorldSeed: 503815372, usingDataPacks: [pack])
 
-    do {
-        _ = try sampler.sampleStructureSet(
-            inRegion: PosInt2D(x: 0, z: 0),
+    let placements = try sampler.sampleAllPlacements(
+        for: RegistryKey(referencing: "minecraft:strongholds")
+    )
+    #expect(placements.count == 128)
+
+    let expected: [(chunk: PosInt2D, block: PosInt2D)] = [
+        (PosInt2D(x: -112, z: -126), PosInt2D(x: -1788, z: -2012)),
+        (PosInt2D(x: 109, z: -27), PosInt2D(x: 1748, z: -428)),
+        (PosInt2D(x: -28, z: 87), PosInt2D(x: -444, z: 1396)),
+        (PosInt2D(x: -341, z: -27), PosInt2D(x: -5452, z: -428)),
+        (PosInt2D(x: -128, z: -269), PosInt2D(x: -2044, z: -4300))
+    ]
+    for (placement, expectedPlacement) in zip(placements.prefix(expected.count), expected) {
+        #expect(placement.chunkPos == expectedPlacement.chunk)
+        #expect(placement.blockPos == expectedPlacement.block)
+        let sampled = try sampler.sampleStructureSet(
+            inRegion: placement.chunkPos,
             for: RegistryKey(referencing: "minecraft:strongholds")
         )
-        Issue.record("Expected concentric rings structure placement to be unsupported")
-    } catch StructurePlacementSampler.Errors.unsupportedStructurePlacement(let key) {
-        #expect(key == "minecraft:strongholds")
+        #expect(sampled!.chunkPos == expectedPlacement.chunk)
+        #expect(sampled!.blockPos == expectedPlacement.block)
     }
 }
 

@@ -34,6 +34,7 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
 
 /// Represents a data pack.
 public final class DataPack {
+    public let rootPath: URL
     public let densityFunctionRegistry = Registry<DensityFunction>()
     public let noiseRegistry = Registry<NoiseDefinition>()
     public let noiseSettingsRegistry = Registry<NoiseSettings>()
@@ -86,6 +87,7 @@ public final class DataPack {
         loadingOptions options: DataPackRegistryLoadingOptions,
         decodingVersion: Version?
     ) throws {
+        self.rootPath = rootPath
         self.versioning = try Self.loadVersioning(fromRootPath: rootPath, decodingVersion: decodingVersion)
         let namespacesPath = rootPath.appendingDirectory(path: "data")
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {

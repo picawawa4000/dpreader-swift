@@ -19,6 +19,7 @@ private struct ScriptedRandom: Random {
     mutating func nextLong() -> UInt64 { 0 }
     mutating func nextInt32() -> Int32 { 0 }
     mutating func nextFloat() -> Float { 0 }
+    mutating func nextBoolean() -> Bool { false }
     mutating func nextDouble() -> Double { 0 }
     mutating func nextSplitter() -> CheckedRandomSplitter { CheckedRandomSplitter(seed: 0) }
     mutating func skip(calls: UInt) {}
@@ -74,6 +75,44 @@ private func edge(_ a: String, _ b: String) -> String {
 private func edgeSet(_ pairs: [(String, String)]) -> Set<String> {
     Set(pairs.map { edge($0.0, $0.1) })
 }
+
+private let monumentReferenceText = #"""
+Floor 1
+
+ABCCD
+AECCF
+GEHII
+JKLMN
+
+Floor 2
+
+AOCCP
+AOCCQ
+GRSTQ
+UUSMV
+
+Floor 3
+
+-----
+-----
+-WXY-
+-WXZ-
+
+Room types:
+
+1: A
+2: B, D, Z
+3: C
+4: E, O, Q, S, W, X
+5: F, H, P, J
+6: I, U
+7: G, M
+8: K, N, T, Y
+9: L
+10: R, V
+
+Seed 392583920583902, X = -1264, Z = 1776
+"""#
 
 private func oldUserProvidedMonumentReference() -> ExpectedMonumentReferenceCase {
     ExpectedMonumentReferenceCase(
@@ -319,7 +358,7 @@ private func matchingDisplayCells(
 @Test func testOceanMonumentRoomPieceGraphMatchesReferenceFixtures() async throws {
     let references = [
         oldUserProvidedMonumentReference(),
-        parseExpectedMonumentReference(try String(contentsOf: URL(filePath: "vanilla/monument_ref.txt"), encoding: .utf8))
+        parseExpectedMonumentReference(monumentReferenceText)
     ]
 
     for expected in references {

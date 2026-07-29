@@ -1,6 +1,7 @@
 public enum StructureGeneratedResult {
     case desertPyramid(DesertPyramidGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
+    case stronghold(StrongholdGenerationResult)
     case woodlandMansion(WoodlandMansionGenerationResult)
 }
 
@@ -121,6 +122,12 @@ public final class Structure: Codable {
             )
         case "minecraft:ocean_monument":
             return OceanMonument.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk)
+        case "minecraft:stronghold":
+            return Stronghold.generatePieceGraph(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
         case "minecraft:woodland_mansion":
             return try WoodlandMansion.generatePieceGraph(
                 worldSeed: worldSeed,
@@ -150,6 +157,10 @@ public final class Structure: Codable {
         case "minecraft:ocean_monument":
             return .oceanMonument(
                 OceanMonument.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
+            )
+        case "minecraft:stronghold":
+            return .stronghold(
+                Stronghold.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
             )
         case "minecraft:woodland_mansion":
             guard let result = try WoodlandMansion.generate(

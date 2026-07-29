@@ -40,12 +40,17 @@ public struct ResolvedStructurePlacementSample {
 
 public final class StructurePlacementSampler {
     private let worldSeed: WorldSeed
+    private let dataPacks: [DataPack]
     private let structureRegistry = Registry<Structure>()
     private let structureSetRegistry = Registry<StructureSet>()
     private var tagRegistry: [String: TagDefinition] = [:]
+    private var concentricRingsCache: [String: [StructurePlacementSample]] = [:]
+    private var resolvedRegistryEntriesCache: [String: Set<String>] = [:]
+    private var overworldBiomeGenerator: WorldGenerator?
 
     public init(withWorldSeed worldSeed: WorldSeed, usingDataPacks dataPacks: [DataPack]) {
         self.worldSeed = worldSeed
+        self.dataPacks = dataPacks
         for pack in dataPacks {
             self.structureRegistry.mergeDown(with: pack.structureRegistry)
             self.structureSetRegistry.mergeDown(with: pack.structureSetRegistry)
@@ -57,6 +62,23 @@ public final class StructurePlacementSampler {
 
     public func sampleStructureSet(inRegion regionPos: PosInt2D, for structureSetKey: RegistryKey<StructureSet>) throws -> StructurePlacementSample? {
         return try self.sampleStructureSet(inRegion: regionPos, for: structureSetKey, visitedKeys: [])
+    }
+
+    public func sampleAllPlacements(for structureSetKey: RegistryKey<StructureSet>) throws -> [StructurePlacementSample] {
+        guard let structureSet = self.structureSetRegistry.get(structureSetKey) else {
+            throw Errors.structureSetNotFound(structureSetKey.name)
+        }
+
+        switch structureSet.placement {
+        case .randomSpread:
+            throw Errors.unsupportedPlacementEnumeration(structureSetKey.name)
+        case .concentricRings(let placement):
+            return try self.sampleConcentricRingsStructureSet(
+                structureSet,
+                structureSetKey: structureSetKey,
+                placement: placement
+            )
+        }
     }
 
     public func resolveStructureSet(
@@ -111,8 +133,13 @@ public final class StructurePlacementSampler {
                 regionPos: regionPos,
                 visitedKeys: visitedKeys
             )
-        case .concentricRings:
-            throw Errors.unsupportedStructurePlacement(structureSetKey.name)
+        case .concentricRings(let placement):
+            let samples = try self.sampleConcentricRingsStructureSet(
+                structureSet,
+                structureSetKey: structureSetKey,
+                placement: placement
+            )
+            return samples.first { $0.chunkPos == regionPos || $0.regionPos == regionPos }
         }
     }
 
@@ -140,6 +167,177 @@ public final class StructurePlacementSampler {
             blockPos: blockPos,
             structures: structureSet.structures
         )
+    }
+
+    private func sampleConcentricRingsStructureSet(
+        _ structureSet: StructureSet,
+        structureSetKey: RegistryKey<StructureSet>,
+        placement: ConcentricRingsStructurePlacement
+    ) throws -> [StructurePlacementSample] {
+        if let cached = self.concentricRingsCache[structureSetKey.name] {
+            return cached
+        }
+
+        let generator = try self.getOverworldBiomeGenerator()
+        let preferredBiomeNames = try self.resolveRegistryEntries(
+            matching: placement.preferredBiomes,
+            in: "worldgen/biome"
+        )
+        var random = CheckedRandom(seed: self.worldSeed)
+        var angle = random.nextDouble() * Double.pi * 2.0
+        var ring = 0
+        var ringSize = placement.spread
+        var ringIndex = 0
+        var distance = self.concentricRingDistance(
+            placement: placement,
+            ring: ring,
+            random: &random
+        )
+        var samples: [StructurePlacementSample] = []
+        samples.reserveCapacity(placement.count)
+
+        for index in 0..<placement.count {
+            let approxChunkX = Int32(round(cos(angle) * distance))
+            let approxChunkZ = Int32(round(sin(angle) * distance))
+            let approxBlockX = approxChunkX &* 16 &+ 8
+            let approxBlockZ = approxChunkZ &* 16 &+ 8
+            let blockPos = try self.locateConcentricRingsBiome(
+                near: PosInt2D(x: approxBlockX, z: approxBlockZ),
+                withinRadius: 112,
+                preferredBiomeNames: preferredBiomeNames,
+                generator: generator,
+                random: &random
+            )
+            let snappedBlockPos = PosInt2D(
+                x: (blockPos.x & ~15) &+ 4,
+                z: (blockPos.z & ~15) &+ 4
+            )
+            let chunkPos = PosInt2D(
+                x: floorDiv(snappedBlockPos.x &- 4, by: 16),
+                z: floorDiv(snappedBlockPos.z &- 4, by: 16)
+            )
+            samples.append(
+                StructurePlacementSample(
+                    structureSetKey: structureSetKey,
+                    regionPos: chunkPos,
+                    chunkPos: chunkPos,
+                    blockPos: snappedBlockPos,
+                    structures: structureSet.structures
+                )
+            )
+
+            ringIndex += 1
+            angle += (Double.pi * 2.0) / Double(ringSize)
+
+            if ringIndex == ringSize {
+                ring += 1
+                ringIndex = 0
+                ringSize += 2 * ringSize / (ring + 1)
+                let remaining = placement.count - (index + 1)
+                if ringSize > remaining {
+                    ringSize = remaining
+                }
+                angle += random.nextDouble() * Double.pi * 2.0
+            }
+
+            if index + 1 < placement.count {
+                distance = self.concentricRingDistance(
+                    placement: placement,
+                    ring: ring,
+                    random: &random
+                )
+            }
+        }
+
+        self.concentricRingsCache[structureSetKey.name] = samples
+        return samples
+    }
+
+    private func locateConcentricRingsBiome<R: Random>(
+        near approx: PosInt2D,
+        withinRadius radius: Int32,
+        preferredBiomeNames: Set<String>,
+        generator: WorldGenerator,
+        random: inout R
+    ) throws -> PosInt2D {
+        let searchX = approx.x >> 2
+        let searchZ = approx.z >> 2
+        let searchRadius = radius >> 2
+        let dimension = RegistryKey<Dimension>(referencing: "minecraft:overworld")
+        let sideLength = Int(searchRadius * 2 + 1)
+        let from = PosInt2D(
+            x: (searchX - searchRadius) &* 4,
+            z: (searchZ - searchRadius) &* 4
+        )
+        let to = PosInt2D(
+            x: (searchX + searchRadius + 1) &* 4,
+            z: (searchZ + searchRadius + 1) &* 4
+        )
+        var found = 0
+        var result = approx
+        var locateRandom = CheckedRandom(seed: random.nextLong())
+        guard let sampledBiomes = try generator.generateBiomesInSquare(
+            from: from,
+            to: to,
+            atY: 0,
+            in: dimension,
+            scale: 4,
+            forceBaking: true
+        ) else {
+            return result
+        }
+
+        for relativeZ in 0..<sideLength {
+            for relativeX in 0..<sideLength {
+                let biome = sampledBiomes[relativeZ * sideLength + relativeX]
+                guard preferredBiomeNames.contains(biome.name) else {
+                    continue
+                }
+                let biomePos = PosInt3D(
+                    x: (searchX - searchRadius + Int32(relativeX)) &* 4,
+                    y: 0,
+                    z: (searchZ - searchRadius + Int32(relativeZ)) &* 4
+                )
+                if found == 0 || locateRandom.next(bound: UInt32(found + 1)) == 0 {
+                    result = PosInt2D(x: biomePos.x, z: biomePos.z)
+                }
+                found += 1
+            }
+        }
+
+        return result
+    }
+
+    private func concentricRingDistance<R: Random>(
+        placement: ConcentricRingsStructurePlacement,
+        ring: Int,
+        random: inout R
+    ) -> Double {
+        let baseDistance = Double(placement.distance)
+        return (4.0 * baseDistance)
+            + (6.0 * Double(ring) * baseDistance)
+            + (random.nextDouble() - 0.5) * baseDistance * 2.5
+    }
+
+    private func getOverworldBiomeGenerator() throws -> WorldGenerator {
+        if let overworldBiomeGenerator {
+            return overworldBiomeGenerator
+        }
+
+        let reloadedDataPacks = try self.dataPacks.map {
+            try DataPack(
+                fromRootPath: $0.rootPath,
+                loadingOptions: [.noStructures, .noStructureSets, .noEnchantments, .noStructureTemplates],
+                decodingVersion: $0.packFormat
+            )
+        }
+        let generator = try WorldGenerator(
+            withWorldSeed: self.worldSeed,
+            usingDataPacks: reloadedDataPacks,
+            usingSettings: RegistryKey(referencing: "minecraft:overworld")
+        )
+        self.overworldBiomeGenerator = generator
+        return generator
     }
 
     private func shouldGenerateRandomSpreadStructureSet(
@@ -223,6 +421,87 @@ public final class StructurePlacementSampler {
                 }
             }
             return false
+        }
+    }
+
+    private func resolveRegistryEntries(matching identifiers: Identifiers, in registryPath: String) throws -> Set<String> {
+        let cacheKey = "\(registryPath)|\(self.identifiersCacheKey(identifiers))"
+        if let cached = self.resolvedRegistryEntriesCache[cacheKey] {
+            return cached
+        }
+
+        let resolved = try self.resolveRegistryEntries(
+            matching: identifiers,
+            in: registryPath,
+            visitedTags: []
+        )
+        self.resolvedRegistryEntriesCache[cacheKey] = resolved
+        return resolved
+    }
+
+    private func resolveRegistryEntries(
+        matching identifiers: Identifiers,
+        in registryPath: String,
+        visitedTags: Set<String>
+    ) throws -> Set<String> {
+        switch identifiers {
+        case .rawID(let id):
+            return [id]
+        case .tagID(let tag):
+            if visitedTags.contains(tag) {
+                throw Errors.circularTag(tag)
+            }
+
+            let tagKey = structurePlacementTagKey(forRegistryPath: registryPath, tagName: tag)
+            guard let tagDefinition = self.tagRegistry[tagKey] else {
+                return []
+            }
+
+            var nextVisitedTags = visitedTags
+            nextVisitedTags.insert(tag)
+            return try tagDefinition.values.reduce(into: Set<String>()) { partialResult, value in
+                partialResult.formUnion(
+                    try self.resolveRegistryEntries(for: value, in: registryPath, visitedTags: nextVisitedTags)
+                )
+            }
+        case .idList(let ids):
+            return try ids.reduce(into: Set<String>()) { partialResult, identifier in
+                partialResult.formUnion(
+                    try self.resolveRegistryEntries(
+                        matching: identifier,
+                        in: registryPath,
+                        visitedTags: visitedTags
+                    )
+                )
+            }
+        }
+    }
+
+    private func resolveRegistryEntries(
+        for tagValue: TagValue,
+        in registryPath: String,
+        visitedTags: Set<String>
+    ) throws -> Set<String> {
+        switch tagValue {
+        case .rawID(let id):
+            return [id]
+        case .tagID(let tag):
+            return try self.resolveRegistryEntries(
+                matching: .tagID(tag),
+                in: registryPath,
+                visitedTags: visitedTags
+            )
+        }
+    }
+
+    private func identifiersCacheKey(_ identifiers: Identifiers) -> String {
+        switch identifiers {
+        case .rawID(let id):
+            return "id:\(id)"
+        case .tagID(let tag):
+            return "tag:\(tag)"
+        case .idList(let ids):
+            return "list:[" + ids.map(self.identifiersCacheKey).joined(separator: ",") + "]"
         }
     }
 
@@ -355,6 +634,7 @@ public final class StructurePlacementSampler {
         case structureSetNotFound(String)
         case structureNotFound(String)
         case unsupportedStructurePlacement(String)
+        case unsupportedPlacementEnumeration(String)
         case unsupportedFrequencyReductionMethod(String)
         case circularExclusionZone(String)
         case circularTag(String)
