@@ -103,6 +103,7 @@ private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFuncti
     }
 }
 
+#if DEBUG
 private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let profile: MutableTimedComponentBenchmark
@@ -142,6 +143,7 @@ private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFuncti
         throw terrainRuntimeOnlyEncodeError(encoder, forType: "VanillaChunkBenchmarkProfilingDensityFunction")
     }
 }
+#endif
 
 private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
@@ -1494,19 +1496,34 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
+    func generateTerrain(into chunk: ProtoChunk, with terrainDensity: any DensityFunction) {
+        let directSamplingTerrainDensity = self.strippedTerrainSamplingFunction(from: terrainDensity)
+        let terrainInterpolator = VanillaChunkTerrainInterpolator(delegate: directSamplingTerrainDensity, using: self)
+        let usesFullHorizontalCells =
+            Int32(self.horizontalCellCount) * self.horizontalCellBlockCount == Int32(ProtoChunk.sideLength)
+            && self.startCellX * self.horizontalCellBlockCount == self.chunkStartX
+            && self.startCellZ * self.horizontalCellBlockCount == self.chunkStartZ
+
+        terrainInterpolator.fillStartColumns(atCellX: self.startCellX)
+        if usesFullHorizontalCells {
+            self.generateAlignedTerrain(into: chunk, using: terrainInterpolator)
+        } else {
+            self.generateClippedTerrain(into: chunk, using: terrainInterpolator)
+        }
+    }
+
+    #if DEBUG
     func generateTerrain(
         into chunk: ProtoChunk,
         with terrainDensity: any DensityFunction,
-        profiling terrainDensityProfile: MutableTimedComponentBenchmark? = nil
+        profiling terrainDensityProfile: MutableTimedComponentBenchmark
     ) {
         let directSamplingTerrainDensity = self.strippedTerrainSamplingFunction(from: terrainDensity)
         let terrainInterpolator = VanillaChunkTerrainInterpolator(
-            delegate: terrainDensityProfile != nil
-                ? VanillaChunkBenchmarkProfilingDensityFunction(
-                    wrapping: directSamplingTerrainDensity,
-                    profile: terrainDensityProfile!
-                )
-                : directSamplingTerrainDensity,
+            delegate: VanillaChunkBenchmarkProfilingDensityFunction(
+                wrapping: directSamplingTerrainDensity,
+                profile: terrainDensityProfile
+            ),
             using: self
         )
         let usesFullHorizontalCells =
@@ -1521,6 +1538,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             self.generateClippedTerrain(into: chunk, using: terrainInterpolator)
         }
     }
+    #endif
 
     func makeDirectPointSamplingTerrainDensity(
         from terrainDensity: any DensityFunction,

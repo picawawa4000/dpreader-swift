@@ -244,6 +244,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     */
 }
 
+#if DEBUG
 @Test func benchmarkVanillaBatchGeneration() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
@@ -304,6 +305,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     Generation in 2048x2048 area using one call took \(fullEndTime - fullStartTime)ns (\((fullEndTime - fullStartTime) / 1_000_000)ms)
     """)
 }
+#endif
 
 fileprivate enum Errors: Error {
     case noVanillaDataFound

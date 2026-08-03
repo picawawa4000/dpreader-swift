@@ -1,4 +1,3 @@
-// for DispatchTime
 import Foundation
 import TestVisible
 
@@ -30,6 +29,17 @@ private func canonicalPredefinedBiomePreset(_ preset: String) -> String? {
 @inline(__always)
 private func hardcodedBiomeKey(_ name: String) -> RegistryKey<Biome> {
     return RegistryKey(referencing: name)
+}
+
+@inline(__always)
+private func performConcurrentIterations(iterations: Int, _ body: @Sendable (Int) -> Void) {
+    #if os(WASI) || arch(wasm32)
+    for index in 0..<iterations {
+        body(index)
+    }
+    #else
+    DispatchQueue.concurrentPerform(iterations: iterations, execute: body)
+    #endif
 }
 
 /// A density function baker that does all baking steps.
@@ -1755,6 +1765,7 @@ enum ChunkBiomeGenerationMode {
     case quartAndBlock
 }
 
+#if DEBUG
 struct ChunkGenerationComponentBenchmark {
     let configureNanos: UInt64
     let samplerInitNanos: UInt64
@@ -1905,6 +1916,7 @@ final class BenchmarkProfilingDensityFunction: DensityFunction, DensityFunctionW
         throw benchmarkRuntimeOnlyEncodeError(encoder, forType: "BenchmarkProfilingDensityFunction")
     }
 }
+#endif
 
 private final class SharedTerrainLODProgressReporter: @unchecked Sendable {
     private let lock = NSLock()
@@ -2643,8 +2655,7 @@ public final class WorldGenerator {
         minY: Int32,
         using searchTree: BiomeSearchTree,
         with functions: ChunkBiomeDensityFunctions,
-        mode: ChunkBiomeGenerationMode = .quartAndBlock,
-        searchTreeProfile: MutableTimedComponentBenchmark? = nil
+        mode: ChunkBiomeGenerationMode = .quartAndBlock
     ) {
         let lookupState = searchTree.makeReusableLookupState()
         self.generateBiomesIntoChunk(chunk, at: chunkPos, minY: minY, mode: mode) { biomeX, biomeY, biomeZ in
@@ -2659,19 +2670,6 @@ public final class WorldGenerator {
             let erosion = functions.erosion.sample(at: pos)
             let weirdness = functions.weirdness.sample(at: pos)
             let depth = functions.depth.sample(at: pos)
-            if let searchTreeProfile {
-                return searchTreeProfile.record {
-                    searchTree.getUnchecked(
-                        temperature: temperature,
-                        humidity: humidity,
-                        continentalness: continentalness,
-                        erosion: erosion,
-                        weirdness: weirdness,
-                        depth: depth,
-                        using: lookupState
-                    )
-                }
-            }
             return searchTree.getUnchecked(
                 temperature: temperature,
                 humidity: humidity,
@@ -2683,6 +2681,44 @@ public final class WorldGenerator {
             )
         }
     }
+
+    #if DEBUG
+    private func generateBiomesIntoChunk(
+        _ chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        minY: Int32,
+        using searchTree: BiomeSearchTree,
+        with functions: ChunkBiomeDensityFunctions,
+        mode: ChunkBiomeGenerationMode = .quartAndBlock,
+        searchTreeProfile: MutableTimedComponentBenchmark
+    ) {
+        let lookupState = searchTree.makeReusableLookupState()
+        self.generateBiomesIntoChunk(chunk, at: chunkPos, minY: minY, mode: mode) { biomeX, biomeY, biomeZ in
+            let pos = PosInt3D(
+                x: blockCoord(fromBiome: biomeX),
+                y: blockCoord(fromBiome: biomeY),
+                z: blockCoord(fromBiome: biomeZ)
+            )
+            let temperature = functions.temperature.sample(at: pos)
+            let humidity = functions.humidity.sample(at: pos)
+            let continentalness = functions.continentalness.sample(at: pos)
+            let erosion = functions.erosion.sample(at: pos)
+            let weirdness = functions.weirdness.sample(at: pos)
+            let depth = functions.depth.sample(at: pos)
+            return searchTreeProfile.record {
+                searchTree.getUnchecked(
+                    temperature: temperature,
+                    humidity: humidity,
+                    continentalness: continentalness,
+                    erosion: erosion,
+                    weirdness: weirdness,
+                    depth: depth,
+                    using: lookupState
+                )
+            }
+        }
+    }
+    #endif
 
     private func generateEndBiomesIntoChunk(
         _ chunk: ProtoChunk,
@@ -3011,6 +3047,7 @@ public final class WorldGenerator {
         chunkSampler.generateTerrain(into: chunk, with: chunkGenerationFunctions.terrainDensity)
     }
 
+    #if DEBUG
     // Visible for testing/benchmarking only.
     func benchmarkChunkGenerationComponents(at chunkPos: PosInt2D) throws -> ChunkGenerationComponentBenchmark {
         self.terrainGenerationLock.lock()
@@ -3331,6 +3368,7 @@ public final class WorldGenerator {
             fullBiomeProfile: fullBiomeProfile
         )
     }
+    #endif
 
     // Currently visible for testing only.
     func sampleFinalDensity(at pos: PosInt3D) throws -> Double {
@@ -3593,7 +3631,7 @@ public final class WorldGenerator {
                 progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
-            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+            performConcurrentIterations(iterations: workerCount) { workerIndex in
                 var localResults: [TerrainLODChunkKey: TerrainLODChunk] = [:]
                 let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
                 do {
@@ -3920,7 +3958,7 @@ public final class WorldGenerator {
                 progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
-            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+            performConcurrentIterations(iterations: workerCount) { workerIndex in
                 let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
                 do {
                     cachedDirectPointFunctions = needsCachedDirectPointFunctions
@@ -4277,7 +4315,7 @@ public final class WorldGenerator {
                 progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
-            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+            performConcurrentIterations(iterations: workerCount) { workerIndex in
                 var localResults: [TerrainLODChunkKey: TerrainSurfaceLODChunk] = [:]
                 let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
                 do {
@@ -4655,7 +4693,7 @@ public final class WorldGenerator {
                 progressReporter.reportCompletedChunk(chunkKey, sampleCount: chunkRequests.count)
             }
         } else {
-            DispatchQueue.concurrentPerform(iterations: workerCount) { workerIndex in
+            performConcurrentIterations(iterations: workerCount) { workerIndex in
                 let cachedDirectPointFunctions: DirectPointSamplingDensityFunctionVariant?
                 do {
                     cachedDirectPointFunctions = needsCachedDirectPointFunctions

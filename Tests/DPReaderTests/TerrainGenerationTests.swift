@@ -16,6 +16,18 @@ private let vanillaLODRadius: Int32 = 12
 private let vanillaLODStartingRadius: Int32 = 4
 private let vanillaLODRadiusStep: Int32 = 4
 private let vanillaLODMaxCellSizePower = 2
+
+@inline(__always)
+private func performConcurrentTestIterations(iterations: Int, _ body: @Sendable (Int) -> Void) {
+    #if os(WASI) || arch(wasm32)
+    for index in 0..<iterations {
+        body(index)
+    }
+    #else
+    DispatchQueue.concurrentPerform(iterations: iterations, execute: body)
+    #endif
+}
+
 private let vanillaTerrainEncodedBitset = """
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -870,7 +882,7 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
     let sharedChunkPositions = UnsafeSendableBox(value: chunkPositions)
     let results = chunkPositions.map { _ in LockedOptional<[[UInt64]]>() }
     let failure = LockedOptional<String>()
-    DispatchQueue.concurrentPerform(iterations: chunkPositions.count) { index in
+    performConcurrentTestIterations(iterations: chunkPositions.count) { index in
         let chunk = ProtoChunk()
         do {
             try sharedGenerator.value.generateInto(chunk, at: sharedChunkPositions.value[index])
@@ -918,7 +930,7 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
     let sharedRequests = UnsafeSendableBox(value: requests)
     let results = requests.map { _ in LockedOptional<TerrainLODResult>() }
     let failure = LockedOptional<String>()
-    DispatchQueue.concurrentPerform(iterations: requests.count) { index in
+    performConcurrentTestIterations(iterations: requests.count) { index in
         do {
             let request = sharedRequests.value[index]
             results[index].value = try sharedGenerator.value.sampleLOD(
@@ -1287,6 +1299,7 @@ private final class LockedArray<Value>: @unchecked Sendable {
     }
 }
 
+#if DEBUG
 @Test func benchmarkVanillaTerrainChunkGenerationProfiled() async throws {
     let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
 
@@ -1527,3 +1540,4 @@ private func makeVanillaTerrainBenchmarkWorldGenerator() throws -> WorldGenerato
         usingSettings: RegistryKey(referencing: "minecraft:overworld")
     )
 }
+#endif
