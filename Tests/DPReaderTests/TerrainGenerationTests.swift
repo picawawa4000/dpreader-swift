@@ -1299,7 +1299,7 @@ private final class LockedArray<Value>: @unchecked Sendable {
     }
 }
 
-#if DEBUG
+#if DEBUG && !(os(WASI) || arch(wasm32))
 @Test func benchmarkVanillaTerrainChunkGenerationProfiled() async throws {
     let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
 

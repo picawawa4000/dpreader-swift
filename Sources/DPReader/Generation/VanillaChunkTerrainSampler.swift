@@ -103,7 +103,7 @@ private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFuncti
     }
 }
 
-#if DEBUG
+#if DEBUG && !(os(WASI) || arch(wasm32))
 private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let profile: MutableTimedComponentBenchmark
@@ -1512,7 +1512,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    #if DEBUG
+    #if DEBUG && !(os(WASI) || arch(wasm32))
     func generateTerrain(
         into chunk: ProtoChunk,
         with terrainDensity: any DensityFunction,

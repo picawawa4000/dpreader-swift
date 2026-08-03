@@ -244,7 +244,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     */
 }
 
-#if DEBUG
+#if DEBUG && !(os(WASI) || arch(wasm32))
 @Test func benchmarkVanillaBatchGeneration() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()

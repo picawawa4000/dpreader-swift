@@ -1765,7 +1765,7 @@ enum ChunkBiomeGenerationMode {
     case quartAndBlock
 }
 
-#if DEBUG
+#if DEBUG && !(os(WASI) || arch(wasm32))
 struct ChunkGenerationComponentBenchmark {
     let configureNanos: UInt64
     let samplerInitNanos: UInt64
@@ -2682,7 +2682,7 @@ public final class WorldGenerator {
         }
     }
 
-    #if DEBUG
+    #if DEBUG && !(os(WASI) || arch(wasm32))
     private func generateBiomesIntoChunk(
         _ chunk: ProtoChunk,
         at chunkPos: PosInt2D,
@@ -3047,7 +3047,7 @@ public final class WorldGenerator {
         chunkSampler.generateTerrain(into: chunk, with: chunkGenerationFunctions.terrainDensity)
     }
 
-    #if DEBUG
+    #if DEBUG && !(os(WASI) || arch(wasm32))
     // Visible for testing/benchmarking only.
     func benchmarkChunkGenerationComponents(at chunkPos: PosInt2D) throws -> ChunkGenerationComponentBenchmark {
         self.terrainGenerationLock.lock()
