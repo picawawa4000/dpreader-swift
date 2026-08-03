@@ -15,6 +15,29 @@ private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
         .deletingLastPathComponent()
 }
 
+private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: String) throws -> URL {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let noiseDirectory = root
+        .appendingPathComponent("data")
+        .appendingPathComponent("test")
+        .appendingPathComponent("worldgen")
+        .appendingPathComponent("noise")
+    try FileManager.default.createDirectory(at: noiseDirectory, withIntermediateDirectories: true)
+
+    let metadata = """
+    {
+        "pack": {
+            "pack_format": \(packFormatLiteral),
+            "description": "Temporary noise pack"
+        }
+    }
+    """
+    try metadata.data(using: .utf8)!.write(to: root.appendingPathComponent("pack.mcmeta"))
+    try noiseJSON.data(using: .utf8)!.write(to: noiseDirectory.appendingPathComponent("example.json"))
+
+    return root
+}
+
 @Test func testNamespacedIDForAbsoluteFileURL() async throws {
     let rootURL = URL(filePath: "/tmp/data/minecraft/worldgen/noise_settings", directoryHint: .isDirectory)
     let fileURL = try #require(URL(string: "file:/tmp/data/minecraft/worldgen/noise_settings/overworld.json"))
@@ -36,6 +59,28 @@ private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
     guard let noise = dataPack.noiseRegistry.get(RegistryKey(referencing: "test:example")) else {
         throw Errors.noiseNotFound("test:example")
     }
+    #expect(noise.testingAttributes.firstOctave == -10)
+    #expect(noise.testingAttributes.amplitudes == [1.0, 0.25, 0.0, 0.5])
+}
+
+@Test func testLoadingForNoisesInPackFormat113() async throws {
+    let packURL = try makeTemporaryNoisePackRoot(
+        packFormatLiteral: "113",
+        noiseJSON: """
+        {
+            "base_octave": -10,
+            "amplitude_modifiers": [1.0, 0.25, 0.0, 0.5]
+        }
+        """
+    )
+    defer { try? FileManager.default.removeItem(at: packURL) }
+
+    let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [])
+
+    guard let noise = dataPack.noiseRegistry.get(RegistryKey(referencing: "test:example")) else {
+        throw Errors.noiseNotFound("test:example")
+    }
+    #expect(dataPack.packFormat == Version(major: 113, minor: 0))
     #expect(noise.testingAttributes.firstOctave == -10)
     #expect(noise.testingAttributes.amplitudes == [1.0, 0.25, 0.0, 0.5])
 }

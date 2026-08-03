@@ -138,6 +138,9 @@ public struct CheckedRandom: Random {
     return CheckedRandom(seed: decoratorSeed)
 }
 
+/// A wrapper around `XoroshiroRandom` that works more similarly to `CheckedRandom`
+/// when doing typed generation. Essentially a specialised clone of vanilla's
+/// `ChunkRandom`.
 public struct XoroshiroChunkRandom: Random {
     private var baseRandom: XoroshiroRandom
 
@@ -426,14 +429,19 @@ private let UNSKEW_FACTOR_2D = (3.0 - SQRT_3) / 6.0
 }
 
 // For end islands.
-public class SimplexNoise {
+public final class SimplexNoise {
     private let permutation: [UInt8]
     private let originX, originY, originZ: Double
 
-    public init<R: Random>(random rng: inout R) {
-        self.originX = rng.nextDouble() * 256.0
-        self.originY = rng.nextDouble() * 256.0
-        self.originZ = rng.nextDouble() * 256.0
+    /// Exactly equivalent to pre-113.0 noise construction.
+    public convenience init<R: Random>(random rng: inout R) {
+        self.init(random: &rng, withScale: 256.0)
+    }
+
+    public init<R: Random>(random rng: inout R, withScale scale: Double) {
+        self.originX = rng.nextDouble() * scale
+        self.originY = rng.nextDouble() * scale
+        self.originZ = rng.nextDouble() * scale
 
         var permutation: [UInt8] = Array<UInt8>(0...255)
         for i in 0...255 {
@@ -495,15 +503,15 @@ public class SimplexNoise {
     }
 }
 
-public class PerlinNoise {
+public final class PerlinNoise {
     private let permutation: [UInt8]
     private let permutationInts: [Int]
     private let originX, originY, originZ: Double
 
-    public init<R: Random>(random rng: inout R) {
-        self.originX = rng.nextDouble() * 256.0
-        self.originY = rng.nextDouble() * 256.0
-        self.originZ = rng.nextDouble() * 256.0
+    public init<R: Random>(random rng: inout R, withScale scale: Double = 256.0) {
+        self.originX = rng.nextDouble() * scale
+        self.originY = rng.nextDouble() * scale
+        self.originZ = rng.nextDouble() * scale
 
         var permutation: [UInt8] = Array<UInt8>(0...255)
         for i in 0...255 {
@@ -514,11 +522,11 @@ public class PerlinNoise {
         self.permutationInts = permutation.map { Int($0) }
     }
 
-    public init<R: Random>(immutableRandom irng: R) {
+    public init<R: Random>(immutableRandom irng: R, withScale scale: Double = 256.0) {
         var rng = irng
-        self.originX = rng.nextDouble() * 256.0
-        self.originY = rng.nextDouble() * 256.0
-        self.originZ = rng.nextDouble() * 256.0
+        self.originX = rng.nextDouble() * scale
+        self.originY = rng.nextDouble() * scale
+        self.originZ = rng.nextDouble() * scale
 
         var permutation: [UInt8] = Array<UInt8>(0...255)
         for i in 0...255 {
@@ -605,7 +613,7 @@ public class PerlinNoise {
     }
 }
 
-public class OctavePerlinNoise {
+public final class OctavePerlinNoise {
     private let octaves: [Octave]
 
     public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
@@ -670,7 +678,7 @@ public class OctavePerlinNoise {
     }
 }
 
-public class DoublePerlinNoise {
+public final class DoublePerlinNoise {
     internal let firstSampler: OctavePerlinNoise
     internal let secondSampler: OctavePerlinNoise
     private let amplitude: Double
@@ -706,7 +714,7 @@ public class DoublePerlinNoise {
     }
 }
 
-public class InterpolatedNoise: DensityFunction {
+public final class InterpolatedNoise: DensityFunction {
     private let xzScale: Double, yScale: Double
     private let scaledXZScale: Double, scaledYScale: Double
     private let xzFactor: Double, yFactor: Double
@@ -880,4 +888,142 @@ public class InterpolatedNoise: DensityFunction {
         case yFactor = "y_factor"
         case smearScaleMultiplier = "smear_scale_multiplier"
     }
+}
+
+/// ----- Noise (post 113.0) -----
+
+public enum ModernNoiseNormalization {
+    case enabled, disabled, legacy
+}
+
+public final class ModernDoublePerlinNoise {
+    private let octaves: [Octave]
+    private let normalizationFactor: Double
+    private let min, max: Double
+
+    init(fromRandom random: inout any Random, isLegacy: Bool, baseOctave: Int, baseAmplitude: Double = 1.0, octaveCount: Int = 1, normalization: ModernNoiseNormalization = .enabled, amplitudeModifiers: [Double] = []) {
+        var frequency = pow(2.0, Double(baseOctave))
+        var amplitude = baseAmplitude
+        if (normalization != .disabled) {
+            amplitude = baseAmplitude * pow(0.5, Double(1 - octaveCount)) / pow(0.5, Double(-octaveCount) - 1.0)
+        }
+        var octaves = [OctaveInfo](repeating: OctaveInfo(index: Int.min, frequency: Double.nan, amplitude: Double.nan), count: octaveCount)
+        var amplitudeSum = 0.0
+        var variance = 0.0
+        for i in 0..<octaveCount {
+            let amplitudeModifier = amplitudeModifiers.isEmpty ? 1.0 : amplitudeModifiers[i]
+            if amplitudeModifier != 0.0 {
+                let realAmplitude = amplitudeModifier * amplitude
+                octaves[i] = OctaveInfo(index: baseOctave + i, frequency: frequency, amplitude: realAmplitude)
+                let absAmplitude = abs(realAmplitude)
+                amplitudeSum += absAmplitude
+                variance += absAmplitude * absAmplitude * 0.27022478 * 0.27022478
+            }
+            frequency *= 2.0
+            amplitude *= 0.5
+        }
+        variance = sqrt(variance) * sqrt(2.0)
+        var normalizationFactor = amplitudeSum * 0.33333334 / variance
+        if normalization == .legacy {
+            var minOctave = Int.max
+            var maxOctave = Int.min
+            for i in 0..<octaveCount {
+                if amplitudeModifiers[i] != 0.0 {
+                    minOctave = minOctave > i ? i : minOctave
+                    maxOctave = maxOctave < i ? i : maxOctave
+                }
+            }
+            let baseFactor = baseAmplitude * 0.5 * 0.33333334
+            let octaveGap = maxOctave - minOctave
+            let factor = baseFactor / (0.1 * (1.0 + 1.0 / Double(octaveGap)))
+            amplitudeSum *= factor / normalizationFactor
+            normalizationFactor = factor
+        }
+        self.normalizationFactor = normalizationFactor
+        self.min = -amplitudeSum * 0.33333334 * 6.0
+        self.max = amplitudeSum * 0.33333334 * 6.0
+
+        var builtOctaves: [Octave] = []
+        if isLegacy {
+            let amplitudes = amplitudeModifiers.isEmpty ? [Double](repeating: 1.0, count: octaveCount) : amplitudeModifiers
+            let firstNoises = createLegacyOctaves(fromRandom: &random, firstOctave: baseOctave, amplitudes: amplitudes)
+            let secondNoises = createLegacyOctaves(fromRandom: &random, firstOctave: baseOctave, amplitudes: amplitudes)
+            let valueFactor = self.normalizationFactor * baseAmplitude
+            for octave in firstNoises {
+                builtOctaves.append(Octave(noise: octave.noise, frequency: octave.frequency, amplitude: octave.amplitude * valueFactor))
+            }
+            for octave in secondNoises {
+                builtOctaves.append(Octave(noise: octave.noise, frequency: octave.frequency * 1.0181268, amplitude: octave.amplitude * valueFactor))
+            }
+        } else {
+            let firstSplitter = random.nextSplitter()
+            let secondSplitter = random.nextSplitter()
+            for octave in octaves {
+                let octaveSeed = String(format: "octave_%i", octave.index)
+                let firstNoise = PerlinNoise(immutableRandom: firstSplitter.split(usingString: octaveSeed))
+                let secondNoise = PerlinNoise(immutableRandom: secondSplitter.split(usingString: octaveSeed))
+                builtOctaves.append(Octave(noise: firstNoise, frequency: octave.frequency, amplitude: octave.amplitude * self.normalizationFactor))
+                builtOctaves.append(Octave(noise: secondNoise, frequency: octave.frequency * 1.0181268, amplitude: octave.amplitude * self.normalizationFactor))
+            }
+        }
+        self.octaves = builtOctaves
+    }
+
+    private struct OctaveInfo {
+        let index: Int
+        let frequency: Double
+        let amplitude: Double
+    }
+
+    fileprivate struct Octave {
+        let noise: PerlinNoise
+        let frequency: Double
+        let amplitude: Double
+
+        func sample(_ x: Double, _ y: Double, _ z: Double) -> Double {
+            self.amplitude * self.noise.sample(x: x * self.frequency, y: y * self.frequency, z: z * self.frequency)
+        }
+    }
+}
+
+fileprivate func createLegacyOctaves(fromRandom random: inout any Random, firstOctave: Int, amplitudes: [Double]) -> [ModernDoublePerlinNoise.Octave] {
+    let octaveCount = amplitudes.count
+    let zeroOctaveIndex = -firstOctave
+    precondition(zeroOctaveIndex < octaveCount - 1, "Positive octaves are not allowed!")
+    var octaves = [ModernDoublePerlinNoise.Octave?](repeating: nil, count: octaveCount)
+    let zeroOctave = PerlinNoise(random: &random)
+    if zeroOctaveIndex > 0 && zeroOctaveIndex < octaveCount {
+        let zeroOctaveAmplitude = amplitudes[zeroOctaveIndex]
+        if zeroOctaveAmplitude != 0.0 {
+            octaves[zeroOctaveIndex] = ModernDoublePerlinNoise.Octave(noise: zeroOctave, frequency: Double.nan, amplitude: Double.nan)
+        }
+    }
+
+    for i in 1...zeroOctaveIndex {
+        /// TODO: this should be a backwards iterator (that is, from zeroOctaveIndex - 1 to 0)
+        let j = zeroOctaveIndex - i
+        if j < octaveCount {
+            let amplitude = amplitudes[j]
+            if amplitude != 0.0 {
+                octaves[j] = ModernDoublePerlinNoise.Octave(noise: PerlinNoise(random: &random), frequency: Double.nan, amplitude: Double.nan)
+            } else {
+                random.skip(calls: 262)
+            }
+        } else {
+            random.skip(calls: 262)
+        }
+    }
+
+    var factor = pow(Double(2.0), -Double(zeroOctaveIndex))
+    var valueFactor = pow(Double(2.0), Double(octaveCount - 1)) / (pow(Double(2.0), Double(octaveCount)) - 1.0)
+    var outOctaves: [ModernDoublePerlinNoise.Octave] = []
+    for i in 0..<octaves.count {
+        let octave = octaves[i]
+        if octave != nil {
+            outOctaves.append(ModernDoublePerlinNoise.Octave(noise: octave!.noise, frequency: factor, amplitude: valueFactor * amplitudes[i]))
+        }
+        factor *= 2.0
+        valueFactor /= 2.0
+    }
+    return outOctaves
 }

@@ -96,6 +96,31 @@ import TestVisible
     private enum CodingKeys: String, CodingKey {
         case amplitudes = "amplitudes"
         case firstOctave = "firstOctave"
+        case amplitudeModifiers = "amplitude_modifiers"
+        case baseOctave = "base_octave"
+    }
+
+    public required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            self.amplitudes = try container.decode([Double].self, forKey: .amplitudeModifiers)
+            self.firstOctave = try container.decode(Int.self, forKey: .baseOctave)
+        } else {
+            self.amplitudes = try container.decode([Double].self, forKey: .amplitudes)
+            self.firstOctave = try container.decode(Int.self, forKey: .firstOctave)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            try container.encode(amplitudes, forKey: .amplitudeModifiers)
+            try container.encode(firstOctave, forKey: .baseOctave)
+        } else {
+            try container.encode(amplitudes, forKey: .amplitudes)
+            try container.encode(firstOctave, forKey: .firstOctave)
+        }
     }
 
     private enum Errors: Error {

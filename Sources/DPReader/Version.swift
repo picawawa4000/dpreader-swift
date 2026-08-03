@@ -169,11 +169,18 @@ public struct VersionedSchemaFeature: Hashable, Sendable {
 }
 
 extension CodingUserInfoKey {
-    static let dpReaderVersioning = CodingUserInfoKey(rawValue: "net.picawawa.dpreader.versioning")!
-    static let dpReaderPackFormat = CodingUserInfoKey(rawValue: "net.picawawa.dpreader.packFormat")!
+    static let dpReaderVersioning = CodingUserInfoKey(rawValue: "picawawa4000.dpreader.versioning")!
+    static let dpReaderPackFormat = CodingUserInfoKey(rawValue: "picawawa4000.dpreader.packFormat")!
 }
 
 extension JSONDecoder {
+    func setDPReaderVersioning(_ versioning: PackVersioning) {
+        userInfo[.dpReaderVersioning] = versioning
+        userInfo[.dpReaderPackFormat] = versioning.selectedVersion
+    }
+}
+
+extension JSONEncoder {
     func setDPReaderVersioning(_ versioning: PackVersioning) {
         userInfo[.dpReaderVersioning] = versioning
         userInfo[.dpReaderPackFormat] = versioning.selectedVersion
@@ -209,5 +216,21 @@ extension Decoder {
 
     func require(_ feature: VersionedSchemaFeature) throws {
         try requirePackVersions(feature.supportedVersions, for: feature.name)
+    }
+}
+
+extension Encoder {
+    var dpReaderVersioning: PackVersioning {
+        if let versioning = userInfo[.dpReaderVersioning] as? PackVersioning {
+            return versioning
+        }
+        if let packFormat = userInfo[.dpReaderPackFormat] as? Version {
+            return PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat)
+        }
+        return .assumedCurrent
+    }
+
+    var dpReaderPackFormat: Version {
+        dpReaderVersioning.selectedVersion
     }
 }

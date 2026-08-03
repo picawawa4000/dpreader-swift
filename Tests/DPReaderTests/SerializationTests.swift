@@ -8,6 +8,18 @@ fileprivate enum Errors: Error {
     case structurePlacementWrongType(String)
 }
 
+private func makeNoiseDecoder(packFormat: Version = .assumedCurrent) -> JSONDecoder {
+    let decoder = JSONDecoder()
+    decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat))
+    return decoder
+}
+
+private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEncoder {
+    let encoder = JSONEncoder()
+    encoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat))
+    return encoder
+}
+
 @Test func testNoiseDefinition() async throws {
     let json = """
         {
@@ -15,9 +27,41 @@ fileprivate enum Errors: Error {
             "firstOctave": -10
         }
     """.data(using: String.Encoding.utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeNoiseDecoder(packFormat: Version(major: 92, minor: 0))
     let value = try decoder.decode(NoiseDefinition.self, from: json)
     #expect(value.testingAttributes.amplitudes == [1.5, 1.0] && value.testingAttributes.firstOctave == -10)
+}
+
+@Test func testNoiseDefinitionVersion113Renames() async throws {
+    let json = """
+        {
+            "amplitude_modifiers": [1.5, 1.0],
+            "base_octave": -10
+        }
+    """.data(using: .utf8)!
+    let decoder = makeNoiseDecoder(packFormat: Version(major: 113, minor: 0))
+    let value = try decoder.decode(NoiseDefinition.self, from: json)
+    #expect(value.testingAttributes.amplitudes == [1.5, 1.0] && value.testingAttributes.firstOctave == -10)
+}
+
+@Test func testNoiseDefinitionEncodingUsesVersionedKeys() async throws {
+    let noise = NoiseDefinition(
+        firstOctave: -10,
+        amplitudes: [1.5, 1.0],
+        forID: RegistryKey(referencing: "test:example")
+    )
+
+    let legacyJSON = try JSONSerialization.jsonObject(with: makeNoiseEncoder(packFormat: Version(major: 92, minor: 0)).encode(noise)) as! [String: Any]
+    #expect(legacyJSON["amplitudes"] != nil)
+    #expect(legacyJSON["firstOctave"] as? Int == -10)
+    #expect(legacyJSON["amplitude_modifiers"] == nil)
+    #expect(legacyJSON["base_octave"] == nil)
+
+    let renamedJSON = try JSONSerialization.jsonObject(with: makeNoiseEncoder(packFormat: Version(major: 113, minor: 0)).encode(noise)) as! [String: Any]
+    #expect(renamedJSON["amplitude_modifiers"] != nil)
+    #expect(renamedJSON["base_octave"] as? Int == -10)
+    #expect(renamedJSON["amplitudes"] == nil)
+    #expect(renamedJSON["firstOctave"] == nil)
 }
 
 @Test func testBiomeCoding() async throws {
