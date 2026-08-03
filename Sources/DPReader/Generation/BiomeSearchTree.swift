@@ -157,6 +157,9 @@ public final class BiomeSearchTree {
     }
 
     private func lookupStateForCurrentThread() -> BiomeSearchLookupState {
+        #if os(WASI) || arch(wasm32)
+        return BiomeSearchLookupState(lastResultIndex: -1, scratchPoint: BiomeSearchPoint())
+        #else
         let key = self.lookupStateThreadDictionaryKey
         if let existing = Thread.current.threadDictionary[key] as? BiomeSearchLookupState {
             return existing
@@ -164,6 +167,7 @@ public final class BiomeSearchTree {
         let state = BiomeSearchLookupState(lastResultIndex: -1, scratchPoint: BiomeSearchPoint())
         Thread.current.threadDictionary[key] = state
         return state
+        #endif
     }
 
     // Internal helper for diagnostics and tests.
@@ -172,8 +176,12 @@ public final class BiomeSearchTree {
     }
 
     private var lookupStateThreadDictionaryKey: String {
+        #if os(WASI) || arch(wasm32)
+        preconditionFailure("lookupStateThreadDictionaryKey is unavailable in WASM/WASI builds")
+        #else
         let pointer = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
         return "BiomeSearchTree.lookupState.\(pointer)"
+        #endif
     }
 
     @inline(__always)
