@@ -1,6 +1,16 @@
 import Foundation
 
-final class BufferedCompiledDensityFunctionPlan: @unchecked Sendable {
+protocol BufferedDensityFunctionRuntimePlan: AnyObject {
+    func evaluate(
+        runtimeContextPointer: UnsafeRawPointer?,
+        baseX: Int32,
+        baseY: Int32,
+        baseZ: Int32,
+        outputPointer: UnsafeMutablePointer<Double>?
+    )
+}
+
+final class BufferedCompiledDensityFunctionPlan: BufferedDensityFunctionRuntimePlan, @unchecked Sendable {
     let root: any DensityFunction
     let registry: Registry<DensityFunction>
     let bufferContext: CompiledDensityFunctionBufferContext
@@ -1525,7 +1535,7 @@ private func dpreaderEvaluateBufferedDensityFunction(
 ) {
     let rawPointer = UnsafeRawPointer(bitPattern: UInt(planPointer))!
     let object = Unmanaged<AnyObject>.fromOpaque(rawPointer).takeUnretainedValue()
-    let plan = object as! BufferedCompiledDensityFunctionPlan
+    let plan = object as! any BufferedDensityFunctionRuntimePlan
     plan.evaluate(
         runtimeContextPointer: runtimeContextPointer,
         baseX: baseX,

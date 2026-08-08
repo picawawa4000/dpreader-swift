@@ -1301,7 +1301,7 @@ private final class LockedArray<Value>: @unchecked Sendable {
     }
 }
 
-#if DEBUG && !(os(WASI) || arch(wasm32))
+//#if DEBUG && !(os(WASI) || arch(wasm32))
 @Test func benchmarkVanillaTerrainChunkGenerationProfiled() async throws {
     let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
 
@@ -1586,6 +1586,207 @@ private final class LockedArray<Value>: @unchecked Sendable {
         )
         print("benchmarkCompiledVanillaTerrainFinalDensityZXY.profile log:", logURL.path)
     }
+}
+
+@Test func testCompiledVanillaNoiseRouterFunctionsCellBulkCorrectness() throws {
+    let context = try makeVanillaNoiseRouterCellBulkBenchmarkContext(
+        cellVolume: DensityFunctionCellVolume(xCount: 1, yCount: 1, zCount: 1)
+    )
+    for (label, function) in context.functions {
+        let result = try evaluateCompiledCellBulk(
+            function,
+            cellSize: context.cellSize,
+            cellVolume: context.cellVolume,
+            registry: context.registry,
+            basePos: context.basePos
+        )
+        let expected = sampleDensityFunctionInCellBulkOrder(
+            function,
+            cellSize: context.cellSize,
+            cellVolume: context.cellVolume,
+            basePos: context.basePos
+        )
+        if let mismatch = firstCellBulkMismatch(reference: expected, candidate: result.values) {
+            Issue.record("Cell-bulk noise router mismatch for \(label): \(mismatch)")
+        }
+    }
+}
+
+@Test func benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY() throws {
+    let settings = try makeVanillaTerrainBenchmarkWorldGenerator().terrainSettingsForTesting()
+    let cellSize = DensityFunctionCellSize(sizeHorizontal: settings.sizeHorizontal, sizeVertical: settings.sizeVertical)
+    let context = try makeVanillaNoiseRouterCellBulkBenchmarkContext(
+        cellVolume: DensityFunctionCellVolume(
+            xCount: Int32(ProtoChunk.sideLength) / cellSize.horizontalBlockCount,
+            yCount: Int32(settings.height) / cellSize.verticalBlockCount,
+            zCount: Int32(ProtoChunk.sideLength) / cellSize.horizontalBlockCount
+        )
+    )
+
+    for (label, function) in context.functions {
+        let interpretedStart = DispatchTime.now().uptimeNanoseconds
+        let expected = sampleDensityFunctionInCellBulkOrder(
+            function,
+            cellSize: context.cellSize,
+            cellVolume: context.cellVolume,
+            basePos: context.basePos
+        )
+        let interpretedNanos = DispatchTime.now().uptimeNanoseconds - interpretedStart
+        let compiled = try evaluateCompiledCellBulk(
+            function,
+            cellSize: context.cellSize,
+            cellVolume: context.cellVolume,
+            registry: context.registry,
+            basePos: context.basePos
+        )
+        if let mismatch = firstCellBulkMismatch(reference: expected, candidate: compiled.values) {
+            Issue.record("Cell-bulk noise router benchmark mismatch for \(label): \(mismatch)")
+        }
+        print(
+            "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY:", label,
+            expected.count, "samples; interpreted", interpretedNanos, "ns; compiled", compiled.nanos, "ns; speedup",
+            String(format: "%.2f", Double(interpretedNanos) / Double(max(compiled.nanos, 1))), "x; caches", compiled.cacheCount
+        )
+    }
+}
+
+private struct VanillaNoiseRouterCellBulkBenchmarkContext {
+    let functions: [(String, any DensityFunction)]
+    let registry: Registry<DensityFunction>
+    let cellSize: DensityFunctionCellSize
+    let cellVolume: DensityFunctionCellVolume
+    let basePos: PosInt3D
+}
+
+private struct CompiledCellBulkEvaluationResult {
+    let values: [Double]
+    let nanos: UInt64
+    let cacheCount: Int
+}
+
+private func makeVanillaNoiseRouterCellBulkBenchmarkContext(
+    cellVolume: DensityFunctionCellVolume
+) throws -> VanillaNoiseRouterCellBulkBenchmarkContext {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
+    let settings = try worldGenerator.terrainSettingsForTesting()
+    let baker = ChunkDensityFunctionBaker(
+        chunkPos: PosInt2D(x: 0, z: 0),
+        minY: Int32(settings.minY),
+        height: Int32(settings.height),
+        sizeHorizontal: settings.sizeHorizontal,
+        sizeVertical: settings.sizeVertical
+    )
+    let router = try settings.noiseRouter.bakeAll(withBaker: baker)
+    var functions: [(String, any DensityFunction)] = [
+        ("barrier", router.barrier),
+        ("fluidLevelFloodedness", router.fluidLevelFloodedness),
+        ("fluidLevelSpread", router.fluidLevelSpread),
+        ("lava", router.lava),
+        ("temperature", router.temperature),
+        ("humidity", router.humidity),
+        ("continents", router.continents),
+        ("erosion", router.erosion),
+        ("depth", router.depth),
+        ("weirdness", router.weirdness),
+        ("veinToggle", router.veinToggle),
+        ("veinRidged", router.veinRidged),
+        ("veinGap", router.veinGap),
+        ("finalDensity", router.finalDensity)
+    ]
+    if let preliminarySurfaceLevel = router.preliminarySurfaceLevel {
+        functions.append(("preliminarySurfaceLevel", preliminarySurfaceLevel))
+    }
+    if let initialDensityWithoutJaggedness = router.initialDensityWithoutJaggedness {
+        functions.append(("initialDensityWithoutJaggedness", initialDensityWithoutJaggedness))
+    }
+    return VanillaNoiseRouterCellBulkBenchmarkContext(
+        functions: functions,
+        registry: worldGenerator.densityFunctionRegistryForTesting(),
+        cellSize: DensityFunctionCellSize(sizeHorizontal: settings.sizeHorizontal, sizeVertical: settings.sizeVertical),
+        cellVolume: cellVolume,
+        basePos: PosInt3D(x: 0, y: Int32(settings.minY), z: 0)
+    )
+}
+
+private func evaluateCompiledCellBulk(
+    _ function: any DensityFunction,
+    cellSize: DensityFunctionCellSize,
+    cellVolume: DensityFunctionCellVolume,
+    registry: Registry<DensityFunction>,
+    basePos: PosInt3D
+) throws -> CompiledCellBulkEvaluationResult {
+    let program = try compile(
+        densityFunction: function,
+        cellSize: cellSize,
+        cellVolume: cellVolume,
+        registry: registry
+    )
+    var cache = [Double](repeating: 0.0, count: program.cacheValueCount)
+    var output = [Double](repeating: 0.0, count: program.outputValueCount)
+    let start = DispatchTime.now().uptimeNanoseconds
+    cache.withUnsafeMutableBufferPointer { cacheBuffer in
+        var evaluationContext = CompiledDensityFunctionBulkEvaluationContext(
+            cacheValues: cacheBuffer.baseAddress,
+            cacheValueCount: cacheBuffer.count
+        )
+        withUnsafePointer(to: &evaluationContext) { contextPointer in
+            output.withUnsafeMutableBufferPointer { outputBuffer in
+                program.function(
+                    UnsafeRawPointer(contextPointer),
+                    basePos.x,
+                    basePos.y,
+                    basePos.z,
+                    outputBuffer.baseAddress
+                )
+            }
+        }
+    }
+    return CompiledCellBulkEvaluationResult(
+        values: output,
+        nanos: DispatchTime.now().uptimeNanoseconds - start,
+        cacheCount: program.cacheCount
+    )
+}
+
+private func sampleDensityFunctionInCellBulkOrder(
+    _ function: any DensityFunction,
+    cellSize: DensityFunctionCellSize,
+    cellVolume: DensityFunctionCellVolume,
+    basePos: PosInt3D
+) -> [Double] {
+    var values: [Double] = []
+    values.reserveCapacity(cellVolume.cellCount * cellSize.blockCount)
+    for cellZ in 0..<Int(cellVolume.zCount) {
+        for cellX in 0..<Int(cellVolume.xCount) {
+            for cellY in 0..<Int(cellVolume.yCount) {
+                for localZ in 0..<Int(cellSize.horizontalBlockCount) {
+                    for localX in 0..<Int(cellSize.horizontalBlockCount) {
+                        for localY in 0..<Int(cellSize.verticalBlockCount) {
+                            values.append(function.sample(at: PosInt3D(
+                                x: basePos.x + Int32(cellX) * cellSize.horizontalBlockCount + Int32(localX),
+                                y: basePos.y + Int32(cellY) * cellSize.verticalBlockCount + Int32(localY),
+                                z: basePos.z + Int32(cellZ) * cellSize.horizontalBlockCount + Int32(localZ)
+                            )))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return values
+}
+
+private func firstCellBulkMismatch(reference: [Double], candidate: [Double]) -> String? {
+    guard reference.count == candidate.count else {
+        return "value count differs: expected \(reference.count), got \(candidate.count)"
+    }
+    for index in reference.indices {
+        let expected = Int((reference[index] * 1_000_000).rounded(.toNearestOrEven))
+        if !checkDoubleTerrain(candidate[index], expected) {
+            return "index \(index): expected \(reference[index]), got \(candidate[index])"
+        }
+    }
+    return nil
 }
 
 private func biomeAndTerrainHash(for chunk: ProtoChunk) -> UInt64 {
@@ -1978,4 +2179,4 @@ private func makeVanillaTerrainCompiledBenchmarkContext() throws -> VanillaTerra
         finalDensity: try worldGenerator.cachedFinalDensityFunction()
     )
 }
-#endif
+//#endif

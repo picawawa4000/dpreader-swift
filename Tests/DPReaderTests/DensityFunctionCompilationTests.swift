@@ -200,6 +200,96 @@ private func assertCompiledBufferMatches(
     #expect(shared.sampleCount == bufferContext.sampleCount)
 }
 
+@Test func testCompiledDensityFunctionCellBulkExecutionModel() throws {
+    let flatDelegate = CountingDensityFunction()
+    let cache2DDelegate = CountingDensityFunction()
+    let flat = CacheMarker(type: .flatCache, wrapping: flatDelegate)
+    let cache2D = CacheMarker(type: .cache2D, wrapping: cache2DDelegate)
+    let interpolated = CacheMarker(
+        type: .interpolated,
+        wrapping: YClampedGradient(fromY: -8, toY: 8, fromValue: -2.0, toValue: 2.0)
+    )
+    let densityFunction = BinaryDensityFunction(
+        firstOperand: BinaryDensityFunction(firstOperand: flat, secondOperand: cache2D, type: .ADD),
+        secondOperand: interpolated,
+        type: .ADD
+    )
+    let cellSize = DensityFunctionCellSize(sizeHorizontal: 1, sizeVertical: 1)
+    let cellVolume = DensityFunctionCellVolume(xCount: 2, yCount: 2, zCount: 1)
+    let program = try compile(densityFunction: densityFunction, cellSize: cellSize, cellVolume: cellVolume)
+
+    #expect(program.cacheCount == 2)
+    #expect(program.cacheElementsPerCell == 64)
+    #expect(program.cacheValueCount == 128)
+    #expect(program.outputValueCount == 256)
+
+    var cache = [Double](repeating: .nan, count: program.cacheValueCount)
+    var output = [Double](repeating: .nan, count: program.outputValueCount)
+    cache.withUnsafeMutableBufferPointer { cacheBuffer in
+        var context = CompiledDensityFunctionBulkEvaluationContext(
+            cacheValues: cacheBuffer.baseAddress,
+            cacheValueCount: cacheBuffer.count
+        )
+        withUnsafePointer(to: &context) { contextPointer in
+            output.withUnsafeMutableBufferPointer { outputBuffer in
+                program.function(UnsafeRawPointer(contextPointer), 0, -8, 0, outputBuffer.baseAddress)
+            }
+        }
+    }
+
+    var index = 0
+    for cellZ in 0..<Int(cellVolume.zCount) {
+        for cellX in 0..<Int(cellVolume.xCount) {
+            for cellY in 0..<Int(cellVolume.yCount) {
+                for localZ in 0..<Int(cellSize.horizontalBlockCount) {
+                    for localX in 0..<Int(cellSize.horizontalBlockCount) {
+                        for localY in 0..<Int(cellSize.verticalBlockCount) {
+                            let x = Int32(cellX * 4 + localX)
+                            let y = Int32(-8 + cellY * 4 + localY)
+                            let z = Int32(cellZ * 4 + localZ)
+                            let flatValue = Double((x / 4) * 4 + (z / 4) * 4)
+                            let cache2DValue = Double(x - 8 + z)
+                            let interpolatedValue = -2.0 + Double(y + 8) * 0.25
+                            #expect(checkDouble(output[index], flatValue + cache2DValue + interpolatedValue))
+                            index += 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #expect(flatDelegate.sampleCount == 32)
+    #expect(cache2DDelegate.sampleCount == 32)
+}
+
+@Test func testCompiledDensityFunctionCellBulkRejectsMissingReference() throws {
+    let reference = ReferenceDensityFunction(target: "test:missing_bulk_reference")
+    #expect(throws: DensityFunctionCompilationError.self) {
+        _ = try compile(
+            densityFunction: reference,
+            cellSize: DensityFunctionCellSize(sizeHorizontal: 1, sizeVertical: 1),
+            cellVolume: DensityFunctionCellVolume(xCount: 1, yCount: 1, zCount: 1)
+        )
+    }
+}
+
+@Test func testCompiledDensityFunctionCellBulkElidesInterpolatorCaches() throws {
+    let densityFunction = CacheMarker(
+        type: .interpolated,
+        wrapping: CacheMarker(
+            type: .flatCache,
+            wrapping: CountingDensityFunction()
+        )
+    )
+    let program = try compile(
+        densityFunction: densityFunction,
+        cellSize: DensityFunctionCellSize(sizeHorizontal: 1, sizeVertical: 1),
+        cellVolume: DensityFunctionCellVolume(xCount: 2, yCount: 2, zCount: 2)
+    )
+    #expect(program.cacheCount == 0)
+    #expect(program.cacheValueCount == 0)
+}
+
 @Test func testCompiledDensityFunctionBufferedProfilingFusesSimpleTransforms() throws {
     let shared = CountingDensityFunction()
     let densityFunction = UnaryDensityFunction(

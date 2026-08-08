@@ -16,6 +16,85 @@ public typealias CompiledDensityFunctionBuffer = @convention(c) (
     UnsafeMutablePointer<Double>?
 ) -> Void
 
+/// The block dimensions of one generation cell.
+public struct DensityFunctionCellSize: Sendable, Hashable {
+    public let horizontalBlockCount: Int32
+    public let verticalBlockCount: Int32
+
+    /// Creates a cell whose block dimensions are four times the corresponding noise settings.
+    public init(sizeHorizontal: Int, sizeVertical: Int) {
+        precondition(sizeHorizontal > 0 && sizeVertical > 0, "Noise cell sizes must be positive.")
+        precondition(sizeHorizontal <= Int(Int32.max) / 4 && sizeVertical <= Int(Int32.max) / 4, "Noise cell size overflowed Int32.")
+        self.horizontalBlockCount = Int32(sizeHorizontal * 4)
+        self.verticalBlockCount = Int32(sizeVertical * 4)
+    }
+
+    public init(horizontalBlockCount: Int32, verticalBlockCount: Int32) {
+        precondition(horizontalBlockCount > 0 && verticalBlockCount > 0, "Density function cell sizes must be positive.")
+        self.horizontalBlockCount = horizontalBlockCount
+        self.verticalBlockCount = verticalBlockCount
+    }
+
+    public var blockCount: Int {
+        Int(self.horizontalBlockCount) * Int(self.verticalBlockCount) * Int(self.horizontalBlockCount)
+    }
+}
+
+/// The number of generation cells evaluated by one bulk invocation.
+public struct DensityFunctionCellVolume: Sendable, Hashable {
+    public let xCount: Int32
+    public let yCount: Int32
+    public let zCount: Int32
+
+    public init(xCount: Int32, yCount: Int32, zCount: Int32) {
+        precondition(xCount > 0 && yCount > 0 && zCount > 0, "Density function cell volume counts must be positive.")
+        self.xCount = xCount
+        self.yCount = yCount
+        self.zCount = zCount
+    }
+
+    public var cellCount: Int {
+        Int(self.xCount) * Int(self.yCount) * Int(self.zCount)
+    }
+}
+
+/// Caller-owned transient storage used by flat and 2D caches while evaluating a cell column.
+public struct CompiledDensityFunctionBulkEvaluationContext: @unchecked Sendable {
+    public var cacheValues: UnsafeMutablePointer<Double>?
+    public var cacheValueCount: Int
+
+    public init(cacheValues: UnsafeMutablePointer<Double>?, cacheValueCount: Int) {
+        self.cacheValues = cacheValues
+        self.cacheValueCount = cacheValueCount
+    }
+}
+
+/// A compiled cell-volume evaluator and its exact output/cache storage requirements.
+public final class CompiledDensityFunctionBulkProgram: @unchecked Sendable {
+    public let function: CompiledDensityFunctionBuffer
+    public let cellSize: DensityFunctionCellSize
+    public let cellVolume: DensityFunctionCellVolume
+    public let cacheCount: Int
+    public let cacheElementsPerCell: Int
+    public let cacheValueCount: Int
+    public let outputValueCount: Int
+
+    init(
+        function: @escaping CompiledDensityFunctionBuffer,
+        cellSize: DensityFunctionCellSize,
+        cellVolume: DensityFunctionCellVolume,
+        cacheCount: Int
+    ) {
+        self.function = function
+        self.cellSize = cellSize
+        self.cellVolume = cellVolume
+        self.cacheCount = cacheCount
+        self.cacheElementsPerCell = cellSize.blockCount
+        self.cacheValueCount = cacheCount * cellSize.blockCount
+        self.outputValueCount = cellVolume.cellCount * cellSize.blockCount
+    }
+}
+
 public struct CompiledDensityFunctionBufferContext: Sendable {
     public let xCount: Int32
     public let yCount: Int32
@@ -1458,20 +1537,21 @@ public func compile(
         )
     }
 
-    return try JITCompiler.shared.withLock {
-        guard let compilableRoot = root as? any CompilableDensityFunction else {
-            return try compileBufferedViaSwiftEvaluator(
-                densityFunction: root,
-                bufferContext: bufferContext,
-                registry: registry,
-                options: options
-            )
-        }
+    guard let compilableRoot = root as? any CompilableDensityFunction else {
+        return try compileBufferedViaSwiftEvaluator(
+            densityFunction: root,
+            bufferContext: bufferContext,
+            registry: registry,
+            options: options
+        )
+    }
 
-        if type(of: compilableRoot) is AnyObject.Type {
-            JITCompiler.shared.retain(compilableRoot as AnyObject)
-        }
-        JITCompiler.shared.retain(registry)
+    do {
+        return try JITCompiler.shared.withLock {
+            if type(of: compilableRoot) is AnyObject.Type {
+                JITCompiler.shared.retain(compilableRoot as AnyObject)
+            }
+            JITCompiler.shared.retain(registry)
 
         guard let llvmContext = LLVMContextCreate() else {
             throw DensityFunctionCompilationError.llvmError("Failed to create LLVM context.")
@@ -1662,7 +1742,15 @@ public func compile(
             prefix: "Failed to resolve compiled buffered density function"
         )
 
-        return unsafeBitCast(address, to: CompiledDensityFunctionBuffer.self)
+            return unsafeBitCast(address, to: CompiledDensityFunctionBuffer.self)
+        }
+    } catch DensityFunctionCompilationError.nonCompilableDensityFunction {
+        return try compileBufferedViaSwiftEvaluator(
+            densityFunction: root,
+            bufferContext: bufferContext,
+            registry: registry,
+            options: options
+        )
     }
 }
 
@@ -1672,13 +1760,20 @@ private func compileBufferedViaSwiftEvaluator(
     registry: Registry<DensityFunction>,
     options: BufferedDensityFunctionCompilationOptions
 ) throws -> CompiledDensityFunctionBuffer {
+    let plan = BufferedCompiledDensityFunctionPlan(
+        root: root,
+        registry: registry,
+        bufferContext: bufferContext,
+        options: options
+    )
+    return try compileBufferedRuntimePlan(plan, registry: registry)
+}
+
+func compileBufferedRuntimePlan(
+    _ plan: any BufferedDensityFunctionRuntimePlan,
+    registry: Registry<DensityFunction>
+) throws -> CompiledDensityFunctionBuffer {
     try JITCompiler.shared.withLock {
-        let plan = BufferedCompiledDensityFunctionPlan(
-            root: root,
-            registry: registry,
-            bufferContext: bufferContext,
-            options: options
-        )
         JITCompiler.shared.retain(plan)
 
         guard let llvmContext = LLVMContextCreate() else {
