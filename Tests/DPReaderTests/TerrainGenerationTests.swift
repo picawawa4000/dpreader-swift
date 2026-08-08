@@ -6,6 +6,8 @@ private enum TerrainTestErrors: Error {
     case noVanillaDataFound
     case invalidEmbeddedTerrainBitset
     case unexpectedDensityFunctionType
+    case missingVanillaNoiseSettings(String)
+    case invalidProfileLogPath(String)
 }
 
 private let vanillaTerrainMinY: Int32 = -64
@@ -1496,6 +1498,96 @@ private final class LockedArray<Value>: @unchecked Sendable {
     )
 }
 
+@Test func benchmarkCompiledVanillaTerrainFinalDensityZXY() throws {
+    let benchmarkContext = try makeVanillaTerrainCompiledBenchmarkContext()
+    let profilingState = environmentFlagEnabled("DPREADER_COMPILED_BUFFER_PROFILE") ? BufferedDensityFunctionProfilingState() : nil
+    let compiledBufferedDensity = try compile(
+        densityFunction: benchmarkContext.finalDensity,
+        bufferContext: benchmarkContext.bufferContext,
+        registry: benchmarkContext.densityFunctionRegistry,
+        options: BufferedDensityFunctionCompilationOptions(profilingState: profilingState)
+    )
+    let basePos = PosInt3D(x: 0, y: benchmarkContext.minY, z: 0)
+
+    var interpretedBuffer = [Double](repeating: 0.0, count: benchmarkContext.bufferContext.sampleCount)
+    var compiledBufferedBuffer = [Double](repeating: 0.0, count: benchmarkContext.bufferContext.sampleCount)
+
+    _ = benchmarkVanillaTerrainDensityBufferZXY(
+        basePos: basePos,
+        bufferContext: benchmarkContext.bufferContext,
+        output: &interpretedBuffer
+    ) { x, y, z in
+        benchmarkContext.finalDensity.sample(at: PosInt3D(x: x, y: y, z: z))
+    }
+    _ = benchmarkCompiledVanillaTerrainDensityBufferZXY(
+        basePos: basePos,
+        bufferContext: benchmarkContext.bufferContext,
+        output: &compiledBufferedBuffer,
+        compiledDensity: compiledBufferedDensity
+    )
+
+    let interpreted = benchmarkVanillaTerrainDensityBufferZXY(
+        basePos: basePos,
+        bufferContext: benchmarkContext.bufferContext,
+        output: &interpretedBuffer
+    ) { x, y, z in
+        benchmarkContext.finalDensity.sample(at: PosInt3D(x: x, y: y, z: z))
+    }
+    let compiledBuffered = benchmarkCompiledVanillaTerrainDensityBufferZXY(
+        basePos: basePos,
+        bufferContext: benchmarkContext.bufferContext,
+        output: &compiledBufferedBuffer,
+        compiledDensity: compiledBufferedDensity
+    )
+
+    #expect(interpreted.sampleCount == compiledBuffered.sampleCount)
+
+    let interpretedSolidCount = solidTerrainDensitySampleCount(in: interpretedBuffer)
+    let compiledBufferedSolidCount = solidTerrainDensitySampleCount(in: compiledBufferedBuffer)
+    #expect(interpretedSolidCount == compiledBufferedSolidCount)
+
+    if let mismatch = firstTerrainDensityBufferMismatch(
+        reference: interpretedBuffer,
+        candidate: compiledBufferedBuffer,
+        basePos: basePos,
+        bufferContext: benchmarkContext.bufferContext
+    ) {
+        Issue.record("Buffered compiled mismatch: \(mismatch)")
+    }
+
+    let bufferedSpeedup = Double(interpreted.totalNanos) / Double(max(compiledBuffered.totalNanos, 1))
+    print(
+        "benchmarkCompiledVanillaTerrainFinalDensityZXY:",
+        interpreted.sampleCount, "samples across one chunk in ZXY order;",
+        "interpreted", interpreted.totalNanos, "ns",
+        "(\(interpreted.totalNanos / 1_000_000)ms);",
+        "compiled buffered", compiledBuffered.totalNanos, "ns",
+        "(\(compiledBuffered.totalNanos / 1_000_000)ms);",
+        "buffered speedup", String(format: "%.2f", bufferedSpeedup), "x;",
+        "solid count", interpretedSolidCount
+    )
+
+    if let report = profilingState?.latestReport() {
+        printBufferedDensityFunctionProfilingReport(
+            report,
+            label: "benchmarkCompiledVanillaTerrainFinalDensityZXY.profile"
+        )
+        let logURL = try writeBufferedDensityFunctionProfilingLog(
+            label: "benchmarkCompiledVanillaTerrainFinalDensityZXY",
+            rootDensityFunctionType: String(describing: type(of: benchmarkContext.finalDensity)),
+            basePos: basePos,
+            bufferContext: benchmarkContext.bufferContext,
+            interpretedTotalNanos: interpreted.totalNanos,
+            compiledBufferedTotalNanos: compiledBuffered.totalNanos,
+            interpretedSolidCount: interpretedSolidCount,
+            compiledBufferedSolidCount: compiledBufferedSolidCount,
+            bufferedSpeedup: bufferedSpeedup,
+            report: report
+        )
+        print("benchmarkCompiledVanillaTerrainFinalDensityZXY.profile log:", logURL.path)
+    }
+}
+
 private func biomeAndTerrainHash(for chunk: ProtoChunk) -> UInt64 {
     let offsetBasis: UInt64 = 1_469_598_103_934_665_603
     let prime: UInt64 = 1_099_511_628_211
@@ -1538,6 +1630,352 @@ private func makeVanillaTerrainBenchmarkWorldGenerator() throws -> WorldGenerato
         withWorldSeed: 123_456_789,
         usingDataPacks: [pack],
         usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+}
+
+private struct VanillaTerrainDensityBenchmarkContext {
+    let minY: Int32
+    let maxYExclusive: Int32
+    let bufferContext: CompiledDensityFunctionBufferContext
+    let densityFunctionRegistry: Registry<DensityFunction>
+    let finalDensity: any DensityFunction
+}
+
+private struct VanillaTerrainDensityBenchmarkResult {
+    let totalNanos: UInt64
+    let sampleCount: UInt64
+}
+
+private struct ProfiledBenchmarkBufferContext: Codable {
+    let xCount: Int32
+    let yCount: Int32
+    let zCount: Int32
+    let xStep: Int32
+    let yStep: Int32
+    let zStep: Int32
+
+    init(_ context: CompiledDensityFunctionBufferContext) {
+        self.xCount = context.xCount
+        self.yCount = context.yCount
+        self.zCount = context.zCount
+        self.xStep = context.xStep
+        self.yStep = context.yStep
+        self.zStep = context.zStep
+    }
+}
+
+private struct ProfiledBenchmarkPos: Codable {
+    let x: Int32
+    let y: Int32
+    let z: Int32
+
+    init(_ pos: PosInt3D) {
+        self.x = pos.x
+        self.y = pos.y
+        self.z = pos.z
+    }
+}
+
+private struct ProfiledBenchmarkLog: Codable {
+    let label: String
+    let createdAt: String
+    let processIdentifier: Int32
+    let rootDensityFunctionType: String
+    let basePosition: ProfiledBenchmarkPos
+    let bufferContext: ProfiledBenchmarkBufferContext
+    let interpretedTotalNanos: UInt64
+    let compiledBufferedTotalNanos: UInt64
+    let bufferedSpeedup: Double
+    let interpretedSolidCount: UInt64
+    let compiledBufferedSolidCount: UInt64
+    let profile: BufferedDensityFunctionProfilingReport
+}
+
+private func environmentFlagEnabled(_ name: String) -> Bool {
+    guard let rawValue = ProcessInfo.processInfo.environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !rawValue.isEmpty
+    else {
+        return false
+    }
+    switch rawValue.lowercased() {
+    case "1", "true", "yes", "on":
+        return true
+    default:
+        return false
+    }
+}
+
+private func environmentValue(_ name: String) -> String? {
+    guard let rawValue = ProcessInfo.processInfo.environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !rawValue.isEmpty
+    else {
+        return nil
+    }
+    return rawValue
+}
+
+private func bufferedDensityFunctionProfilingLogURL(label: String) throws -> URL {
+    if let explicitPath = environmentValue("DPREADER_COMPILED_BUFFER_PROFILE_LOG_PATH") {
+        guard explicitPath.first == "/" else {
+            throw TerrainTestErrors.invalidProfileLogPath(explicitPath)
+        }
+        return URL(fileURLWithPath: explicitPath)
+    }
+
+    let uniqueComponent = ProcessInfo.processInfo.globallyUniqueString
+    return URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("\(label)-\(uniqueComponent).json")
+}
+
+private func writeBufferedDensityFunctionProfilingLog(
+    label: String,
+    rootDensityFunctionType: String,
+    basePos: PosInt3D,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    interpretedTotalNanos: UInt64,
+    compiledBufferedTotalNanos: UInt64,
+    interpretedSolidCount: UInt64,
+    compiledBufferedSolidCount: UInt64,
+    bufferedSpeedup: Double,
+    report: BufferedDensityFunctionProfilingReport
+) throws -> URL {
+    let log = ProfiledBenchmarkLog(
+        label: label,
+        createdAt: ISO8601DateFormatter().string(from: Date()),
+        processIdentifier: ProcessInfo.processInfo.processIdentifier,
+        rootDensityFunctionType: rootDensityFunctionType,
+        basePosition: ProfiledBenchmarkPos(basePos),
+        bufferContext: ProfiledBenchmarkBufferContext(bufferContext),
+        interpretedTotalNanos: interpretedTotalNanos,
+        compiledBufferedTotalNanos: compiledBufferedTotalNanos,
+        bufferedSpeedup: bufferedSpeedup,
+        interpretedSolidCount: interpretedSolidCount,
+        compiledBufferedSolidCount: compiledBufferedSolidCount,
+        profile: report
+    )
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(log)
+    let url = try bufferedDensityFunctionProfilingLogURL(label: label)
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try data.write(to: url, options: .atomic)
+    return url
+}
+
+private func formatValueCountAsBytes(_ valueCount: Int) -> String {
+    let byteCount = valueCount * MemoryLayout<Double>.stride
+    return "\(byteCount)B"
+}
+
+private func printBufferedDensityFunctionProfilingReport(
+    _ report: BufferedDensityFunctionProfilingReport,
+    label: String,
+    topNodeCount: Int = 12
+) {
+    print(
+        label,
+        "build", report.buildNanos, "ns;",
+        "total", report.totalNanos, "ns;",
+        "nodes", report.nodeCount, "planned /", report.realizedNodeCount, "realized;",
+        "shared node reuses", report.sharedNodeReuseCount, ";",
+        "fused transforms", report.fusedTransformCount, ";",
+        "node result cache hits", report.nodeResultCacheHitCount, ";",
+        "allocated", report.allocatedBufferCount, "buffers /", report.allocatedValueCount, "values /", formatValueCountAsBytes(report.allocatedValueCount) + ";",
+        "reused", report.reusedBufferCount, "buffers /", report.reusedValueCount, "values /", formatValueCountAsBytes(report.reusedValueCount) + ";",
+        "recycled", report.recycledBufferCount, "buffers /", report.recycledValueCount, "values /", formatValueCountAsBytes(report.recycledValueCount) + ";",
+        "peak pooled", report.peakPooledBufferCount, "buffers /", report.peakPooledValueCount, "values /", formatValueCountAsBytes(report.peakPooledValueCount) + ";",
+        "peak live", report.peakRetainedBufferCount, "buffers /", report.peakRetainedValueCount, "values /", formatValueCountAsBytes(report.peakRetainedValueCount) + ";",
+        "events", report.events.count
+    )
+
+    let hottestNodes = report.nodes.sorted { lhs, rhs in
+        if lhs.totalNanos != rhs.totalNanos {
+            return lhs.totalNanos > rhs.totalNanos
+        }
+        return lhs.outputValueCount > rhs.outputValueCount
+    }
+    let widestNodes = report.nodes.sorted { lhs, rhs in
+        if lhs.outputValueCount != rhs.outputValueCount {
+            return lhs.outputValueCount > rhs.outputValueCount
+        }
+        return lhs.totalNanos > rhs.totalNanos
+    }
+
+    print(label, "top time nodes:")
+    for node in hottestNodes.prefix(topNodeCount) {
+        print(
+            " ", "#\(node.index)", node.kind, node.label,
+            "|", node.totalNanos, "ns",
+            "|", "\(node.xCount)x\(node.yCount)x\(node.zCount)",
+            "|", node.sampleCount, "samples",
+            "|", node.outputValueCount, "values",
+            "|", formatValueCountAsBytes(node.outputValueCount),
+            "|", "uses", node.plannedUseCount,
+            "|", "fused", node.fusedTransformCount,
+            "|", "cache hits", node.cacheHitCount
+        )
+    }
+
+    print(label, "top memory nodes:")
+    for node in widestNodes.prefix(topNodeCount) {
+        print(
+            " ", "#\(node.index)", node.kind, node.label,
+            "|", node.outputValueCount, "values",
+            "|", formatValueCountAsBytes(node.outputValueCount),
+            "|", node.totalNanos, "ns",
+            "|", node.sampleCount, "samples",
+            "|", "\(node.xCount)x\(node.yCount)x\(node.zCount)",
+            "|", "uses", node.plannedUseCount,
+            "|", "fused", node.fusedTransformCount,
+            "|", "cache hits", node.cacheHitCount
+        )
+    }
+
+    let hottestFunctions = report.functions.sorted { lhs, rhs in
+        if lhs.selfNanos != rhs.selfNanos {
+            return lhs.selfNanos > rhs.selfNanos
+        }
+        return lhs.totalNanos > rhs.totalNanos
+    }
+    let widestFunctions = report.functions.sorted { lhs, rhs in
+        if lhs.totalNanos != rhs.totalNanos {
+            return lhs.totalNanos > rhs.totalNanos
+        }
+        return lhs.callCount > rhs.callCount
+    }
+
+    print(label, "top self-time functions:")
+    for function in hottestFunctions.prefix(topNodeCount) {
+        print(
+            " ", "#\(function.index)", function.type, function.label,
+            "|", "self", function.selfNanos, "ns",
+            "|", "total", function.totalNanos, "ns",
+            "|", "calls", function.callCount
+        )
+    }
+
+    print(label, "top total-time functions:")
+    for function in widestFunctions.prefix(topNodeCount) {
+        print(
+            " ", "#\(function.index)", function.type, function.label,
+            "|", "total", function.totalNanos, "ns",
+            "|", "self", function.selfNanos, "ns",
+            "|", "calls", function.callCount
+        )
+    }
+}
+
+private func benchmarkVanillaTerrainDensityBufferZXY(
+    basePos: PosInt3D,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    output: inout [Double],
+    sampler: (Int32, Int32, Int32) -> Double
+) -> VanillaTerrainDensityBenchmarkResult {
+    precondition(output.count == bufferContext.sampleCount, "Unexpected terrain density output buffer size.")
+
+    let start = DispatchTime.now().uptimeNanoseconds
+    var index = 0
+    var zOffset: Int32 = 0
+    while zOffset < bufferContext.zCount {
+        let worldZ = basePos.z + zOffset * bufferContext.zStep
+        var xOffset: Int32 = 0
+        while xOffset < bufferContext.xCount {
+            let worldX = basePos.x + xOffset * bufferContext.xStep
+            var yOffset: Int32 = 0
+            while yOffset < bufferContext.yCount {
+                let worldY = basePos.y + yOffset * bufferContext.yStep
+                output[index] = sampler(worldX, worldY, worldZ)
+                index += 1
+                yOffset += 1
+            }
+            xOffset += 1
+        }
+        zOffset += 1
+    }
+    let end = DispatchTime.now().uptimeNanoseconds
+
+    return VanillaTerrainDensityBenchmarkResult(
+        totalNanos: end - start,
+        sampleCount: UInt64(output.count)
+    )
+}
+
+private func benchmarkCompiledVanillaTerrainDensityBufferZXY(
+    basePos: PosInt3D,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    output: inout [Double],
+    compiledDensity: CompiledDensityFunctionBuffer
+) -> VanillaTerrainDensityBenchmarkResult {
+    precondition(output.count == bufferContext.sampleCount, "Unexpected terrain density output buffer size.")
+
+    let start = DispatchTime.now().uptimeNanoseconds
+    withUnsafePointer(to: bufferContext) { contextPointer in
+        output.withUnsafeMutableBufferPointer { bufferPointer in
+            compiledDensity(UnsafeRawPointer(contextPointer), basePos.x, basePos.y, basePos.z, bufferPointer.baseAddress)
+        }
+    }
+    let end = DispatchTime.now().uptimeNanoseconds
+
+    return VanillaTerrainDensityBenchmarkResult(
+        totalNanos: end - start,
+        sampleCount: UInt64(output.count)
+    )
+}
+
+private func solidTerrainDensitySampleCount(in output: [Double]) -> UInt64 {
+    UInt64(output.lazy.filter { $0 > 0.0 }.count)
+}
+
+private func firstTerrainDensityBufferMismatch(
+    reference: [Double],
+    candidate: [Double],
+    basePos: PosInt3D,
+    bufferContext: CompiledDensityFunctionBufferContext
+) -> String? {
+    guard reference.count == candidate.count else {
+        return "buffer size mismatch: reference \(reference.count), candidate \(candidate.count)"
+    }
+
+    var index = 0
+    var zOffset: Int32 = 0
+    while zOffset < bufferContext.zCount {
+        let worldZ = basePos.z + zOffset * bufferContext.zStep
+        var xOffset: Int32 = 0
+        while xOffset < bufferContext.xCount {
+            let worldX = basePos.x + xOffset * bufferContext.xStep
+            var yOffset: Int32 = 0
+            while yOffset < bufferContext.yCount {
+                let worldY = basePos.y + yOffset * bufferContext.yStep
+                let roundedReference = Int((reference[index] * 1_000_000).rounded(.toNearestOrEven))
+                if !checkDoubleTerrain(candidate[index], roundedReference) {
+                    return "first mismatch at (\(worldX), \(worldY), \(worldZ)) [index \(index)]: expected \(reference[index]), got \(candidate[index])"
+                }
+                index += 1
+                yOffset += 1
+            }
+            xOffset += 1
+        }
+        zOffset += 1
+    }
+
+    return nil
+}
+
+private func makeVanillaTerrainCompiledBenchmarkContext() throws -> VanillaTerrainDensityBenchmarkContext {
+    let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
+    let config = try worldGenerator.terrainSettingsForTesting()
+    let minY = Int32(config.minY)
+    return VanillaTerrainDensityBenchmarkContext(
+        minY: minY,
+        maxYExclusive: minY + Int32(config.height),
+        bufferContext: CompiledDensityFunctionBufferContext(
+            xCount: Int32(ProtoChunk.sideLength),
+            yCount: Int32(config.height),
+            zCount: Int32(ProtoChunk.sideLength)
+        ),
+        densityFunctionRegistry: worldGenerator.densityFunctionRegistryForTesting(),
+        finalDensity: try worldGenerator.cachedFinalDensityFunction()
     )
 }
 #endif

@@ -864,10 +864,15 @@ final class ChunkCache2D: DensityFunction, DensityFunctionWrapperIntrospectable 
     var wrappedDensityFunction: any DensityFunction {
         return self.delegate
     }
+
+    var bufferedSamplingBounds: ChunkSamplingBounds {
+        return self.bounds
+    }
 }
 
 final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
+    private let bounds: ChunkSamplingBounds
     private let startBiomeX: Int32
     private let startBiomeZ: Int32
     private let horizontalCacheSize: Int
@@ -875,6 +880,7 @@ final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectabl
 
     init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
         self.delegate = delegate
+        self.bounds = bounds
         self.startBiomeX = biomeCoord(fromBlock: bounds.minX)
         self.startBiomeZ = biomeCoord(fromBlock: bounds.minZ)
         self.horizontalCacheSize = Int(biomeCoord(fromBlock: Int32(ProtoChunk.sideLength))) + 1
@@ -923,6 +929,10 @@ final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectabl
     var wrappedDensityFunction: any DensityFunction {
         return self.delegate
     }
+
+    var bufferedSamplingBounds: ChunkSamplingBounds {
+        return self.bounds
+    }
 }
 
 final class ChunkPositionCache: DensityFunction, DensityFunctionWrapperIntrospectable {
@@ -967,6 +977,10 @@ final class ChunkPositionCache: DensityFunction, DensityFunctionWrapperIntrospec
 
     var wrappedDensityFunction: any DensityFunction {
         return self.delegate
+    }
+
+    var bufferedSamplingBounds: ChunkSamplingBounds {
+        return self.bounds
     }
 }
 
@@ -1058,6 +1072,18 @@ final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntro
 
     var wrappedDensityFunction: any DensityFunction {
         return self.delegate
+    }
+
+    var bufferedSamplingBounds: ChunkSamplingBounds {
+        return self.bounds
+    }
+
+    var bufferedHorizontalCellBlockCount: Int32 {
+        return self.horizontalCellBlockCount
+    }
+
+    var bufferedVerticalCellBlockCount: Int32 {
+        return self.verticalCellBlockCount
     }
 }
 
@@ -3375,6 +3401,23 @@ public final class WorldGenerator {
         return try self.validatedDirectPointSamplingDensityFunctions(
             for: "Final density sampling"
         ).cacheless.finalDensity.sample(at: pos)
+    }
+
+    // Currently visible for testing only.
+    func cachedFinalDensityFunction() throws -> any DensityFunction {
+        return try self.validatedDirectPointSamplingDensityFunctions(
+            for: "Cached final density access"
+        ).cached.finalDensity
+    }
+
+    // Currently visible for testing only.
+    func terrainSettingsForTesting() throws -> NoiseSettings {
+        try self.validatedTerrainConfig(for: "Terrain settings access")
+    }
+
+    // Currently visible for testing only.
+    func densityFunctionRegistryForTesting() -> Registry<DensityFunction> {
+        self.registries.densityFunctionRegistry
     }
 
     /// Samples terrain in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.

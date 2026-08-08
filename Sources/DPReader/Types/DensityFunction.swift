@@ -43,8 +43,9 @@ public protocol DensityFunctionBaker {
     func bake(interpolatedNoise: InterpolatedNoise) throws -> InterpolatedNoise
 }
 
-/// Allows wrappers to expose their delegate for bound propagation.
-protocol DensityFunctionWrapperIntrospectable {
+/// Allows wrappers to expose their delegate for bound propagation
+/// and compilation delegation.
+protocol DensityFunctionWrapperIntrospectable: CompilableDensityFunction {
     var wrappedDensityFunction: any DensityFunction { get }
 }
 
@@ -58,6 +59,7 @@ extension DensityFunction where Self: DensityFunctionWrapperIntrospectable {
     }
 }
 
+@inline(__always)
 private func sameDensityFunctionInstance(_ lhs: any DensityFunction, _ rhs: any DensityFunction) -> Bool {
     guard type(of: lhs) is AnyObject.Type, type(of: rhs) is AnyObject.Type else { return false }
     return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
@@ -335,7 +337,7 @@ public struct DensityFunctionSimplexNoise {
 
 /// A density function that always returns the same value.
 @TestVisible(property: "testingAttributes") public final class ConstantDensityFunction: DensityFunction {
-    private let value: Double
+    internal let value: Double
 
     public init(value: Double) {
         self.value = value
@@ -370,8 +372,8 @@ public struct DensityFunctionSimplexNoise {
 /// A density function that performs one of multiple numerical operations
 /// on the output of another density function.
 @TestVisible(property: "testingAttributes") public final class UnaryDensityFunction: DensityFunction {
-    private let operand: DensityFunction
-    private let operation: OperationType
+    internal let operand: DensityFunction
+    internal let operation: OperationType
 
     public init(operand: DensityFunction, type: OperationType) {
         self.operand = operand
@@ -453,9 +455,9 @@ public struct DensityFunctionSimplexNoise {
 /// A density function that performs one of multiple numerical operations
 /// on the output of two other density functions to combine them into a single number.
 @TestVisible(property: "testingAttributes") public final class BinaryDensityFunction: DensityFunction {
-    private let first: any DensityFunction
-    private let second: any DensityFunction
-    private let operation: OperationType
+    internal let first: any DensityFunction
+    internal let second: any DensityFunction
+    internal let operation: OperationType
     private let secondLowerBound: Double
     private let secondUpperBound: Double
 
@@ -733,12 +735,14 @@ public struct DensityFunctionSimplexNoise {
         try container.encode(self.whenOutOfRange, forKey: .whenOutOfRange)
     }
 
+    @inline(__always)
     public func sample(at pos: PosInt3D) -> Double {
-        let x = self.inputChoice.sample(at: pos)
-        if (self.minInclusive <= x && x < self.maxExclusive) {
-            return self.sampleBranch(self.whenInRange, inputValue: x, at: pos)
+        let inputChoice = self.inputChoice
+        let inputValue = inputChoice.sample(at: pos)
+        if self.minInclusive <= inputValue && inputValue < self.maxExclusive {
+            return self.sampleBranch(self.whenInRange, inputValue: inputValue, at: pos)
         }
-        return self.sampleBranch(self.whenOutOfRange, inputValue: x, at: pos)
+        return self.sampleBranch(self.whenOutOfRange, inputValue: inputValue, at: pos)
     }
 
     public func lowerBoundValue() -> Double {
@@ -796,18 +800,20 @@ public struct DensityFunctionSimplexNoise {
         case type = "type"
     }
 
+    @inline(__always)
     private func sampleBranch(
         _ branch: any DensityFunction,
         inputValue: Double,
         at pos: PosInt3D
     ) -> Double {
-        if sameDensityFunctionInstance(branch, self.inputChoice) {
+        let inputChoice = self.inputChoice
+        if sameDensityFunctionInstance(branch, inputChoice) {
             return inputValue
         }
         if let constant = branch as? ConstantDensityFunction {
             return constant.constantValue
         }
-        if let unary = branch as? UnaryDensityFunction, sameDensityFunctionInstance(unary.inputOperand, self.inputChoice) {
+        if let unary = branch as? UnaryDensityFunction, sameDensityFunctionInstance(unary.inputOperand, inputChoice) {
             switch unary.operationType {
             case .ABS:
                 return abs(inputValue)
@@ -826,12 +832,12 @@ public struct DensityFunctionSimplexNoise {
                 return 1.0 / inputValue
             }
         }
-        if let clampFunction = branch as? ClampDensityFunction, sameDensityFunctionInstance(clampFunction.clampedInput, self.inputChoice) {
+        if let clampFunction = branch as? ClampDensityFunction, sameDensityFunctionInstance(clampFunction.clampedInput, inputChoice) {
             return clamp(value: inputValue, lowerBound: clampFunction.minimumValue, upperBound: clampFunction.maximumValue)
         }
         if let binary = branch as? BinaryDensityFunction {
-            let leftIsInput = sameDensityFunctionInstance(binary.firstOperand, self.inputChoice)
-            let rightIsInput = sameDensityFunctionInstance(binary.secondOperand, self.inputChoice)
+            let leftIsInput = sameDensityFunctionInstance(binary.firstOperand, inputChoice)
+            let rightIsInput = sameDensityFunctionInstance(binary.secondOperand, inputChoice)
             if leftIsInput || rightIsInput {
                 let other = leftIsInput ? binary.secondOperand : binary.firstOperand
                 if let constant = other as? ConstantDensityFunction {
@@ -1098,7 +1104,7 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Marks a cache. Does nothing by itself.
-@TestVisible(property: "testingAttributes") public final class CacheMarker: DensityFunction {
+@TestVisible(property: "testingAttributes") public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospectable {
     public let type: CacheType
     public let argument: DensityFunction
 
@@ -1138,6 +1144,10 @@ public struct DensityFunctionSimplexNoise {
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
         return try baker.bake(cacheMarker: self)
+    }
+
+    var wrappedDensityFunction: any DensityFunction {
+        return self.argument
     }
 
     public enum CacheType: String, Decodable {

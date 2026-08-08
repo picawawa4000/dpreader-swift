@@ -69,9 +69,9 @@ import Testing
     let finalDensity = noiseRouter.finalDensity as! ReferenceDensityFunction
     #expect(finalDensity.targetKey.name == "minecraft:final_density")
     let preliminary = try #require(noiseRouter.preliminarySurfaceLevel as? ConstantDensityFunction)
-    #expect(preliminary.testingAttributes.value == 1.0)
+    #expect(preliminary.value == 1.0)
     let weirdness = noiseRouter.weirdness as! ConstantDensityFunction
-    #expect(weirdness.testingAttributes.value == 15.0)
+    #expect(weirdness.value == 15.0)
     #expect(noiseRouter.initialDensityWithoutJaggedness == nil)
 }
 
@@ -100,7 +100,7 @@ import Testing
     let noiseRouter = try decoder.decode(NoiseRouter.self, from: data)
     #expect(noiseRouter.preliminarySurfaceLevel == nil)
     let initialDensity = try #require(noiseRouter.initialDensityWithoutJaggedness as? ConstantDensityFunction)
-    #expect(initialDensity.testingAttributes.value == 2.0)
+    #expect(initialDensity.value == 2.0)
 }
 
 @Test func testEncodingForNoiseSettings() async throws {
@@ -285,7 +285,7 @@ import Testing
     #expect(noiseSettings.sizeHorizontal == 2)
     #expect(noiseSettings.sizeVertical == 4)
     let humidity = noiseSettings.noiseRouter.humidity as! ConstantDensityFunction
-    #expect(humidity.testingAttributes.value == 2.75)
+    #expect(humidity.value == 2.75)
 }
 
 @Test func testEncodingForSurfaceRules() async throws {
