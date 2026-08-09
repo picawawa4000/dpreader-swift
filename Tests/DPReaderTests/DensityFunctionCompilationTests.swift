@@ -35,6 +35,14 @@ private final class CountingDensityFunction: DensityFunction {
     }
 }
 
+private struct CompilerTestNoise: DensityFunctionNoise {
+    let key = RegistryKey<NoiseDefinition>(referencing: "test:compiler_noise")
+
+    func sample(x: Double, y: Double, z: Double) -> Double {
+        x * 0.25 + y * 0.5 - z * 0.75
+    }
+}
+
 private func assertCompiledSampleMatches(
     _ densityFunction: any DensityFunction,
     label: String,
@@ -102,6 +110,34 @@ private func assertCompiledBufferMatches(
     let compiledValue = compiledFunction(0, 0, 0)
     print("done!")
     #expect(checkDouble(realValue, compiledValue))
+}
+
+@Test func testCompiledShiftedNoiseCoordinates() throws {
+    let shiftInput = YClampedGradient(fromY: -8, toY: 12, fromValue: -1.5, toValue: 2.5)
+    let shiftedNoise = ShiftedNoise(
+        noise: CompilerTestNoise(),
+        shiftX: BinaryDensityFunction(
+            firstOperand: shiftInput,
+            secondOperand: ConstantDensityFunction(value: 0.75),
+            type: .ADD
+        ),
+        shiftY: UnaryDensityFunction(operand: shiftInput, type: .HALF_NEGATIVE),
+        shiftZ: ClampDensityFunction(input: shiftInput, lowerBound: -0.25, upperBound: 1.25),
+        scaleXZ: 0.25,
+        scaleY: 0.5
+    )
+
+    try assertCompiledSampleMatches(
+        shiftedNoise,
+        label: "shifted_noise_coordinates",
+        at: PosInt3D(x: -7, y: 3, z: 11)
+    )
+    try assertCompiledBufferMatches(
+        shiftedNoise,
+        label: "shifted_noise_coordinates",
+        bufferContext: CompiledDensityFunctionBufferContext(xCount: 3, yCount: 4, zCount: 2, xStep: 2, yStep: 3, zStep: 5),
+        basePos: PosInt3D(x: -7, y: -4, z: 11)
+    )
 }
 
 @Test func testCompiledDensityFunctionBufferedCorrectness() throws {

@@ -1615,23 +1615,33 @@ private final class LockedArray<Value>: @unchecked Sendable {
 @Test func benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY() throws {
     let settings = try makeVanillaTerrainBenchmarkWorldGenerator().terrainSettingsForTesting()
     let cellSize = DensityFunctionCellSize(sizeHorizontal: settings.sizeHorizontal, sizeVertical: settings.sizeVertical)
+    let chunkSide = Int(ProcessInfo.processInfo.environment["DPREADER_CELL_BULK_BENCHMARK_CHUNK_SIDE"] ?? "") ?? 20
+    precondition(chunkSide > 0)
     let context = try makeVanillaNoiseRouterCellBulkBenchmarkContext(
         cellVolume: DensityFunctionCellVolume(
-            xCount: Int32(ProtoChunk.sideLength) / cellSize.horizontalBlockCount,
+            xCount: Int32(ProtoChunk.sideLength * chunkSide) / cellSize.horizontalBlockCount,
             yCount: Int32(settings.height) / cellSize.verticalBlockCount,
-            zCount: Int32(ProtoChunk.sideLength) / cellSize.horizontalBlockCount
+            zCount: Int32(ProtoChunk.sideLength * chunkSide) / cellSize.horizontalBlockCount
         )
     )
+    let chunkCount = chunkSide * chunkSide
+    let functionFilter = ProcessInfo.processInfo.environment["DPREADER_CELL_BULK_BENCHMARK_FUNCTION"]
+    let compiledOnly = ProcessInfo.processInfo.environment["DPREADER_CELL_BULK_BENCHMARK_COMPILED_ONLY"] == "1"
 
-    for (label, function) in context.functions {
-        let interpretedStart = DispatchTime.now().uptimeNanoseconds
-        let expected = sampleDensityFunctionInCellBulkOrder(
-            function,
-            cellSize: context.cellSize,
-            cellVolume: context.cellVolume,
-            basePos: context.basePos
-        )
-        let interpretedNanos = DispatchTime.now().uptimeNanoseconds - interpretedStart
+    for (label, function) in context.functions where functionFilter.map({ $0 == label }) ?? true {
+        let interpreted: (hash: UInt64, count: Int, nanos: UInt64)?
+        if compiledOnly {
+            interpreted = nil
+        } else {
+            let interpretedStart = DispatchTime.now().uptimeNanoseconds
+            let expected = densityFunctionChecksumInCellBulkOrder(
+                function,
+                cellSize: context.cellSize,
+                cellVolume: context.cellVolume,
+                basePos: context.basePos
+            )
+            interpreted = (expected.hash, expected.count, DispatchTime.now().uptimeNanoseconds - interpretedStart)
+        }
         let compiled = try evaluateCompiledCellBulk(
             function,
             cellSize: context.cellSize,
@@ -1639,14 +1649,22 @@ private final class LockedArray<Value>: @unchecked Sendable {
             registry: context.registry,
             basePos: context.basePos
         )
-        if let mismatch = firstCellBulkMismatch(reference: expected, candidate: compiled.values) {
-            Issue.record("Cell-bulk noise router benchmark mismatch for \(label): \(mismatch)")
+        if let interpreted {
+            let compiledChecksum = densityFunctionChecksum(compiled.values)
+            #expect(compiledChecksum == interpreted.hash, "Cell-bulk noise router benchmark checksum mismatch for \(label)")
+            print(
+                "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY:", label,
+                interpreted.count, "samples; interpreted", interpreted.nanos, "ns; compiled", compiled.nanos, "ns; speedup",
+                String(format: "%.2f", Double(interpreted.nanos) / Double(max(compiled.nanos, 1))), "x; caches", compiled.cacheCount,
+                "; interpreted", interpreted.nanos / UInt64(chunkCount), "nspc; compiled", compiled.nanos / UInt64(chunkCount), "nspc"
+            )
+        } else {
+            print(
+                "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY:", label,
+                compiled.values.count, "samples; compiled", compiled.nanos, "ns; caches", compiled.cacheCount,
+                "; compiled", compiled.nanos / UInt64(chunkCount), "nspc"
+            )
         }
-        print(
-            "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY:", label,
-            expected.count, "samples; interpreted", interpretedNanos, "ns; compiled", compiled.nanos, "ns; speedup",
-            String(format: "%.2f", Double(interpretedNanos) / Double(max(compiled.nanos, 1))), "x; caches", compiled.cacheCount
-        )
     }
 }
 
@@ -1774,6 +1792,46 @@ private func sampleDensityFunctionInCellBulkOrder(
         }
     }
     return values
+}
+
+private func densityFunctionChecksumInCellBulkOrder(
+    _ function: any DensityFunction,
+    cellSize: DensityFunctionCellSize,
+    cellVolume: DensityFunctionCellVolume,
+    basePos: PosInt3D
+) -> (hash: UInt64, count: Int) {
+    var hash: UInt64 = 1_469_598_103_934_665_603
+    var count = 0
+    for cellZ in 0..<Int(cellVolume.zCount) {
+        for cellX in 0..<Int(cellVolume.xCount) {
+            for cellY in 0..<Int(cellVolume.yCount) {
+                for localZ in 0..<Int(cellSize.horizontalBlockCount) {
+                    for localX in 0..<Int(cellSize.horizontalBlockCount) {
+                        for localY in 0..<Int(cellSize.verticalBlockCount) {
+                            let value = function.sample(at: PosInt3D(
+                                x: basePos.x + Int32(cellX) * cellSize.horizontalBlockCount + Int32(localX),
+                                y: basePos.y + Int32(cellY) * cellSize.verticalBlockCount + Int32(localY),
+                                z: basePos.z + Int32(cellZ) * cellSize.horizontalBlockCount + Int32(localZ)
+                            ))
+                            hash ^= UInt64(bitPattern: Int64((value * 1_000_000).rounded(.toNearestOrEven)))
+                            hash &*= 1_099_511_628_211
+                            count += 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (hash, count)
+}
+
+private func densityFunctionChecksum(_ values: [Double]) -> UInt64 {
+    var hash: UInt64 = 1_469_598_103_934_665_603
+    for value in values {
+        hash ^= UInt64(bitPattern: Int64((value * 1_000_000).rounded(.toNearestOrEven)))
+        hash &*= 1_099_511_628_211
+    }
+    return hash
 }
 
 private func firstCellBulkMismatch(reference: [Double], candidate: [Double]) -> String? {

@@ -3473,7 +3473,25 @@ extension NoiseDensityFunction: CompilableDensityFunction {
         z: LLVMValueRef
     ) throws -> LLVMValueRef {
         try context.cachedCompile(self, x: x, y: y, z: z) {
-            context.buildRuntimeDensitySampleCall(self, x: x, y: y, z: z, name: "noise")
+            let sampleX = LLVMBuildFMul(
+                context.builder,
+                LLVMBuildSIToFP(context.builder, x, context.doubleType, "noise.x")!,
+                context.constant(self.xzScaleValue),
+                "noise.sample_x"
+            )!
+            let sampleY = LLVMBuildFMul(
+                context.builder,
+                LLVMBuildSIToFP(context.builder, y, context.doubleType, "noise.y")!,
+                context.constant(self.yScaleValue),
+                "noise.sample_y"
+            )!
+            let sampleZ = LLVMBuildFMul(
+                context.builder,
+                LLVMBuildSIToFP(context.builder, z, context.doubleType, "noise.z")!,
+                context.constant(self.xzScaleValue),
+                "noise.sample_z"
+            )!
+            return context.buildRuntimeNoiseSampleCall(self.noiseSampler, x: sampleX, y: sampleY, z: sampleZ, name: "noise")
         }
     }
 }
@@ -3486,7 +3504,55 @@ extension ShiftedNoise: CompilableDensityFunction {
         z: LLVMValueRef
     ) throws -> LLVMValueRef {
         try context.cachedCompile(self, x: x, y: y, z: z) {
-            context.buildRuntimeDensitySampleCall(self, x: x, y: y, z: z, name: "shifted_noise")
+            guard let shiftX = self.shiftXFunction as? any CompilableDensityFunction,
+                  let shiftY = self.shiftYFunction as? any CompilableDensityFunction,
+                  let shiftZ = self.shiftZFunction as? any CompilableDensityFunction else {
+                throw DensityFunctionCompilationError.nonCompilableDensityFunction
+            }
+
+            let shiftXValue = try shiftX.compile(inContext: context, x: x, y: y, z: z)
+            let shiftYValue = try shiftY.compile(inContext: context, x: x, y: y, z: z)
+            let shiftZValue = try shiftZ.compile(inContext: context, x: x, y: y, z: z)
+            let sampleX = LLVMBuildFAdd(
+                context.builder,
+                LLVMBuildFMul(
+                    context.builder,
+                    LLVMBuildSIToFP(context.builder, x, context.doubleType, "shifted_noise.x")!,
+                    context.constant(self.xzScaleValue),
+                    "shifted_noise.scaled_x"
+                )!,
+                shiftXValue,
+                "shifted_noise.sample_x"
+            )!
+            let sampleY = LLVMBuildFAdd(
+                context.builder,
+                LLVMBuildFMul(
+                    context.builder,
+                    LLVMBuildSIToFP(context.builder, y, context.doubleType, "shifted_noise.y")!,
+                    context.constant(self.yScaleValue),
+                    "shifted_noise.scaled_y"
+                )!,
+                shiftYValue,
+                "shifted_noise.sample_y"
+            )!
+            let sampleZ = LLVMBuildFAdd(
+                context.builder,
+                LLVMBuildFMul(
+                    context.builder,
+                    LLVMBuildSIToFP(context.builder, z, context.doubleType, "shifted_noise.z")!,
+                    context.constant(self.xzScaleValue),
+                    "shifted_noise.scaled_z"
+                )!,
+                shiftZValue,
+                "shifted_noise.sample_z"
+            )!
+            return context.buildRuntimeNoiseSampleCall(
+                self.noiseSampler,
+                x: sampleX,
+                y: sampleY,
+                z: sampleZ,
+                name: "shifted_noise"
+            )
         }
     }
 }

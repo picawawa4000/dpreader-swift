@@ -80,7 +80,6 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
             "Bulk density evaluation base position must be aligned to the compiled cell size.")
 
         let requiredCacheValues = self.caches.count * self.cellSize.blockCount
-        var internalCache = [Double](repeating: 0.0, count: requiredCacheValues)
         let externalContext: CompiledDensityFunctionBulkEvaluationContext? = if self.useExternalCacheStorage {
             runtimeContextPointer?.assumingMemoryBound(to: CompiledDensityFunctionBulkEvaluationContext.self).pointee
         } else {
@@ -99,6 +98,12 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
         let yCellCount = Int(self.cellVolume.yCount)
         let zCellCount = Int(self.cellVolume.zCount)
         let columnValueCount = yCellCount * self.cellSize.blockCount
+        let horizontalInt = Int(horizontal)
+        let columnPositions = self.columnPositions(baseX: baseX, baseY: baseY, baseZ: baseZ)
+        var cachePositions = [PosInt3D](
+            repeating: PosInt3D(x: baseX, y: baseY, z: baseZ),
+            count: horizontalInt * horizontalInt
+        )
         var outputOffset = 0
 
         func evaluateColumns(cachePointer: UnsafeMutablePointer<Double>?) {
@@ -108,6 +113,7 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                     let columnBaseX = baseX + Int32(cellX) * horizontal
                     self.fillCaches(
                         cachePointer: cachePointer,
+                        positions: &cachePositions,
                         columnBaseX: columnBaseX,
                         baseY: baseY,
                         columnBaseZ: columnBaseZ,
@@ -115,7 +121,6 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                         volumeBaseX: baseX,
                         volumeBaseZ: baseZ
                     )
-                    let positions = self.columnPositions(baseX: columnBaseX, baseY: baseY, baseZ: columnBaseZ)
                     var evaluator = BulkDensityBufferEvaluator(
                         registry: self.registry,
                         cacheIDs: self.cacheIDs,
@@ -131,10 +136,12 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                         interpolators: interpolatorValues,
                         mode: .normal
                     )
-                    let values = evaluator.evaluate(self.root, at: positions)
+                    let values = evaluator.evaluate(self.root, at: columnPositions)
                     precondition(values.count == columnValueCount)
-                    for index in values.indices {
-                        outputPointer[outputOffset + index] = values[index]
+                    values.withUnsafeBufferPointer { valuesBuffer in
+                        if let source = valuesBuffer.baseAddress {
+                            outputPointer.advanced(by: outputOffset).update(from: source, count: values.count)
+                        }
                     }
                     outputOffset += values.count
                 }
@@ -144,6 +151,7 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
         if let externalCache = externalContext?.cacheValues {
             evaluateColumns(cachePointer: externalCache)
         } else {
+            var internalCache = [Double](repeating: 0.0, count: requiredCacheValues)
             internalCache.withUnsafeMutableBufferPointer { cacheBuffer in
                 evaluateColumns(cachePointer: cacheBuffer.baseAddress)
             }
@@ -174,6 +182,7 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
 
     private func fillCaches(
         cachePointer: UnsafeMutablePointer<Double>?,
+        positions: inout [PosInt3D],
         columnBaseX: Int32,
         baseY: Int32,
         columnBaseZ: Int32,
@@ -187,80 +196,98 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
         }
         let horizontal = Int(self.cellSize.horizontalBlockCount)
         let vertical = Int(self.cellSize.verticalBlockCount)
+        var evaluator = BulkDensityBufferEvaluator(
+            registry: self.registry,
+            cacheIDs: self.cacheIDs,
+            cachePointer: cachePointer,
+            cacheElementsPerCell: self.cellSize.blockCount,
+            cellSize: self.cellSize,
+            columnBaseX: columnBaseX,
+            columnBaseZ: columnBaseZ,
+            volumeBaseX: volumeBaseX,
+            volumeBaseY: baseY,
+            volumeBaseZ: volumeBaseZ,
+            cellVolume: self.cellVolume,
+            interpolators: interpolatorValues,
+            mode: .normal
+        )
         for cache in self.caches {
-            var positions: [PosInt3D] = []
-            positions.reserveCapacity(horizontal * horizontal)
             for localZ in 0..<horizontal {
                 for localX in 0..<horizontal {
                     let worldX = columnBaseX + Int32(localX)
                     let worldZ = columnBaseZ + Int32(localZ)
+                    let index = localZ * horizontal + localX
                     switch cache.kind {
                     case .flat:
-                        positions.append(PosInt3D(
+                        positions[index] = PosInt3D(
                             x: floorDiv(worldX, by: 4) * 4,
                             y: 0,
                             z: floorDiv(worldZ, by: 4) * 4
-                        ))
+                        )
                     case .cache2D:
-                        positions.append(PosInt3D(x: worldX, y: baseY, z: worldZ))
+                        positions[index] = PosInt3D(x: worldX, y: baseY, z: worldZ)
                     }
                 }
             }
-            var evaluator = BulkDensityBufferEvaluator(
-                registry: self.registry,
-                cacheIDs: self.cacheIDs,
-                cachePointer: cachePointer,
-                cacheElementsPerCell: self.cellSize.blockCount,
-                cellSize: self.cellSize,
-                columnBaseX: columnBaseX,
-                columnBaseZ: columnBaseZ,
-                volumeBaseX: volumeBaseX,
-                volumeBaseY: baseY,
-                volumeBaseZ: volumeBaseZ,
-                cellVolume: self.cellVolume,
-                interpolators: interpolatorValues,
-                mode: .normal
-            )
             let values = evaluator.evaluate(cache.delegate, at: positions)
             let cacheBase = cache.id * self.cellSize.blockCount
             for localZ in 0..<horizontal {
                 for localX in 0..<horizontal {
                     let value = values[localZ * horizontal + localX]
                     let blockBase = cacheBase + (localZ * horizontal + localX) * vertical
-                    for localY in 0..<vertical {
-                        cachePointer[blockBase + localY] = value
-                    }
+                    cachePointer.advanced(by: blockBase).update(repeating: value, count: vertical)
                 }
             }
         }
     }
 
     private func precomputeInterpolators(baseX: Int32, baseY: Int32, baseZ: Int32) -> [ObjectIdentifier: BulkDensityInterpolatorValues] {
+        struct DelegateKey: Hashable {
+            let identity: ObjectIdentifier
+            let isFlat2D: Bool
+        }
+
         var result: [ObjectIdentifier: BulkDensityInterpolatorValues] = [:]
+        var valuesByDelegate: [DelegateKey: BulkDensityInterpolatorValues] = [:]
         let horizontal = self.cellSize.horizontalBlockCount
         let vertical = self.cellSize.verticalBlockCount
+        let xCornerCount = Int(self.cellVolume.xCount) + 1
+        let yCornerCount = Int(self.cellVolume.yCount) + 1
+        let zCornerCount = Int(self.cellVolume.zCount) + 1
+        let batchSize = 32_768
         for interpolator in self.interpolators {
-            var positions: [PosInt3D] = []
-            if interpolator.isFlat2D {
-                positions.reserveCapacity((Int(self.cellVolume.xCount) + 1) * (Int(self.cellVolume.zCount) + 1))
-                for z in 0...Int(self.cellVolume.zCount) {
-                    for x in 0...Int(self.cellVolume.xCount) {
-                        positions.append(PosInt3D(
-                            x: baseX + Int32(x) * horizontal,
-                            y: 0,
-                            z: baseZ + Int32(z) * horizontal
-                        ))
-                    }
-                }
-            } else {
-                positions.reserveCapacity(
-                    (Int(self.cellVolume.xCount) + 1)
-                        * (Int(self.cellVolume.yCount) + 1)
-                        * (Int(self.cellVolume.zCount) + 1)
-                )
-                for z in 0...Int(self.cellVolume.zCount) {
-                    for x in 0...Int(self.cellVolume.xCount) {
-                        for y in 0...Int(self.cellVolume.yCount) {
+            let delegateKey = DelegateKey(
+                identity: ObjectIdentifier(interpolator.delegate as AnyObject),
+                isFlat2D: interpolator.isFlat2D
+            )
+            if let existing = valuesByDelegate[delegateKey] {
+                result[interpolator.identity] = existing
+                continue
+            }
+
+            let valueCount = interpolator.isFlat2D
+                ? xCornerCount * zCornerCount
+                : xCornerCount * yCornerCount * zCornerCount
+            let cornerValues = Array(unsafeUninitializedCapacity: valueCount) { cornerBuffer, initializedCount in
+                var batchStart = 0
+                while batchStart < valueCount {
+                    let batchEnd = min(batchStart + batchSize, valueCount)
+                    var positions: [PosInt3D] = []
+                    positions.reserveCapacity(batchEnd - batchStart)
+                    for linearIndex in batchStart..<batchEnd {
+                        if interpolator.isFlat2D {
+                            let x = linearIndex % xCornerCount
+                            let z = linearIndex / xCornerCount
+                            positions.append(PosInt3D(
+                                x: baseX + Int32(x) * horizontal,
+                                y: 0,
+                                z: baseZ + Int32(z) * horizontal
+                            ))
+                        } else {
+                            let y = linearIndex % yCornerCount
+                            let columnIndex = linearIndex / yCornerCount
+                            let x = columnIndex % xCornerCount
+                            let z = columnIndex / xCornerCount
                             positions.append(PosInt3D(
                                 x: baseX + Int32(x) * horizontal,
                                 y: baseY + Int32(y) * vertical,
@@ -268,27 +295,38 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                             ))
                         }
                     }
+                    var evaluator = BulkDensityBufferEvaluator(
+                        registry: self.registry,
+                        cacheIDs: [:],
+                        cachePointer: nil,
+                        cacheElementsPerCell: self.cellSize.blockCount,
+                        cellSize: self.cellSize,
+                        columnBaseX: baseX,
+                        columnBaseZ: baseZ,
+                        volumeBaseX: baseX,
+                        volumeBaseY: baseY,
+                        volumeBaseZ: baseZ,
+                        cellVolume: self.cellVolume,
+                        interpolators: result,
+                        mode: .interpolatorCorners(baseY: baseY)
+                    )
+                    let values = evaluator.evaluate(interpolator.delegate, at: positions)
+                    values.withUnsafeBufferPointer { valuesBuffer in
+                        cornerBuffer.baseAddress!.advanced(by: batchStart).initialize(
+                            from: valuesBuffer.baseAddress!,
+                            count: values.count
+                        )
+                    }
+                    initializedCount += values.count
+                    batchStart = batchEnd
                 }
             }
-            var evaluator = BulkDensityBufferEvaluator(
-                registry: self.registry,
-                cacheIDs: [:],
-                cachePointer: nil,
-                cacheElementsPerCell: self.cellSize.blockCount,
-                cellSize: self.cellSize,
-                columnBaseX: baseX,
-                columnBaseZ: baseZ,
-                volumeBaseX: baseX,
-                volumeBaseY: baseY,
-                volumeBaseZ: baseZ,
-                cellVolume: self.cellVolume,
-                interpolators: result,
-                mode: .interpolatorCorners(baseY: baseY)
-            )
-            result[interpolator.identity] = BulkDensityInterpolatorValues(
-                values: evaluator.evaluate(interpolator.delegate, at: positions),
+            let precomputed = BulkDensityInterpolatorValues(
+                values: cornerValues,
                 isFlat2D: interpolator.isFlat2D
             )
+            valuesByDelegate[delegateKey] = precomputed
+            result[interpolator.identity] = precomputed
         }
         return result
     }
@@ -439,6 +477,7 @@ private struct BulkDensityBufferEvaluator {
     let cellVolume: DensityFunctionCellVolume
     let interpolators: [ObjectIdentifier: BulkDensityInterpolatorValues]
     let mode: BulkDensityEvaluationMode
+    private var canonicalMemo: [ObjectIdentifier: [Double]] = [:]
     private var memo: [MemoKey: [Double]] = [:]
     private var referenceStack: [String] = []
 
@@ -474,6 +513,14 @@ private struct BulkDensityBufferEvaluator {
 
     mutating func evaluate(_ function: any DensityFunction, at positions: [PosInt3D]) -> [Double] {
         let identity = ObjectIdentifier(function as AnyObject)
+        if self.isCanonicalColumn(positions) {
+            if let values = self.canonicalMemo[identity] {
+                return values
+            }
+            let values = self.evaluateUncached(function, identity: identity, positions: positions)
+            self.canonicalMemo[identity] = values
+            return values
+        }
         let key = Self.memoKey(identity: identity, positions: positions)
         if let values = self.memo[key] {
             return values
@@ -546,6 +593,23 @@ private struct BulkDensityBufferEvaluator {
             return values
         }
         if let binary = function as? BinaryDensityFunction {
+            if let constant = binary.secondOperand as? ConstantDensityFunction {
+                var values = self.evaluate(binary.firstOperand, at: positions)
+                if binary.operationType == .MULTIPLY && values.allSatisfy({ $0 == 0.0 }) {
+                    return values
+                }
+                Self.applyBinary(binary.operationType, values: &values, scalar: constant.constantValue)
+                return values
+            }
+            if let constant = binary.firstOperand as? ConstantDensityFunction,
+               binary.operationType == .ADD || binary.operationType == .MULTIPLY {
+                if binary.operationType == .MULTIPLY && constant.constantValue == 0.0 {
+                    return [Double](repeating: 0.0, count: positions.count)
+                }
+                var values = self.evaluate(binary.secondOperand, at: positions)
+                Self.applyBinary(binary.operationType, values: &values, scalar: constant.constantValue)
+                return values
+            }
             var lhs = self.evaluate(binary.firstOperand, at: positions)
             if binary.operationType == .MULTIPLY && lhs.allSatisfy({ $0 == 0.0 }) {
                 return lhs
@@ -584,6 +648,9 @@ private struct BulkDensityBufferEvaluator {
                 guard let id = self.cacheIDs[identity], let cachePointer else {
                     preconditionFailure("Bulk cache was not assigned storage during compilation.")
                 }
+                if self.isCanonicalColumn(positions) {
+                    return self.sampleCachedColumn(id: id, cachePointer: cachePointer)
+                }
                 return positions.map { position in
                     let localX = Int(floorMod(position.x - self.columnBaseX, self.cellSize.horizontalBlockCount))
                     let localY = Int(floorMod(position.y - self.volumeBaseY, self.cellSize.verticalBlockCount))
@@ -607,6 +674,9 @@ private struct BulkDensityBufferEvaluator {
             case .normal:
                 guard let precomputed = self.interpolators[identity] else {
                     preconditionFailure("Interpolator was not precomputed.")
+                }
+                if self.isCanonicalColumn(positions) {
+                    return self.sampleColumnInterpolator(precomputed)
                 }
                 if precomputed.isFlat2D {
                     return self.sampleFlat2DInterpolator(precomputed, at: positions)
@@ -636,11 +706,12 @@ private struct BulkDensityBufferEvaluator {
             return mask.indices.map { mask[$0] ? inside[$0] : outside[$0] }
         }
         if let noise = function as? NoiseDensityFunction {
+            let offsets = self.columnOffsets(for: positions)
             return positions.map {
                 noise.noiseSampler.sample(
-                    x: Double($0.x) * noise.xzScaleValue,
+                    x: Double($0.x + offsets.x) * noise.xzScaleValue,
                     y: Double($0.y) * noise.yScaleValue,
-                    z: Double($0.z) * noise.xzScaleValue
+                    z: Double($0.z + offsets.z) * noise.xzScaleValue
                 )
             }
         }
@@ -648,22 +719,24 @@ private struct BulkDensityBufferEvaluator {
             let shiftX = self.evaluate(shifted.shiftXFunction, at: positions)
             let shiftY = self.evaluate(shifted.shiftYFunction, at: positions)
             let shiftZ = self.evaluate(shifted.shiftZFunction, at: positions)
+            let offsets = self.columnOffsets(for: positions)
             return positions.indices.map { index in
                 shifted.noiseSampler.sample(
-                    x: Double(positions[index].x) * shifted.xzScaleValue + shiftX[index],
+                    x: Double(positions[index].x + offsets.x) * shifted.xzScaleValue + shiftX[index],
                     y: Double(positions[index].y) * shifted.yScaleValue + shiftY[index],
-                    z: Double(positions[index].z) * shifted.xzScaleValue + shiftZ[index]
+                    z: Double(positions[index].z + offsets.z) * shifted.xzScaleValue + shiftZ[index]
                 )
             }
         }
         if let weird = function as? WeirdScaledSampler {
             let input = self.evaluate(weird.inputFunction, at: positions)
+            let offsets = self.columnOffsets(for: positions)
             return positions.indices.map { index in
                 let scale = weird.scaleValue(input[index])
                 return scale * abs(weird.noiseSampler.sample(
-                    x: Double(positions[index].x) / scale,
+                    x: Double(positions[index].x + offsets.x) / scale,
                     y: Double(positions[index].y) / scale,
-                    z: Double(positions[index].z) / scale
+                    z: Double(positions[index].z + offsets.z) / scale
                 ))
             }
         }
@@ -675,12 +748,17 @@ private struct BulkDensityBufferEvaluator {
         }
         if let findTop = function as? FindTopSurface {
             let upper = self.evaluate(findTop.upperBoundFunction, at: positions)
+            let offsets = self.columnOffsets(for: positions)
             var output = [Double](repeating: Double(findTop.lowerBoundHeight), count: positions.count)
             for index in positions.indices {
                 let startingY = Int(floor(upper[index] / Double(findTop.cellHeightValue))) * findTop.cellHeightValue
                 if startingY <= findTop.lowerBoundHeight { continue }
                 for y in stride(from: startingY, through: findTop.lowerBoundHeight, by: -findTop.cellHeightValue) {
-                    let position = PosInt3D(x: positions[index].x, y: Int32(y), z: positions[index].z)
+                    let position = PosInt3D(
+                        x: positions[index].x + offsets.x,
+                        y: Int32(y),
+                        z: positions[index].z + offsets.z
+                    )
                     if self.evaluate(findTop.densityFunction, at: [position])[0] > 0.0 {
                         output[index] = Double(y)
                         break
@@ -689,7 +767,10 @@ private struct BulkDensityBufferEvaluator {
             }
             return output
         }
-        return positions.map { function.sample(at: $0) }
+        let offsets = self.columnOffsets(for: positions)
+        return positions.map {
+            function.sample(at: PosInt3D(x: $0.x + offsets.x, y: $0.y, z: $0.z + offsets.z))
+        }
     }
 
     private mutating func evaluateSpline(_ segment: SplineSegment, at positions: [PosInt3D]) -> [Float] {
@@ -802,6 +883,125 @@ private struct BulkDensityBufferEvaluator {
         )
     }
 
+    private func isCanonicalColumn(_ positions: [PosInt3D]) -> Bool {
+        let horizontal = self.cellSize.horizontalBlockCount
+        let vertical = self.cellSize.verticalBlockCount
+        let expectedCount = Int(self.cellVolume.yCount) * self.cacheElementsPerCell
+        guard positions.count == expectedCount, let first = positions.first, let last = positions.last else {
+            return false
+        }
+        return first.x == self.volumeBaseX
+            && first.y == self.volumeBaseY
+            && first.z == self.volumeBaseZ
+            && last.x == self.volumeBaseX + horizontal - 1
+            && last.y == self.volumeBaseY + self.cellVolume.yCount * vertical - 1
+            && last.z == self.volumeBaseZ + horizontal - 1
+    }
+
+    private func columnOffsets(for positions: [PosInt3D]) -> (x: Int32, z: Int32) {
+        guard self.isCanonicalColumn(positions) else {
+            return (0, 0)
+        }
+        return (self.columnBaseX - self.volumeBaseX, self.columnBaseZ - self.volumeBaseZ)
+    }
+
+    private func sampleCachedColumn(
+        id: Int,
+        cachePointer: UnsafeMutablePointer<Double>
+    ) -> [Double] {
+        let cellValueCount = self.cacheElementsPerCell
+        let cacheBase = id * cellValueCount
+        let outputCount = Int(self.cellVolume.yCount) * cellValueCount
+        return Array(unsafeUninitializedCapacity: outputCount) { output, initializedCount in
+            let source = UnsafePointer(cachePointer.advanced(by: cacheBase))
+            for cellY in 0..<Int(self.cellVolume.yCount) {
+                output.baseAddress!.advanced(by: cellY * cellValueCount).initialize(from: source, count: cellValueCount)
+                initializedCount += cellValueCount
+            }
+            if outputCount == 0 {
+                initializedCount = 0
+            }
+        }
+    }
+
+    private func sampleColumnInterpolator(_ precomputed: BulkDensityInterpolatorValues) -> [Double] {
+        let horizontal = Int(self.cellSize.horizontalBlockCount)
+        let vertical = Int(self.cellSize.verticalBlockCount)
+        let yCellCount = Int(self.cellVolume.yCount)
+        let xCornerCount = Int(self.cellVolume.xCount) + 1
+        let yCornerCount = yCellCount + 1
+        let cellX = Int((self.columnBaseX - self.volumeBaseX) / self.cellSize.horizontalBlockCount)
+        let cellZ = Int((self.columnBaseZ - self.volumeBaseZ) / self.cellSize.horizontalBlockCount)
+        let cellValueCount = self.cacheElementsPerCell
+        let horizontalDeltaScale = 1.0 / Double(horizontal)
+        let verticalDeltaScale = 1.0 / Double(vertical)
+        let outputCount = yCellCount * cellValueCount
+
+        return Array(unsafeUninitializedCapacity: outputCount) { output, initializedCount in
+            if precomputed.isFlat2D {
+                let index00 = cellZ * xCornerCount + cellX
+                let x0z0 = precomputed.values[index00]
+                let x1z0 = precomputed.values[index00 + 1]
+                let x0z1 = precomputed.values[index00 + xCornerCount]
+                let x1z1 = precomputed.values[index00 + xCornerCount + 1]
+                for localZ in 0..<horizontal {
+                    let deltaZ = Double(localZ) * horizontalDeltaScale
+                    for localX in 0..<horizontal {
+                        let deltaX = Double(localX) * horizontalDeltaScale
+                        let value = lerp(
+                            delta: deltaZ,
+                            start: lerp(delta: deltaX, start: x0z0, end: x1z0),
+                            end: lerp(delta: deltaX, start: x0z1, end: x1z1)
+                        )
+                        let valueBase = (localZ * horizontal + localX) * vertical
+                        for cellY in 0..<yCellCount {
+                            let outputBase = cellY * cellValueCount + valueBase
+                            output.baseAddress!.advanced(by: outputBase).initialize(repeating: value, count: vertical)
+                        }
+                    }
+                }
+                initializedCount = outputCount
+                return
+            }
+
+            @inline(__always)
+            func cornerIndex(_ x: Int, _ y: Int, _ z: Int) -> Int {
+                ((z * xCornerCount) + x) * yCornerCount + y
+            }
+            for cellY in 0..<yCellCount {
+                let x0y0z0 = precomputed.values[cornerIndex(cellX, cellY, cellZ)]
+                let x1y0z0 = precomputed.values[cornerIndex(cellX + 1, cellY, cellZ)]
+                let x0y1z0 = precomputed.values[cornerIndex(cellX, cellY + 1, cellZ)]
+                let x1y1z0 = precomputed.values[cornerIndex(cellX + 1, cellY + 1, cellZ)]
+                let x0y0z1 = precomputed.values[cornerIndex(cellX, cellY, cellZ + 1)]
+                let x1y0z1 = precomputed.values[cornerIndex(cellX + 1, cellY, cellZ + 1)]
+                let x0y1z1 = precomputed.values[cornerIndex(cellX, cellY + 1, cellZ + 1)]
+                let x1y1z1 = precomputed.values[cornerIndex(cellX + 1, cellY + 1, cellZ + 1)]
+                let outputCellBase = cellY * cellValueCount
+                for localZ in 0..<horizontal {
+                    let deltaZ = Double(localZ) * horizontalDeltaScale
+                    for localX in 0..<horizontal {
+                        let deltaX = Double(localX) * horizontalDeltaScale
+                        let y0z0 = lerp(delta: deltaX, start: x0y0z0, end: x1y0z0)
+                        let y1z0 = lerp(delta: deltaX, start: x0y1z0, end: x1y1z0)
+                        let y0z1 = lerp(delta: deltaX, start: x0y0z1, end: x1y0z1)
+                        let y1z1 = lerp(delta: deltaX, start: x0y1z1, end: x1y1z1)
+                        let valueBase = outputCellBase + (localZ * horizontal + localX) * vertical
+                        for localY in 0..<vertical {
+                            let deltaY = Double(localY) * verticalDeltaScale
+                            output[valueBase + localY] = lerp(
+                                delta: deltaZ,
+                                start: lerp(delta: deltaY, start: y0z0, end: y1z0),
+                                end: lerp(delta: deltaY, start: y0z1, end: y1z1)
+                            )
+                        }
+                    }
+                }
+            }
+            initializedCount = outputCount
+        }
+    }
+
     private func sampleFlat2DInterpolator(
         _ precomputed: BulkDensityInterpolatorValues,
         at positions: [PosInt3D]
@@ -889,6 +1089,21 @@ private struct BulkDensityBufferEvaluator {
             case .MAXIMUM: lhs[index] = max(lhs[index], rhs[index])
             }
             index += 1
+        }
+    }
+
+    private static func applyBinary(
+        _ operation: BinaryDensityFunction.OperationType,
+        values: inout [Double],
+        scalar: Double
+    ) {
+        for index in values.indices {
+            switch operation {
+            case .ADD: values[index] += scalar
+            case .MULTIPLY: values[index] = values[index] == 0.0 ? 0.0 : values[index] * scalar
+            case .MINIMUM: values[index] = min(values[index], scalar)
+            case .MAXIMUM: values[index] = max(values[index], scalar)
+            }
         }
     }
 }
