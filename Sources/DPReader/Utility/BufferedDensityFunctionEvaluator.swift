@@ -1,3 +1,5 @@
+#if DEBUG && !(os(WASI) || arch(wasm32))
+
 import Foundation
 
 protocol BufferedDensityFunctionRuntimePlan: AnyObject {
@@ -1550,3 +1552,5 @@ func bufferedDensityFunctionEvaluatorAddress() -> UInt64 {
     let function = dpreaderEvaluateBufferedDensityFunction as BufferedDensityFunctionEvaluatorThunk
     return UInt64(UInt(bitPattern: unsafeBitCast(function, to: UnsafeRawPointer.self)))
 }
+
+#endif
