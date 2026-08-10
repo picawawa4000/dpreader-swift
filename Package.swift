@@ -9,10 +9,15 @@ let llvmPrefixes = [
     "/opt/homebrew/opt/llvm",
     "/usr/local/opt/llvm"
 ]
-let llvmPrefix = llvmPrefixes.first { prefix in
-    fileManager.fileExists(atPath: "\(prefix)/include/llvm-c/Core.h") &&
-    fileManager.fileExists(atPath: "\(prefix)/lib/libLLVM-C.dylib")
-}
+// LLVM is opt-in because otherwise builds without it will fail during linking
+let llvmPrefix = ProcessInfo.processInfo.environment["DPREADER_ENABLE_LLVM"] == "1"
+    ? llvmPrefixes.first { prefix in
+        fileManager.fileExists(atPath: "\(prefix)/include/llvm-c/Analysis.h") &&
+        fileManager.fileExists(atPath: "\(prefix)/include/llvm-c/Core.h") &&
+        fileManager.fileExists(atPath: "\(prefix)/include/llvm-c/ExecutionEngine.h") &&
+        fileManager.fileExists(atPath: "\(prefix)/lib/libLLVM-C.dylib")
+    }
+    : nil
 
 var dpReaderDependencies: [Target.Dependency] = ["CryptoSwift", "TestVisible"]
 var dpReaderSwiftSettings: [SwiftSetting] = []
