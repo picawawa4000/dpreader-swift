@@ -1186,6 +1186,7 @@ private final class BufferedDensityFunctionEvaluator {
     }
 }
 
+#if DEBUG && !(os(WASI) || arch(wasm32))
 private final class BufferedDensityFunctionEvaluationProfiler {
     private struct MutableNodeProfile {
         let index: Int
@@ -1550,3 +1551,5 @@ func bufferedDensityFunctionEvaluatorAddress() -> UInt64 {
     let function = dpreaderEvaluateBufferedDensityFunction as BufferedDensityFunctionEvaluatorThunk
     return UInt64(UInt(bitPattern: unsafeBitCast(function, to: UnsafeRawPointer.self)))
 }
+
+#endif
