@@ -93,6 +93,148 @@ import Testing
     }
 }
 
+@Test func testCompiledBiomeSearchTreeUsesSharedIRAndMatchesLookup() throws {
+    let keyA = RegistryKey<Biome>(referencing: "test:a")
+    let keyB = RegistryKey<Biome>(referencing: "test:b")
+    let zero = ParameterRange(min: 0, max: 0)
+    let entries: [(NoiseHypercube, RegistryKey<Biome>)] = [
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: -10_000, max: -2_000),
+                humidity: ParameterRange(min: -10_000, max: 0),
+                continentalness: zero,
+                erosion: zero,
+                depth: zero,
+                weirdness: zero,
+                offset: zero
+            ),
+            keyA
+        ),
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: 2_000, max: 10_000),
+                humidity: ParameterRange(min: 0, max: 10_000),
+                continentalness: zero,
+                erosion: zero,
+                depth: zero,
+                weirdness: zero,
+                offset: zero
+            ),
+            keyB
+        )
+    ]
+    let tree = try BiomeSearchTree(entries: entries)
+    let snapshot = tree.makeCompilerSnapshot()
+    let ir = buildBiomeSearchIR(tree: snapshot.tree)
+    let wasm = try tree.compile(strategy: .wasm)
+
+    #expect(ir.inputTypes == [.f64, .f64, .f64, .f64, .f64, .f64])
+    #expect(ir.biomeSearchTrees.count == 1)
+    #expect(wasm.strategy == .wasm)
+    #expect(wasm.wasmModule?.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+
+    #if canImport(CLLVM)
+    let llvm = try tree.compile(strategy: .llvm)
+    #endif
+    for point in [
+        NoisePoint(temperature: -0.9, humidity: -0.4, continentalness: 0, erosion: 0, weirdness: 0, depth: 0),
+        NoisePoint(temperature: 0.9, humidity: 0.4, continentalness: 0, erosion: 0, weirdness: 0, depth: 0),
+        NoisePoint(temperature: -0.15, humidity: 0.9, continentalness: 0, erosion: 0, weirdness: 0, depth: 0),
+        NoisePoint(temperature: 0.15, humidity: -0.9, continentalness: 0, erosion: 0, weirdness: 0, depth: 0)
+    ] {
+        tree.resetAlternative()
+        let expected = try tree.get(point)
+        #expect(wasm(point) == expected)
+        #if canImport(CLLVM)
+        #expect(llvm(point) == expected)
+        #endif
+    }
+
+    let singleTree = try BiomeSearchTree(entries: [entries[0]])
+    let singleCompiled = try singleTree.compile(strategy: .wasm)
+    let arbitraryPoint = NoisePoint(
+        temperature: 0.7,
+        humidity: -0.6,
+        continentalness: 0.5,
+        erosion: -0.4,
+        weirdness: 0.3,
+        depth: -0.2
+    )
+    #expect(try singleTree.get(arbitraryPoint) == keyA)
+    #expect(singleCompiled(arbitraryPoint) == keyA)
+}
+
+#if canImport(CLLVM)
+@Test func testCompiledVanillaBiomeSearchTreeMatchesInterpretedTree() throws {
+    let entries = getPredefinedBiomeSearchTreeData(for: "overworld")!.map { entry in
+        (NoiseHypercube(from: entry.parameters), RegistryKey<Biome>(referencing: entry.biome))
+    }
+    let tree = try BiomeSearchTree(entries: entries)
+    let wasm = try tree.compile(strategy: .wasm)
+    let compiled = try tree.compile(strategy: .llvm)
+    var randomState: UInt64 = 0x4d595df4d0f33173
+
+    func nextParameter() -> Double {
+        randomState = randomState &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Double(Int(randomState % 20_001) - 10_000) / 10_000.0
+    }
+
+    let points = (0..<256).map { _ in
+        NoisePoint(
+            temperature: nextParameter(),
+            humidity: nextParameter(),
+            continentalness: nextParameter(),
+            erosion: nextParameter(),
+            weirdness: nextParameter(),
+            depth: nextParameter()
+        )
+    }
+    for point in points {
+        tree.resetAlternative()
+        let expected = tree.getUnchecked(point)
+        #expect(wasm(point) == expected)
+        #expect(compiled(point) == expected)
+    }
+
+    if ProcessInfo.processInfo.environment["DPREADER_BIOME_COMPILER_BENCHMARK"] == "1" {
+        let iterations = 1_000
+        let lookupState = tree.makeReusableLookupState()
+        var interpretedChecksum = 0
+        var start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<iterations {
+            for point in points {
+                interpretedChecksum &+= tree.getUnchecked(
+                    temperature: point.temperature,
+                    humidity: point.humidity,
+                    continentalness: point.continentalness,
+                    erosion: point.erosion,
+                    weirdness: point.weirdness,
+                    depth: point.depth,
+                    using: lookupState
+                ).name.count
+            }
+        }
+        let interpretedNanos = DispatchTime.now().uptimeNanoseconds - start
+
+        var compiledChecksum = 0
+        start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<iterations {
+            for point in points {
+                compiledChecksum &+= compiled(point).name.count
+            }
+        }
+        let compiledNanos = DispatchTime.now().uptimeNanoseconds - start
+        #expect(compiledChecksum == interpretedChecksum)
+        print(
+            "biome search benchmark:",
+            "interpreted", interpretedNanos, "ns;",
+            "compiled", compiledNanos, "ns;",
+            "speedup", Double(interpretedNanos) / Double(compiledNanos)
+        )
+    }
+}
+#endif
+
 // Tests whether the vanilla biome search tree matches the stupid one implemented here.
 // While these tests are somewhat comprehensive, they don't cover the entire biome space.
 // Any potential further offenders should be added here.

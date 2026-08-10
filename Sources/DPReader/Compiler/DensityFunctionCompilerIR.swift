@@ -1,7 +1,8 @@
 import Foundation
 
-enum DensityFunctionIRValueType {
+enum DensityFunctionIRValueType: Equatable {
     case i32
+    case i64
     case f64
     case condition
 }
@@ -16,7 +17,10 @@ enum DensityFunctionIRComparison {
 
 enum DensityFunctionIRInstruction {
     case constant(Double)
+    case constantInt32(Int32)
+    case constantInt64(Int64)
     case convertSignedIntToDouble(Int)
+    case convertDoubleToSignedInt64(Int)
     case add(Int, Int)
     case subtract(Int, Int)
     case multiply(Int, Int)
@@ -27,11 +31,16 @@ enum DensityFunctionIRInstruction {
     case select(condition: Int, whenTrue: Int, whenFalse: Int)
     case sampleDensity(index: Int, x: Int, y: Int, z: Int)
     case sampleNoise(index: Int, x: Int, y: Int, z: Int)
+    case searchBiome(index: Int, point: [Int])
 
     var resultType: DensityFunctionIRValueType {
         switch self {
         case .compare, .and:
             return .condition
+        case .constantInt32, .searchBiome:
+            return .i32
+        case .constantInt64, .convertDoubleToSignedInt64:
+            return .i64
         case .convertSignedIntToDouble, .constant, .add, .subtract, .multiply, .divide,
              .negate, .select, .sampleDensity, .sampleNoise:
             return .f64
@@ -44,21 +53,27 @@ final class DensityFunctionIRProgram: @unchecked Sendable {
     static let yInput = 1
     static let zInput = 2
 
+    let inputTypes: [DensityFunctionIRValueType]
     let instructions: [DensityFunctionIRInstruction]
     let output: Int
     let densityFunctions: [any DensityFunction]
     let noises: [any DensityFunctionNoise]
+    let biomeSearchTrees: [BiomeSearchIRTree]
 
     init(
+        inputTypes: [DensityFunctionIRValueType] = [.i32, .i32, .i32],
         instructions: [DensityFunctionIRInstruction],
         output: Int,
         densityFunctions: [any DensityFunction],
-        noises: [any DensityFunctionNoise]
+        noises: [any DensityFunctionNoise],
+        biomeSearchTrees: [BiomeSearchIRTree] = []
     ) {
+        self.inputTypes = inputTypes
         self.instructions = instructions
         self.output = output
         self.densityFunctions = densityFunctions
         self.noises = noises
+        self.biomeSearchTrees = biomeSearchTrees
     }
 }
 
@@ -326,22 +341,18 @@ func buildDensityFunctionIR(
 
 private enum DensityFunctionIRRuntimeValue {
     case i32(Int32)
+    case i64(Int64)
     case f64(Double)
     case condition(Bool)
 }
 
-func evaluateDensityFunctionIR(
+private func evaluateDensityFunctionIR(
     _ program: DensityFunctionIRProgram,
-    x: Int32,
-    y: Int32,
-    z: Int32
-) -> Double {
-    var values: [DensityFunctionIRRuntimeValue] = [
-        .i32(x),
-        .i32(y),
-        .i32(z)
-    ]
-    values.reserveCapacity(3 + program.instructions.count)
+    inputs: [DensityFunctionIRRuntimeValue]
+) -> DensityFunctionIRRuntimeValue {
+    precondition(inputs.count == program.inputTypes.count, "Incorrect IR input count.")
+    var values = inputs
+    values.reserveCapacity(inputs.count + program.instructions.count)
 
     func int(_ index: Int) -> Int32 {
         guard case .i32(let value) = values[index] else { preconditionFailure("Expected i32 IR value.") }
@@ -349,6 +360,10 @@ func evaluateDensityFunctionIR(
     }
     func double(_ index: Int) -> Double {
         guard case .f64(let value) = values[index] else { preconditionFailure("Expected f64 IR value.") }
+        return value
+    }
+    func int64(_ index: Int) -> Int64 {
+        guard case .i64(let value) = values[index] else { preconditionFailure("Expected i64 IR value.") }
         return value
     }
     func condition(_ index: Int) -> Bool {
@@ -360,7 +375,10 @@ func evaluateDensityFunctionIR(
         let result: DensityFunctionIRRuntimeValue
         switch instruction {
         case .constant(let value): result = .f64(value)
+        case .constantInt32(let value): result = .i32(value)
+        case .constantInt64(let value): result = .i64(value)
         case .convertSignedIntToDouble(let input): result = .f64(Double(int(input)))
+        case .convertDoubleToSignedInt64(let input): result = .i64(Int64(double(input)))
         case .add(let lhs, let rhs): result = .f64(double(lhs) + double(rhs))
         case .subtract(let lhs, let rhs): result = .f64(double(lhs) - double(rhs))
         case .multiply(let lhs, let rhs): result = .f64(double(lhs) * double(rhs))
@@ -392,9 +410,44 @@ func evaluateDensityFunctionIR(
                 y: double(sampleY),
                 z: double(sampleZ)
             ))
+        case .searchBiome(let index, let point):
+            precondition(point.count == 7, "Biome search IR requires seven parameters.")
+            result = .i32(program.biomeSearchTrees[index].search(point.map(int64)))
         }
         values.append(result)
     }
 
-    return double(program.output)
+    return values[program.output]
+}
+
+func evaluateDensityFunctionIR(
+    _ program: DensityFunctionIRProgram,
+    x: Int32,
+    y: Int32,
+    z: Int32
+) -> Double {
+    guard case .f64(let result) = evaluateDensityFunctionIR(
+        program,
+        inputs: [.i32(x), .i32(y), .i32(z)]
+    ) else {
+        preconditionFailure("Density function IR did not produce f64.")
+    }
+    return result
+}
+
+func evaluateBiomeSearchIR(_ program: DensityFunctionIRProgram, point: NoisePoint) -> Int32 {
+    guard case .i32(let result) = evaluateDensityFunctionIR(
+        program,
+        inputs: [
+            .f64(point.temperature),
+            .f64(point.humidity),
+            .f64(point.continentalness),
+            .f64(point.erosion),
+            .f64(point.weirdness),
+            .f64(point.depth)
+        ]
+    ) else {
+        preconditionFailure("Biome search IR did not produce i32.")
+    }
+    return result
 }

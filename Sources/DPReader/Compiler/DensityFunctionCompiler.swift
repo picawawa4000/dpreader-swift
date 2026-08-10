@@ -15,6 +15,9 @@ public enum DensityFunctionCompilationError: Error {
 }
 
 private typealias NativeCompiledDensityFunction = @convention(c) (Int32, Int32, Int32) -> Double
+private typealias NativeCompiledBiomeSearch = @convention(c) (
+    Double, Double, Double, Double, Double, Double
+) -> Int32
 public typealias CompiledDensityFunctionBuffer = @convention(c) (
     UnsafeRawPointer?,
     Int32,
@@ -1456,20 +1459,24 @@ private func buildGenerationCellBulkSamplingLoop(
 private func lowerDensityFunctionIR(
     _ program: DensityFunctionIRProgram,
     in context: DensityFunctionCompilationContext,
-    x: LLVMValueRef,
-    y: LLVMValueRef,
-    z: LLVMValueRef
+    inputs: [LLVMValueRef]
 ) -> LLVMValueRef {
-    var values: [LLVMValueRef] = [x, y, z]
-    values.reserveCapacity(3 + program.instructions.count)
+    var values = inputs
+    values.reserveCapacity(inputs.count + program.instructions.count)
 
     for instruction in program.instructions {
         let result: LLVMValueRef
         switch instruction {
         case .constant(let value):
             result = context.constant(value)
+        case .constantInt32(let value):
+            result = context.int32Constant(value)
+        case .constantInt64(let value):
+            result = context.int64Constant(UInt64(bitPattern: value))
         case .convertSignedIntToDouble(let input):
             result = LLVMBuildSIToFP(context.builder, values[input], context.doubleType, "density_ir.sitofp")!
+        case .convertDoubleToSignedInt64(let input):
+            result = LLVMBuildFPToSI(context.builder, values[input], context.int64Type, "density_ir.fptosi")!
         case .add(let lhs, let rhs):
             result = LLVMBuildFAdd(context.builder, values[lhs], values[rhs], "density_ir.add")!
         case .subtract(let lhs, let rhs):
@@ -1515,10 +1522,107 @@ private func lowerDensityFunctionIR(
                 z: values[sampleZ],
                 name: "density_ir.sample_noise"
             )
+        case .searchBiome(let index, let point):
+            result = lowerBiomeSearchIR(
+                program.biomeSearchTrees[index],
+                point: point.map { values[$0] },
+                in: context
+            )
         }
         values.append(result)
     }
     return values[program.output]
+}
+
+private func lowerBiomeSearchIR(
+    _ tree: BiomeSearchIRTree,
+    point: [LLVMValueRef],
+    in context: DensityFunctionCompilationContext
+) -> LLVMValueRef {
+    precondition(point.count == 7)
+    let root = tree.nodes[tree.rootIndex]
+    if root.isLeaf {
+        return context.int32Constant(root.valueIndex)
+    }
+
+    let builder = context.builder
+    let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder))!
+    let bestDistancePointer = LLVMBuildAlloca(builder, context.int64Type, "biome.best_distance")!
+    let bestIndexPointer = LLVMBuildAlloca(builder, context.int32Type, "biome.best_index")!
+    LLVMBuildStore(builder, context.int64Constant(UInt64(Int64.max)), bestDistancePointer)
+    LLVMBuildStore(builder, context.int32Constant(-1), bestIndexPointer)
+
+    let earlyExitBlock = LLVMAppendBasicBlockInContext(context.llvmContext, function, "biome.zero_distance")!
+    let mergeBlock = LLVMAppendBasicBlockInContext(context.llvmContext, function, "biome.merge")!
+    var blockNumber = 0
+
+    func makeBlock(_ name: String) -> LLVMBasicBlockRef {
+        defer { blockNumber += 1 }
+        return LLVMAppendBasicBlockInContext(context.llvmContext, function, "\(name).\(blockNumber)")!
+    }
+
+    func buildSquaredDistance(_ node: BiomeSearchIRNode, name: String) -> LLVMValueRef {
+        var sum = context.int64Constant(0)
+        for dimension in [2, 3, 5, 4, 0, 1, 6] {
+            let minimum = context.int64Constant(UInt64(bitPattern: node.minimums[dimension]))
+            let maximum = context.int64Constant(UInt64(bitPattern: node.maximums[dimension]))
+            let below = LLVMBuildICmp(builder, LLVMIntSLT, point[dimension], minimum, "\(name).below")!
+            let above = LLVMBuildICmp(builder, LLVMIntSGT, point[dimension], maximum, "\(name).above")!
+            let belowDistance = LLVMBuildSub(builder, minimum, point[dimension], "\(name).below_distance")!
+            let aboveDistance = LLVMBuildSub(builder, point[dimension], maximum, "\(name).above_distance")!
+            let upperOrZero = LLVMBuildSelect(
+                builder,
+                above,
+                aboveDistance,
+                context.int64Constant(0),
+                "\(name).upper_or_zero"
+            )!
+            let distance = LLVMBuildSelect(builder, below, belowDistance, upperOrZero, "\(name).distance")!
+            let squared = LLVMBuildMul(builder, distance, distance, "\(name).squared")!
+            sum = LLVMBuildAdd(builder, sum, squared, "\(name).sum")!
+        }
+        return sum
+    }
+
+    func emitVisit(_ nodeIndex: Int, continuation: LLVMBasicBlockRef) {
+        let node = tree.nodes[nodeIndex]
+        if node.isLeaf {
+            let distance = buildSquaredDistance(node, name: "biome.leaf_\(nodeIndex)")
+            let bestDistance = LLVMBuildLoad2(builder, context.int64Type, bestDistancePointer, "biome.best_distance.load")!
+            let isBetter = LLVMBuildICmp(builder, LLVMIntSLE, distance, bestDistance, "biome.leaf.is_better")!
+            let updateBlock = makeBlock("biome.leaf.update")
+            LLVMBuildCondBr(builder, isBetter, updateBlock, continuation)
+
+            LLVMPositionBuilderAtEnd(builder, updateBlock)
+            LLVMBuildStore(builder, distance, bestDistancePointer)
+            LLVMBuildStore(builder, context.int32Constant(node.valueIndex), bestIndexPointer)
+            let isZero = LLVMBuildICmp(builder, LLVMIntEQ, distance, context.int64Constant(0), "biome.leaf.is_zero")!
+            LLVMBuildCondBr(builder, isZero, earlyExitBlock, continuation)
+            return
+        }
+
+        let childEnd = node.childIndexStart + node.childCount
+        for childIndex in node.childIndexStart..<childEnd {
+            let child = tree.nodes[childIndex]
+            let distance = buildSquaredDistance(child, name: "biome.node_\(childIndex)")
+            let bestDistance = LLVMBuildLoad2(builder, context.int64Type, bestDistancePointer, "biome.best_distance.load")!
+            let shouldVisit = LLVMBuildICmp(builder, LLVMIntSLE, distance, bestDistance, "biome.node.should_visit")!
+            let visitBlock = makeBlock("biome.node.visit")
+            let nextBlock = makeBlock("biome.node.next")
+            LLVMBuildCondBr(builder, shouldVisit, visitBlock, nextBlock)
+
+            LLVMPositionBuilderAtEnd(builder, visitBlock)
+            emitVisit(childIndex, continuation: nextBlock)
+            LLVMPositionBuilderAtEnd(builder, nextBlock)
+        }
+        LLVMBuildBr(builder, continuation)
+    }
+
+    emitVisit(tree.rootIndex, continuation: mergeBlock)
+    LLVMPositionBuilderAtEnd(builder, earlyExitBlock)
+    LLVMBuildBr(builder, mergeBlock)
+    LLVMPositionBuilderAtEnd(builder, mergeBlock)
+    return LLVMBuildLoad2(builder, context.int32Type, bestIndexPointer, "biome.result")!
 }
 
 private func compileDensityFunctionIRWithLLVM(
@@ -1592,9 +1696,11 @@ private func compileDensityFunctionIRWithLLVM(
         let result = lowerDensityFunctionIR(
             program,
             in: context,
-            x: LLVMGetParam(function, 0),
-            y: LLVMGetParam(function, 1),
-            z: LLVMGetParam(function, 2)
+            inputs: [
+                LLVMGetParam(function, 0),
+                LLVMGetParam(function, 1),
+                LLVMGetParam(function, 2)
+            ]
         )
         LLVMBuildRet(builder, result)
 
@@ -1634,6 +1740,96 @@ private func compileDensityFunctionIRWithLLVM(
         let nativeFunction = unsafeBitCast(address, to: NativeCompiledDensityFunction.self)
         return CompiledDensityFunction(strategy: .llvm) { x, y, z in
             nativeFunction(x, y, z)
+        }
+    }
+}
+
+func compileBiomeSearchIRWithLLVM(
+    _ program: DensityFunctionIRProgram,
+    biomes: [RegistryKey<Biome>]
+) throws -> CompiledBiomeSearchTree {
+    try JITCompiler.shared.withLock {
+        guard let llvmContext = LLVMContextCreate() else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM context.")
+        }
+        var shouldDisposeContext = true
+        defer {
+            if shouldDisposeContext { LLVMContextDispose(llvmContext) }
+        }
+
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "_")
+        let moduleName = "biome_search_module_\(suffix)"
+        let functionName = "biome_search_\(suffix)"
+        guard let module = LLVMModuleCreateWithNameInContext(moduleName, llvmContext) else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM module.")
+        }
+        var shouldDisposeModule = true
+        defer {
+            if shouldDisposeModule { LLVMDisposeModule(module) }
+        }
+
+        guard let doubleType = LLVMDoubleTypeInContext(llvmContext),
+              let int32Type = LLVMInt32TypeInContext(llvmContext),
+              let int64Type = LLVMInt64TypeInContext(llvmContext) else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM primitive types.")
+        }
+        var parameterTypes: [LLVMTypeRef?] = Array(repeating: doubleType, count: 6)
+        let functionType = parameterTypes.withUnsafeMutableBufferPointer { buffer in
+            LLVMFunctionType(int32Type, buffer.baseAddress, UInt32(buffer.count), 0)
+        }
+        let function = LLVMAddFunction(module, functionName, functionType)
+        guard let entryBlock = LLVMAppendBasicBlockInContext(llvmContext, function, "entry"),
+              let builder = LLVMCreateBuilderInContext(llvmContext) else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create biome search function.")
+        }
+        defer { LLVMDisposeBuilder(builder) }
+
+        LLVMPositionBuilderAtEnd(builder, entryBlock)
+        let context = DensityFunctionCompilationContext(
+            llvmContext: llvmContext,
+            builder: builder,
+            doubleType: doubleType,
+            int32Type: int32Type,
+            int64Type: int64Type,
+            densityFunctionRegistry: Registry<DensityFunction>()
+        )
+        let inputs = (0..<6).map { LLVMGetParam(function, UInt32($0))! }
+        let result = lowerDensityFunctionIR(program, in: context, inputs: inputs)
+        LLVMBuildRet(builder, result)
+
+        try verify(module)
+        try optimize(module)
+        try verify(module)
+
+        let threadSafeContext = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(llvmContext)
+        shouldDisposeContext = false
+        let threadSafeModule = LLVMOrcCreateNewThreadSafeModule(module, threadSafeContext)
+        shouldDisposeModule = false
+        LLVMOrcDisposeThreadSafeContext(threadSafeContext)
+
+        var shouldDisposeThreadSafeModule = true
+        defer {
+            if shouldDisposeThreadSafeModule { LLVMOrcDisposeThreadSafeModule(threadSafeModule) }
+        }
+        try throwIfLLVMError(
+            LLVMOrcLLJITAddLLVMIRModule(
+                JITCompiler.shared.jit,
+                LLVMOrcLLJITGetMainJITDylib(JITCompiler.shared.jit),
+                threadSafeModule
+            ),
+            prefix: "Failed to add biome search module to JIT"
+        )
+        shouldDisposeThreadSafeModule = false
+
+        var address: LLVMOrcExecutorAddress = 0
+        try throwIfLLVMError(
+            LLVMOrcLLJITLookup(JITCompiler.shared.jit, &address, functionName),
+            prefix: "Failed to resolve compiled biome search"
+        )
+        let nativeFunction = unsafeBitCast(address, to: NativeCompiledBiomeSearch.self)
+        return CompiledBiomeSearchTree(strategy: .llvm, biomes: biomes) {
+            temperature, humidity, continentalness, erosion, weirdness, depth in
+            nativeFunction(temperature, humidity, continentalness, erosion, weirdness, depth)
         }
     }
 }
