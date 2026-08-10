@@ -108,7 +108,9 @@ private final class BufferedDensityFunctionEvaluator {
     private var reusableBuffers: [Int: [[Double]]] = [:]
     private var sharedNodeReuseCount = 0
     private var fusedTransformCount = 0
+#if DEBUG && !(os(WASI) || arch(wasm32))
     private var profiler = BufferedDensityFunctionEvaluationProfiler()
+#endif
 
     init(registry: Registry<DensityFunction>, profilingState: BufferedDensityFunctionProfilingState? = nil) {
         self.registry = registry
@@ -124,21 +126,29 @@ private final class BufferedDensityFunctionEvaluator {
         self.reusableBuffers = [:]
         self.sharedNodeReuseCount = 0
         self.fusedTransformCount = 0
+#if DEBUG && !(os(WASI) || arch(wasm32))
         self.profiler = BufferedDensityFunctionEvaluationProfiler()
+#endif
 
+#if DEBUG && !(os(WASI) || arch(wasm32))
         let buildStart = self.profiler.now()
+#endif
         let rootNode = self.buildNode(for: function, domain: domain)
+#if DEBUG && !(os(WASI) || arch(wasm32))
         self.profiler.markPlanBuilt(
             buildNanos: self.profiler.now() &- buildStart,
             nodeCount: self.nodes.count,
             sharedNodeReuseCount: self.sharedNodeReuseCount,
             fusedTransformCount: self.fusedTransformCount
         )
+#endif
         self.remainingUses = self.nodes.map(\.useCount)
         let result = self.realizeNode(rootNode)
+#if DEBUG && !(os(WASI) || arch(wasm32))
         if let profilingState {
             profilingState.record(self.profiler.report())
         }
+#endif
         return result
     }
 
@@ -310,11 +320,14 @@ private final class BufferedDensityFunctionEvaluator {
 
     private func realizeNode(_ nodeIndex: Int) -> [Double] {
         if let existing = self.nodeResults[nodeIndex] {
+#if DEBUG && !(os(WASI) || arch(wasm32))
             self.profiler.didHitNodeResultCache(nodeIndex: nodeIndex)
+#endif
             return existing
         }
 
         let node = self.nodes[nodeIndex]
+#if DEBUG && !(os(WASI) || arch(wasm32))
         let start = self.profiler.now()
         self.profiler.didStartNode(
             index: nodeIndex,
@@ -325,6 +338,7 @@ private final class BufferedDensityFunctionEvaluator {
             plannedUseCount: node.useCount,
             fusedTransformCount: node.transforms.count
         )
+#endif
         var output: [Double]
         switch node.kind {
         case .constant(let value):
@@ -406,6 +420,7 @@ private final class BufferedDensityFunctionEvaluator {
 
         self.applyTransforms(node.transforms, to: &output)
         self.nodeResults[nodeIndex] = output
+#if DEBUG && !(os(WASI) || arch(wasm32))
         self.profiler.didStoreRetainedBuffer(count: output.count)
         self.profiler.recordNode(
             index: nodeIndex,
@@ -420,6 +435,7 @@ private final class BufferedDensityFunctionEvaluator {
             fusedTransformCount: node.transforms.count,
             totalNanos: self.profiler.now() &- start
         )
+#endif
         return output
     }
 
@@ -523,16 +539,22 @@ private final class BufferedDensityFunctionEvaluator {
     private func acquireBuffer(count: Int) -> [Double] {
         if var buffers = self.reusableBuffers[count], let buffer = buffers.popLast() {
             self.reusableBuffers[count] = buffers
+#if DEBUG && !(os(WASI) || arch(wasm32))
             self.profiler.didRemovePooledBuffer(count: count)
+#endif
             return buffer
         }
+#if DEBUG && !(os(WASI) || arch(wasm32))
         self.profiler.didAllocateBuffer(count: count)
+#endif
         return [Double](repeating: 0.0, count: count)
     }
 
     private func recycleBuffer(_ buffer: [Double]) {
         self.reusableBuffers[buffer.count, default: []].append(buffer)
+#if DEBUG && !(os(WASI) || arch(wasm32))
         self.profiler.didAddPooledBuffer(count: buffer.count)
+#endif
     }
 
     private func takeNodeResult(_ nodeIndex: Int) -> BorrowedBuffer {
@@ -542,7 +564,9 @@ private final class BufferedDensityFunctionEvaluator {
             return BorrowedBuffer(values: result, isOwned: false)
         }
         let owned = self.nodeResults.removeValue(forKey: nodeIndex) ?? result
+#if DEBUG && !(os(WASI) || arch(wasm32))
         self.profiler.didReleaseRetainedBuffer(count: owned.count)
+#endif
         return BorrowedBuffer(values: owned, isOwned: true)
     }
 
@@ -707,10 +731,12 @@ private final class BufferedDensityFunctionEvaluator {
         using function: any DensityFunction,
         domain: BufferedDensityEvaluationDomain
     ) {
+#if DEBUG && !(os(WASI) || arch(wasm32))
         if self.profilingState != nil {
             self.fillScalarProfiledFallback(into: &output, using: function, domain: domain)
             return
         }
+#endif
 
         for z in 0..<domain.zCount {
             for x in 0..<domain.xCount {
@@ -720,6 +746,8 @@ private final class BufferedDensityFunctionEvaluator {
             }
         }
     }
+
+#if DEBUG && !(os(WASI) || arch(wasm32))
 
     private func fillScalarProfiledFallback(
         into output: inout [Double],
@@ -735,6 +763,8 @@ private final class BufferedDensityFunctionEvaluator {
             }
         }
     }
+
+#endif
 
     private func sampleFast(_ function: any DensityFunction, at pos: PosInt3D) -> Double {
         if let reference = function as? ReferenceDensityFunction {
@@ -896,6 +926,8 @@ private final class BufferedDensityFunctionEvaluator {
         }
         return self.sampleFast(branch, at: pos)
     }
+
+#if DEBUG && !(os(WASI) || arch(wasm32))
 
     private func sampleProfiled(_ function: any DensityFunction, at pos: PosInt3D, path: String = "root") -> Double {
         let token = self.profiler.beginFunction(
@@ -1070,6 +1102,8 @@ private final class BufferedDensityFunctionEvaluator {
         }
         return self.sampleProfiled(branch, at: pos, path: path)
     }
+
+#endif
 
     private func sameDensityFunctionInstance(_ lhs: any DensityFunction, _ rhs: any DensityFunction) -> Bool {
         guard type(of: lhs) is AnyObject.Type, type(of: rhs) is AnyObject.Type else {
@@ -1516,6 +1550,8 @@ private final class BufferedDensityFunctionEvaluationProfiler {
     }
 }
 
+#endif
+
 private typealias BufferedDensityFunctionEvaluatorThunk = @convention(c) (
     UInt64,
     UnsafeRawPointer?,
@@ -1551,5 +1587,3 @@ func bufferedDensityFunctionEvaluatorAddress() -> UInt64 {
     let function = dpreaderEvaluateBufferedDensityFunction as BufferedDensityFunctionEvaluatorThunk
     return UInt64(UInt(bitPattern: unsafeBitCast(function, to: UnsafeRawPointer.self)))
 }
-
-#endif
