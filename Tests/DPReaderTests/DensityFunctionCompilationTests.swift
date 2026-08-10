@@ -162,27 +162,43 @@ private func assertCompiledBufferMatches(
         type: .ADD
     )
     let frontendProgram = try buildDensityFunctionIR(densityFunction: densityFunction, registry: Registry())
-    let llvm = try compile(densityFunction: densityFunction, strategy: .llvm)
     let wasm = try compile(densityFunction: densityFunction, strategy: .wasm)
 
     #expect(frontendProgram.densityFunctions.isEmpty)
     #expect(frontendProgram.noises.count == 2)
-    #expect(llvm.strategy == .llvm)
     #expect(wasm.strategy == .wasm)
     #expect(wasm.wasmModule?.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+#if canImport(CLLVM)
+    let llvm = try compile(densityFunction: densityFunction, strategy: .llvm)
+    #expect(llvm.strategy == .llvm)
+#endif
     for position in [
         PosInt3D(x: -7, y: -4, z: 11),
         PosInt3D(x: 0, y: 3, z: 0),
         PosInt3D(x: 17, y: 15, z: -23)
     ] {
         let expected = densityFunction.sample(at: position)
-        #expect(checkDouble(llvm(position.x, position.y, position.z), expected))
         #expect(checkDouble(wasm(position.x, position.y, position.z), expected))
+#if canImport(CLLVM)
+        #expect(checkDouble(llvm(position.x, position.y, position.z), expected))
+#endif
     }
 }
 
 @Test func testUnsupportedDensityFunctionCompilationStrategies() throws {
     let densityFunction = ConstantDensityFunction(value: 1.0)
+
+#if !canImport(CLLVM)
+    do {
+        _ = try compile(densityFunction: densityFunction, strategy: .llvm)
+        Issue.record("LLVM compilation should be unsupported when CLLVM cannot be imported.")
+    } catch let error as DensityFunctionCompilationError {
+        guard case .unsupportedCompilationStrategy(.llvm) = error else {
+            Issue.record("Unexpected disabled LLVM compilation error: \(error)")
+            return
+        }
+    }
+#endif
 
     do {
         _ = try compile(

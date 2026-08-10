@@ -45,9 +45,15 @@ public protocol DensityFunctionBaker {
 
 /// Allows wrappers to expose their delegate for bound propagation
 /// and compilation delegation.
+#if canImport(CLLVM)
 protocol DensityFunctionWrapperIntrospectable: CompilableDensityFunction {
     var wrappedDensityFunction: any DensityFunction { get }
 }
+#else
+protocol DensityFunctionWrapperIntrospectable {
+    var wrappedDensityFunction: any DensityFunction { get }
+}
+#endif
 
 extension DensityFunction where Self: DensityFunctionWrapperIntrospectable {
     func lowerBoundValue() -> Double {
