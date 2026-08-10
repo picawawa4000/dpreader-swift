@@ -103,7 +103,7 @@ private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFuncti
     }
 }
 
-//#if DEBUG && !(os(WASI) || arch(wasm32))
+#if DEBUG && !(os(WASI) || arch(wasm32))
 private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let profile: MutableTimedComponentBenchmark
@@ -143,7 +143,7 @@ private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFuncti
         throw terrainRuntimeOnlyEncodeError(encoder, forType: "VanillaChunkBenchmarkProfilingDensityFunction")
     }
 }
-//#endif
+#endif
 
 private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
@@ -1512,7 +1512,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    //#if DEBUG && !(os(WASI) || arch(wasm32))
+    #if DEBUG && !(os(WASI) || arch(wasm32))
     func generateTerrain(
         into chunk: ProtoChunk,
         with terrainDensity: any DensityFunction,
@@ -1538,7 +1538,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             self.generateClippedTerrain(into: chunk, using: terrainInterpolator)
         }
     }
-    //#endif
+    #endif
 
     func makeDirectPointSamplingTerrainDensity(
         from terrainDensity: any DensityFunction,

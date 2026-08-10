@@ -1301,7 +1301,7 @@ private final class LockedArray<Value>: @unchecked Sendable {
     }
 }
 
-//#if DEBUG && !(os(WASI) || arch(wasm32))
+#if DEBUG && !(os(WASI) || arch(wasm32))
 @Test func benchmarkVanillaTerrainChunkGenerationProfiled() async throws {
     let worldGenerator = try makeVanillaTerrainBenchmarkWorldGenerator()
 
@@ -2237,4 +2237,4 @@ private func makeVanillaTerrainCompiledBenchmarkContext() throws -> VanillaTerra
         finalDensity: try worldGenerator.cachedFinalDensityFunction()
     )
 }
-//#endif
+#endif
