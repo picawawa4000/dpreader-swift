@@ -1,14 +1,14 @@
 import Foundation
 
 /// Selects the backend used after density functions have been lowered to the shared SSA IR.
-public enum DensityFunctionCompilationStrategy: Sendable, Equatable {
+public enum CompilationBackend: Sendable, Equatable {
     case llvm
     case wasm
 }
 
 public enum DensityFunctionCompilationError: Error {
     case noLLVM
-    case unsupportedCompilationStrategy(DensityFunctionCompilationStrategy)
+    case unsupportedCompilationStrategy(CompilationBackend)
     case nonCompilableDensityFunction
     case badDensityFunction(String)
     case llvmError(String)
@@ -28,13 +28,13 @@ public typealias CompiledDensityFunctionBuffer = @convention(c) (
 
 /// A callable scalar density program and, for WASM compilation, its deployable module bytes.
 public final class CompiledDensityFunction: @unchecked Sendable {
-    public let strategy: DensityFunctionCompilationStrategy
+    public let strategy: CompilationBackend
     /// A module exporting `sample(i32, i32, i32) -> f64`, present only for the WASM strategy.
     public let wasmModule: [UInt8]?
     private let implementation: @Sendable (Int32, Int32, Int32) -> Double
 
     init(
-        strategy: DensityFunctionCompilationStrategy,
+        strategy: CompilationBackend,
         wasmModule: [UInt8]? = nil,
         implementation: @escaping @Sendable (Int32, Int32, Int32) -> Double
     ) {
@@ -397,7 +397,7 @@ private func findPreferredBulkGenerationCellCounts(
 
 public func compile(
     densityFunction root: any DensityFunction,
-    strategy: DensityFunctionCompilationStrategy = .llvm,
+    strategy: CompilationBackend = .llvm,
     registry: Registry<DensityFunction> = Registry()
 ) throws -> CompiledDensityFunction {
     let program = try buildDensityFunctionIR(densityFunction: root, registry: registry)
@@ -4078,7 +4078,7 @@ extension ChunkPositionCache: CompilableDensityFunction {}
 public func compile(
     densityFunction root: any DensityFunction,
     bufferContext: CompiledDensityFunctionBufferContext,
-    strategy: DensityFunctionCompilationStrategy = .llvm,
+    strategy: CompilationBackend = .llvm,
     registry: Registry<DensityFunction> = Registry(),
     options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions()
 ) throws -> CompiledDensityFunctionBuffer {

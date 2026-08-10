@@ -4810,6 +4810,13 @@ public final class WorldGenerator {
         }
         return ret
     }
+
+    public func getCompiledBiomeSearchTree(forTarget target: CompilationBackend, inDimension dimension: RegistryKey<Dimension>) throws -> CompiledBiomeSearchTree {
+        guard let searchTree = self.searchTrees[dimension] else {
+            throw WorldGenerationErrors.biomeSearchTreeNotPresent(dimension.name)
+        }
+        return try compile(biomeSearchTree: searchTree, strategy: target)
+    }
 }
 
 public struct NoisePoint {
@@ -4831,4 +4838,5 @@ enum WorldGenerationErrors: Error {
     case fromPosGreaterThanToPos
     case invalidScale
     case invalidProtoChunkHeight(Int)
+    case biomeSearchTreeNotPresent(String)
 }

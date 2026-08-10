@@ -1113,7 +1113,7 @@ public func compile(
     densityFunction root: any DensityFunction,
     cellSize: DensityFunctionCellSize,
     cellVolume: DensityFunctionCellVolume,
-    strategy: DensityFunctionCompilationStrategy = .llvm,
+    strategy: CompilationBackend = .llvm,
     registry: Registry<DensityFunction> = Registry()
 ) throws -> CompiledDensityFunctionBulkProgram {
     guard strategy == .llvm else {

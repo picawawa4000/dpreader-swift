@@ -77,7 +77,7 @@ final class BiomeSearchIRTree: @unchecked Sendable {
 /// A stateless biome selector lowered through the same IR and backend pipeline as compiled density functions.
 /// Ties follow deterministic tree order, equivalent to looking up after `BiomeSearchTree.resetAlternative()`.
 public final class CompiledBiomeSearchTree: @unchecked Sendable {
-    public let strategy: DensityFunctionCompilationStrategy
+    public let strategy: CompilationBackend
     /// A module exporting `search(f64, f64, f64, f64, f64, f64) -> i32`, present for WASM compilation.
     public let wasmModule: [UInt8]?
     /// Maps the `i32` result exported by `wasmModule` to biome keys.
@@ -85,7 +85,7 @@ public final class CompiledBiomeSearchTree: @unchecked Sendable {
     private let implementation: @Sendable (Double, Double, Double, Double, Double, Double) -> Int32
 
     init(
-        strategy: DensityFunctionCompilationStrategy,
+        strategy: CompilationBackend,
         wasmModule: [UInt8]? = nil,
         biomes: [RegistryKey<Biome>],
         implementation: @escaping @Sendable (Double, Double, Double, Double, Double, Double) -> Int32
@@ -162,7 +162,7 @@ func buildBiomeSearchIR(tree: BiomeSearchIRTree) -> DensityFunctionIRProgram {
 /// Compiles a biome search tree using the requested density-function compiler backend.
 public func compile(
     biomeSearchTree tree: BiomeSearchTree,
-    strategy: DensityFunctionCompilationStrategy = .llvm
+    strategy: CompilationBackend = .llvm
 ) throws -> CompiledBiomeSearchTree {
     let snapshot = tree.makeCompilerSnapshot()
     let program = buildBiomeSearchIR(tree: snapshot.tree)
@@ -195,7 +195,7 @@ public func compile(
 public extension BiomeSearchTree {
     /// Compiles this tree with the requested shared compiler backend.
     func compile(
-        strategy: DensityFunctionCompilationStrategy = .llvm
+        strategy: CompilationBackend = .llvm
     ) throws -> CompiledBiomeSearchTree {
         try DPReader.compile(biomeSearchTree: self, strategy: strategy)
     }
