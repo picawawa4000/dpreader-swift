@@ -1113,8 +1113,12 @@ public func compile(
     densityFunction root: any DensityFunction,
     cellSize: DensityFunctionCellSize,
     cellVolume: DensityFunctionCellVolume,
+    strategy: DensityFunctionCompilationStrategy = .llvm,
     registry: Registry<DensityFunction> = Registry()
 ) throws -> CompiledDensityFunctionBulkProgram {
+    guard strategy == .llvm else {
+        throw DensityFunctionCompilationError.unsupportedCompilationStrategy(strategy)
+    }
     let plan = try CellBufferedDensityFunctionPlan(
         root: root,
         registry: registry,
@@ -1140,8 +1144,9 @@ public func compile(
     densityFunction root: any DensityFunction,
     cellSize: DensityFunctionCellSize,
     cellVolume: DensityFunctionCellVolume,
+    strategy: DensityFunctionCompilationStrategy = .llvm,
     registry: Registry<DensityFunction> = Registry()
 ) throws -> CompiledDensityFunctionBulkProgram {
-    throw DensityFunctionCompilationError.noLLVM
+    throw DensityFunctionCompilationError.unsupportedCompilationStrategy(strategy)
 }
 #endif

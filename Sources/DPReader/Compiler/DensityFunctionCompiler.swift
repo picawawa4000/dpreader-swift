@@ -1,13 +1,20 @@
 import Foundation
 
+/// Selects the backend used after density functions have been lowered to the shared SSA IR.
+public enum DensityFunctionCompilationStrategy: Sendable, Equatable {
+    case llvm
+    case wasm
+}
+
 public enum DensityFunctionCompilationError: Error {
     case noLLVM
+    case unsupportedCompilationStrategy(DensityFunctionCompilationStrategy)
     case nonCompilableDensityFunction
     case badDensityFunction(String)
     case llvmError(String)
 }
 
-public typealias CompiledDensityFunction = @convention(c) (Int32, Int32, Int32) -> Double
+private typealias NativeCompiledDensityFunction = @convention(c) (Int32, Int32, Int32) -> Double
 public typealias CompiledDensityFunctionBuffer = @convention(c) (
     UnsafeRawPointer?,
     Int32,
@@ -15,6 +22,28 @@ public typealias CompiledDensityFunctionBuffer = @convention(c) (
     Int32,
     UnsafeMutablePointer<Double>?
 ) -> Void
+
+/// A callable scalar density program and, for WASM compilation, its deployable module bytes.
+public final class CompiledDensityFunction: @unchecked Sendable {
+    public let strategy: DensityFunctionCompilationStrategy
+    /// A module exporting `sample(i32, i32, i32) -> f64`, present only for the WASM strategy.
+    public let wasmModule: [UInt8]?
+    private let implementation: @Sendable (Int32, Int32, Int32) -> Double
+
+    init(
+        strategy: DensityFunctionCompilationStrategy,
+        wasmModule: [UInt8]? = nil,
+        implementation: @escaping @Sendable (Int32, Int32, Int32) -> Double
+    ) {
+        self.strategy = strategy
+        self.wasmModule = wasmModule
+        self.implementation = implementation
+    }
+
+    public func callAsFunction(_ x: Int32, _ y: Int32, _ z: Int32) -> Double {
+        self.implementation(x, y, z)
+    }
+}
 
 /// The block dimensions of one generation cell.
 public struct DensityFunctionCellSize: Sendable, Hashable {
@@ -361,6 +390,27 @@ private func findPreferredBulkGenerationCellCounts(
     var visited: Set<ObjectIdentifier> = []
     var referenceStack: [String] = []
     return findPreferredBulkGenerationCellCounts(in: function, registry: registry, visited: &visited, referenceStack: &referenceStack)
+}
+
+public func compile(
+    densityFunction root: any DensityFunction,
+    strategy: DensityFunctionCompilationStrategy = .llvm,
+    registry: Registry<DensityFunction> = Registry()
+) throws -> CompiledDensityFunction {
+    let program = try buildDensityFunctionIR(densityFunction: root, registry: registry)
+    switch strategy {
+    case .wasm:
+        let module = try buildDensityFunctionWASMModule(program)
+        return CompiledDensityFunction(strategy: .wasm, wasmModule: module) { x, y, z in
+            evaluateDensityFunctionIR(program, x: x, y: y, z: z)
+        }
+    case .llvm:
+#if canImport(CLLVM)
+        return try compileDensityFunctionIRWithLLVM(program, registry: registry)
+#else
+        throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
+#endif
+    }
 }
 
 #if canImport(CLLVM)
@@ -1403,17 +1453,81 @@ private func buildGenerationCellBulkSamplingLoop(
     addIncoming(phi: localYOutputPointer, values: [localXOutputPointer, nextLocalYOutputPointer], blocks: [localXHeaderBlock, localYEndBlock])
 }
 
-public func compile(
-    densityFunction root: any DensityFunction,
-    registry: Registry<DensityFunction> = Registry()
+private func lowerDensityFunctionIR(
+    _ program: DensityFunctionIRProgram,
+    in context: DensityFunctionCompilationContext,
+    x: LLVMValueRef,
+    y: LLVMValueRef,
+    z: LLVMValueRef
+) -> LLVMValueRef {
+    var values: [LLVMValueRef] = [x, y, z]
+    values.reserveCapacity(3 + program.instructions.count)
+
+    for instruction in program.instructions {
+        let result: LLVMValueRef
+        switch instruction {
+        case .constant(let value):
+            result = context.constant(value)
+        case .convertSignedIntToDouble(let input):
+            result = LLVMBuildSIToFP(context.builder, values[input], context.doubleType, "density_ir.sitofp")!
+        case .add(let lhs, let rhs):
+            result = LLVMBuildFAdd(context.builder, values[lhs], values[rhs], "density_ir.add")!
+        case .subtract(let lhs, let rhs):
+            result = LLVMBuildFSub(context.builder, values[lhs], values[rhs], "density_ir.sub")!
+        case .multiply(let lhs, let rhs):
+            result = LLVMBuildFMul(context.builder, values[lhs], values[rhs], "density_ir.mul")!
+        case .divide(let lhs, let rhs):
+            result = LLVMBuildFDiv(context.builder, values[lhs], values[rhs], "density_ir.div")!
+        case .negate(let input):
+            result = LLVMBuildFNeg(context.builder, values[input], "density_ir.neg")!
+        case .compare(let comparison, let lhs, let rhs):
+            let predicate: LLVMRealPredicate = switch comparison {
+            case .equal: LLVMRealOEQ
+            case .lessThan: LLVMRealOLT
+            case .lessThanOrEqual: LLVMRealOLE
+            case .greaterThan: LLVMRealOGT
+            case .greaterThanOrEqual: LLVMRealOGE
+            }
+            result = LLVMBuildFCmp(context.builder, predicate, values[lhs], values[rhs], "density_ir.compare")!
+        case .and(let lhs, let rhs):
+            result = LLVMBuildAnd(context.builder, values[lhs], values[rhs], "density_ir.and")!
+        case .select(let condition, let whenTrue, let whenFalse):
+            result = LLVMBuildSelect(
+                context.builder,
+                values[condition],
+                values[whenTrue],
+                values[whenFalse],
+                "density_ir.select"
+            )!
+        case .sampleDensity(let index, let sampleX, let sampleY, let sampleZ):
+            result = context.buildRuntimeDensitySampleCall(
+                program.densityFunctions[index] as AnyObject,
+                x: values[sampleX],
+                y: values[sampleY],
+                z: values[sampleZ],
+                name: "density_ir.sample_density"
+            )
+        case .sampleNoise(let index, let sampleX, let sampleY, let sampleZ):
+            result = context.buildRuntimeNoiseSampleCall(
+                program.noises[index],
+                x: values[sampleX],
+                y: values[sampleY],
+                z: values[sampleZ],
+                name: "density_ir.sample_noise"
+            )
+        }
+        values.append(result)
+    }
+    return values[program.output]
+}
+
+private func compileDensityFunctionIRWithLLVM(
+    _ program: DensityFunctionIRProgram,
+    registry: Registry<DensityFunction>
 ) throws -> CompiledDensityFunction {
     try JITCompiler.shared.withLock {
-        guard let root = root as? any CompilableDensityFunction else {
-            throw DensityFunctionCompilationError.nonCompilableDensityFunction
-        }
-
-        if type(of: root) is AnyObject.Type {
-            JITCompiler.shared.retain(root as AnyObject)
+        for function in program.densityFunctions {
+            JITCompiler.shared.retain(function as AnyObject)
         }
         JITCompiler.shared.retain(registry)
 
@@ -1475,8 +1589,9 @@ public func compile(
             densityFunctionRegistry: registry
         )
 
-        let result = try root.compile(
-            inContext: context,
+        let result = lowerDensityFunctionIR(
+            program,
+            in: context,
             x: LLVMGetParam(function, 0),
             y: LLVMGetParam(function, 1),
             z: LLVMGetParam(function, 2)
@@ -1516,16 +1631,23 @@ public func compile(
             prefix: "Failed to resolve compiled density function"
         )
 
-        return unsafeBitCast(address, to: CompiledDensityFunction.self)
+        let nativeFunction = unsafeBitCast(address, to: NativeCompiledDensityFunction.self)
+        return CompiledDensityFunction(strategy: .llvm) { x, y, z in
+            nativeFunction(x, y, z)
+        }
     }
 }
 
 public func compile(
     densityFunction root: any DensityFunction,
     bufferContext: CompiledDensityFunctionBufferContext,
+    strategy: DensityFunctionCompilationStrategy = .llvm,
     registry: Registry<DensityFunction> = Registry(),
     options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions()
 ) throws -> CompiledDensityFunctionBuffer {
+    guard strategy == .llvm else {
+        throw DensityFunctionCompilationError.unsupportedCompilationStrategy(strategy)
+    }
     _ = try validateCompiledDensityFunctionBufferContext(bufferContext)
 
     if options.profilingState != nil {
@@ -3759,17 +3881,11 @@ extension ChunkPositionCache: CompilableDensityFunction {}
 #else
 public func compile(
     densityFunction root: any DensityFunction,
-    registry: Registry<DensityFunction> = Registry()
-) throws -> CompiledDensityFunction {
-    throw DensityFunctionCompilationError.noLLVM
-}
-
-public func compile(
-    densityFunction root: any DensityFunction,
     bufferContext: CompiledDensityFunctionBufferContext,
+    strategy: DensityFunctionCompilationStrategy = .llvm,
     registry: Registry<DensityFunction> = Registry(),
     options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions()
 ) throws -> CompiledDensityFunctionBuffer {
-    throw DensityFunctionCompilationError.noLLVM
+    throw DensityFunctionCompilationError.unsupportedCompilationStrategy(strategy)
 }
 #endif

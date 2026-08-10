@@ -140,6 +140,80 @@ private func assertCompiledBufferMatches(
     )
 }
 
+@Test func testCompiledDensityFunctionStrategies() throws {
+    let coordinateInput = YClampedGradient(fromY: -8, toY: 12, fromValue: -1.5, toValue: 2.5)
+    let densityFunction = BinaryDensityFunction(
+        firstOperand: ShiftedNoise(
+            noise: CompilerTestNoise(),
+            shiftX: BinaryDensityFunction(
+                firstOperand: ShiftDensityFunction(noise: CompilerTestNoise(), shiftType: .SHIFT_XZ),
+                secondOperand: coordinateInput,
+                type: .ADD
+            ),
+            shiftY: UnaryDensityFunction(operand: coordinateInput, type: .HALF_NEGATIVE),
+            shiftZ: ClampDensityFunction(input: coordinateInput, lowerBound: -0.25, upperBound: 1.25),
+            scaleXZ: 0.25,
+            scaleY: 0.5
+        ),
+        secondOperand: UnaryDensityFunction(
+            operand: ConstantDensityFunction(value: -0.5),
+            type: .SQUARE
+        ),
+        type: .ADD
+    )
+    let frontendProgram = try buildDensityFunctionIR(densityFunction: densityFunction, registry: Registry())
+    let llvm = try compile(densityFunction: densityFunction, strategy: .llvm)
+    let wasm = try compile(densityFunction: densityFunction, strategy: .wasm)
+
+    #expect(frontendProgram.densityFunctions.isEmpty)
+    #expect(frontendProgram.noises.count == 2)
+    #expect(llvm.strategy == .llvm)
+    #expect(wasm.strategy == .wasm)
+    #expect(wasm.wasmModule?.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+    for position in [
+        PosInt3D(x: -7, y: -4, z: 11),
+        PosInt3D(x: 0, y: 3, z: 0),
+        PosInt3D(x: 17, y: 15, z: -23)
+    ] {
+        let expected = densityFunction.sample(at: position)
+        #expect(checkDouble(llvm(position.x, position.y, position.z), expected))
+        #expect(checkDouble(wasm(position.x, position.y, position.z), expected))
+    }
+}
+
+@Test func testUnsupportedDensityFunctionCompilationStrategies() throws {
+    let densityFunction = ConstantDensityFunction(value: 1.0)
+
+    do {
+        _ = try compile(
+            densityFunction: densityFunction,
+            bufferContext: CompiledDensityFunctionBufferContext(xCount: 1, yCount: 1, zCount: 1),
+            strategy: .wasm
+        )
+        Issue.record("Buffered WASM compilation should be unsupported.")
+    } catch let error as DensityFunctionCompilationError {
+        guard case .unsupportedCompilationStrategy(.wasm) = error else {
+            Issue.record("Unexpected buffered WASM compilation error: \(error)")
+            return
+        }
+    }
+
+    do {
+        _ = try compile(
+            densityFunction: densityFunction,
+            cellSize: DensityFunctionCellSize(horizontalBlockCount: 4, verticalBlockCount: 4),
+            cellVolume: DensityFunctionCellVolume(xCount: 1, yCount: 1, zCount: 1),
+            strategy: .wasm
+        )
+        Issue.record("Cell-volume WASM compilation should be unsupported.")
+    } catch let error as DensityFunctionCompilationError {
+        guard case .unsupportedCompilationStrategy(.wasm) = error else {
+            Issue.record("Unexpected cell-volume WASM compilation error: \(error)")
+            return
+        }
+    }
+}
+
 @Test func testCompiledDensityFunctionBufferedCorrectness() throws {
     let densityFunction = BinaryDensityFunction(
         firstOperand: YClampedGradient(fromY: -4, toY: 7, fromValue: -1.0, toValue: 2.0),
