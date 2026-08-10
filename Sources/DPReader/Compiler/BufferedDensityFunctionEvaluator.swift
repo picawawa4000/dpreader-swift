@@ -1,3 +1,5 @@
+#if DEBUG && !(os(WASI) || arch(wasm32))
+
 import Foundation
 
 protocol BufferedDensityFunctionRuntimePlan: AnyObject {
