@@ -103,6 +103,39 @@ private func makeVanillaDimensionBiomeWorldGenerator(seed: UInt64, settings: Str
     )
 }
 
+@Test func testWorldGeneratorCanReseedAndUseCompiledBiomeFunctions() throws {
+    let pack = try DataPack(fromRootPath: try vanillaBiomeTestPackURL())
+    let settings = RegistryKey<NoiseSettings>(referencing: "minecraft:overworld")
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    let position = PosInt3D(x: 12_345, y: 96, z: -54_321)
+
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: settings,
+        compilationBackend: .wasm
+    )
+    try generator.setWorldSeed(501_235_370_21)
+
+    let reseededPoint = generator.sampleNoisePoint(at: position)
+    let reseededBiome = try generator.sampleBiome(at: position, in: dimension)
+    let freshGenerator = try WorldGenerator(
+        withWorldSeed: 501_235_370_21,
+        usingDataPacks: [pack],
+        usingSettings: settings
+    )
+    let freshPoint = freshGenerator.sampleNoisePoint(at: position)
+    let freshBiome = try freshGenerator.sampleBiome(at: position, in: dimension)
+
+    #expect(reseededPoint.temperature == freshPoint.temperature)
+    #expect(reseededPoint.humidity == freshPoint.humidity)
+    #expect(reseededPoint.continentalness == freshPoint.continentalness)
+    #expect(reseededPoint.erosion == freshPoint.erosion)
+    #expect(reseededPoint.weirdness == freshPoint.weirdness)
+    #expect(reseededPoint.depth == freshPoint.depth)
+    #expect(reseededBiome == freshBiome)
+}
+
 @Test func testVanillaNetherBiomesMatchCubiomesReference() async throws {
     let reference = try loadCubiomesDimensionBiomeReference(
         named: "nether_biomes_seed_503815372.json",

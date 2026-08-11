@@ -1837,7 +1837,7 @@ func compileBiomeSearchIRWithLLVM(
 public func compile(
     densityFunction root: any DensityFunction,
     bufferContext: CompiledDensityFunctionBufferContext,
-    strategy: DensityFunctionCompilationStrategy = .llvm,
+    strategy: CompilationBackend = .llvm,
     registry: Registry<DensityFunction> = Registry(),
     options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions()
 ) throws -> CompiledDensityFunctionBuffer {
