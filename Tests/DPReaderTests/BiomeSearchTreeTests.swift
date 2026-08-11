@@ -172,6 +172,12 @@ import Testing
     let tree = try BiomeSearchTree(entries: entries)
     let wasm = try tree.compile(strategy: .wasm)
     let compiled = try tree.compile(strategy: .llvm)
+    let wasmModule = try #require(wasm.wasmModule)
+    #expect(wasmModule.count < 1_500_000)
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_BIOME_WASM_OUTPUT_PATH"] {
+        try Data(wasmModule).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("biome search WASM module:", wasmModule.count, "bytes at", outputPath)
+    }
     var randomState: UInt64 = 0x4d595df4d0f33173
 
     func nextParameter() -> Double {
