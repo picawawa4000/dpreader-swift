@@ -2028,6 +2028,14 @@ private final class SharedTerrainLODProgressReporter: @unchecked Sendable {
     }
 }
 
+private final class WeakCompiledDensityFunctionBulk {
+    weak var value: CompiledDensityFunctionBulk?
+
+    init(_ value: CompiledDensityFunctionBulk) {
+        self.value = value
+    }
+}
+
 private struct SectionBiomeLatticeMap {
     let uniquePositions: [BiomeLatticePosition]
     let blockToUniqueIndex: [UInt16]
@@ -2123,6 +2131,7 @@ public final class WorldGenerator {
     private var endBiomeDimensions = Set<RegistryKey<Dimension>>()
     private var directPointSamplingDensityFunctions: DirectPointSamplingDensityFunctions?
     private var compiledBiomeDensityFunctions: CompiledBiomeDensityFunctions?
+    private var finalDensityBulkSamplers: [WeakCompiledDensityFunctionBulk] = []
     // Terrain generation walks a shared baked density-function graph composed of reference types.
     // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
     private let terrainGenerationLock = NSLock()
@@ -2185,6 +2194,7 @@ public final class WorldGenerator {
 
         try self.bakeDensityFunctions()
         try self.compileConfiguredFunctions()
+        try self.refreshFinalDensityBulkSamplers()
     }
 
     /// Labelled spelling retained for callers that prefer an explicit seed argument.
@@ -2355,6 +2365,48 @@ public final class WorldGenerator {
                 runtime: self.wasmRuntime
             )
         )
+    }
+
+    private func compileFinalDensityBulkSampler(
+        for volume: CompiledDensityFunctionBufferContext,
+        strategy: CompilationBackend
+    ) throws -> CompiledDensityFunctionBulk {
+        let functions = try self.validatedDirectPointSamplingDensityFunctions(
+            for: "Final density bulk sampling"
+        )
+        return try compile(
+            densityFunction: functions.cacheless.finalDensity,
+            bufferContext: volume,
+            strategy: strategy,
+            registry: self.registries.densityFunctionRegistry,
+            runtime: self.wasmRuntime
+        )
+    }
+
+    private func refreshFinalDensityBulkSamplers() throws {
+        var liveSamplers: [CompiledDensityFunctionBulk] = []
+        liveSamplers.reserveCapacity(self.finalDensityBulkSamplers.count)
+        for reference in self.finalDensityBulkSamplers {
+            if let sampler = reference.value {
+                liveSamplers.append(sampler)
+            }
+        }
+
+        var replacements: [(CompiledDensityFunctionBulk, CompiledDensityFunctionBulk)] = []
+        replacements.reserveCapacity(liveSamplers.count)
+        for sampler in liveSamplers {
+            replacements.append((
+                sampler,
+                try self.compileFinalDensityBulkSampler(
+                    for: sampler.bufferContext,
+                    strategy: sampler.strategy
+                )
+            ))
+        }
+        for (sampler, replacement) in replacements {
+            sampler.replaceImplementation(with: replacement)
+        }
+        self.finalDensityBulkSamplers = liveSamplers.map(WeakCompiledDensityFunctionBulk.init)
     }
 
     /// Convert the density functions to a usable format.
@@ -3632,6 +3684,37 @@ public final class WorldGenerator {
     // Currently visible for testing only.
     func densityFunctionRegistryForTesting() -> Registry<DensityFunction> {
         self.registries.densityFunctionRegistry
+    }
+
+    /// Returns a compiled sampler for a fixed z/x/y-ordered volume of the configured final density.
+    /// The sampler is refreshed when ``setWorldSeed(_:)`` is called, so an existing sampler follows
+    /// the generator's current seed. If no strategy is supplied, the generator's configured backend
+    /// is used, followed by the platform's native default.
+    public func makeFinalDensityBulkSampler(
+        for volume: CompiledDensityFunctionBufferContext,
+        strategy: CompilationBackend? = nil
+    ) throws -> CompiledDensityFunctionBulk {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
+        let selectedStrategy: CompilationBackend
+        if let strategy {
+            selectedStrategy = strategy
+        } else if let compilationBackend = self.compilationBackend {
+            selectedStrategy = compilationBackend
+        } else {
+            #if canImport(CLLVM)
+            selectedStrategy = .llvm
+            #else
+            selectedStrategy = .wasm
+            #endif
+        }
+        let sampler = try self.compileFinalDensityBulkSampler(
+            for: volume,
+            strategy: selectedStrategy
+        )
+        self.finalDensityBulkSamplers.append(WeakCompiledDensityFunctionBulk(sampler))
+        return sampler
     }
 
     /// Samples terrain in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.

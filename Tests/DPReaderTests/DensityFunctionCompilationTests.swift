@@ -68,10 +68,8 @@ private func assertCompiledBufferMatches(
         registry: registry
     )
     var buffer = [Double](repeating: 0.0, count: bufferContext.sampleCount)
-    withUnsafePointer(to: bufferContext) { contextPointer in
-        buffer.withUnsafeMutableBufferPointer { bufferPointer in
-            compiledFunction(UnsafeRawPointer(contextPointer), basePos.x, basePos.y, basePos.z, bufferPointer.baseAddress)
-        }
+    buffer.withUnsafeMutableBufferPointer { bufferPointer in
+        compiledFunction.fill(at: basePos, into: bufferPointer)
     }
 
     var index = 0
@@ -185,6 +183,43 @@ private func assertCompiledBufferMatches(
     }
 }
 
+@Test func testCompiledDensityFunctionBulkStrategiesUseTheSameAPI() throws {
+    let densityFunction = BinaryDensityFunction(
+        firstOperand: YClampedGradient(fromY: -16, toY: 32, fromValue: -2, toValue: 4),
+        secondOperand: ConstantDensityFunction(value: 0.75),
+        type: .ADD
+    )
+    let volume = CompiledDensityFunctionBufferContext(
+        xCount: 3,
+        yCount: 4,
+        zCount: 2,
+        xStep: 2,
+        yStep: 3,
+        zStep: 5
+    )
+    let basePosition = PosInt3D(x: -7, y: -11, z: 13)
+    let wasm = try compile(
+        densityFunction: densityFunction,
+        bufferContext: volume,
+        strategy: .wasm
+    )
+
+    #expect(wasm.strategy == .wasm)
+    #expect(wasm.wasmModule != nil)
+    #if canImport(CLLVM)
+    let llvm = try compile(
+        densityFunction: densityFunction,
+        bufferContext: volume,
+        strategy: .llvm
+    )
+    #expect(llvm.strategy == .llvm)
+    #expect(llvm.wasmModule == nil)
+    let llvmValues = llvm(at: basePosition)
+    let wasmValues = wasm(at: basePosition)
+    #expect(zip(llvmValues, wasmValues).allSatisfy { checkDouble($0.0, $0.1) })
+    #endif
+}
+
 @Test func testUnsupportedDensityFunctionCompilationStrategies() throws {
     let densityFunction = ConstantDensityFunction(value: 1.0)
 
@@ -200,19 +235,13 @@ private func assertCompiledBufferMatches(
     }
 #endif
 
-    do {
-        _ = try compile(
-            densityFunction: densityFunction,
-            bufferContext: CompiledDensityFunctionBufferContext(xCount: 1, yCount: 1, zCount: 1),
-            strategy: .wasm
-        )
-        Issue.record("Buffered WASM compilation should be unsupported.")
-    } catch let error as DensityFunctionCompilationError {
-        guard case .unsupportedCompilationStrategy(.wasm) = error else {
-            Issue.record("Unexpected buffered WASM compilation error: \(error)")
-            return
-        }
-    }
+    let wasmBulk = try compile(
+        densityFunction: densityFunction,
+        bufferContext: CompiledDensityFunctionBufferContext(xCount: 1, yCount: 1, zCount: 1),
+        strategy: .wasm
+    )
+    #expect(wasmBulk.strategy == .wasm)
+    #expect(wasmBulk(at: PosInt3D(x: 0, y: 0, z: 0)) == [1.0])
 
     do {
         _ = try compile(
@@ -317,10 +346,8 @@ private func assertCompiledBufferMatches(
     let compiledFunction = try compile(densityFunction: densityFunction, bufferContext: bufferContext)
     var buffer = [Double](repeating: 0.0, count: bufferContext.sampleCount)
 
-    withUnsafePointer(to: bufferContext) { contextPointer in
-        buffer.withUnsafeMutableBufferPointer { bufferPointer in
-            compiledFunction(UnsafeRawPointer(contextPointer), 5, -2, 7, bufferPointer.baseAddress)
-        }
+    buffer.withUnsafeMutableBufferPointer { bufferPointer in
+        compiledFunction.fill(at: PosInt3D(x: 5, y: -2, z: 7), into: bufferPointer)
     }
 
     #expect(shared.sampleCount == bufferContext.sampleCount)
@@ -439,10 +466,8 @@ private func assertCompiledBufferMatches(
     )
     var buffer = [Double](repeating: 0.0, count: bufferContext.sampleCount)
 
-    withUnsafePointer(to: bufferContext) { contextPointer in
-        buffer.withUnsafeMutableBufferPointer { bufferPointer in
-            compiledFunction(UnsafeRawPointer(contextPointer), 5, -2, 7, bufferPointer.baseAddress)
-        }
+    buffer.withUnsafeMutableBufferPointer { bufferPointer in
+        compiledFunction.fill(at: PosInt3D(x: 5, y: -2, z: 7), into: bufferPointer)
     }
 
     #expect(shared.sampleCount == bufferContext.sampleCount)

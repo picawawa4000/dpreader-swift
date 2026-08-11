@@ -16,6 +16,13 @@ public struct WASMDensityFunctionImports: Sendable {
 }
 
 public typealias WASMDensityFunctionInvocation = @Sendable (Int32, Int32, Int32) -> Double
+
+/// Calls a fixed-size bulk export and copies its results into `output`.
+/// The runtime adapter can perform the module-memory to Swift-memory transfer as one typed-array copy.
+public typealias WASMDensityFunctionBulkInvocation = @Sendable (
+    Int32, Int32, Int32, UnsafeMutablePointer<Double>
+) -> Void
+
 public struct WASMClimateSample: Sendable, Equatable {
     public let temperature: Double
     public let humidity: Double
@@ -63,6 +70,16 @@ public protocol WASMRuntime: Sendable {
         imports: WASMDensityFunctionImports
     ) throws -> WASMDensityFunctionInvocation
 
+    /// Instantiates a module exporting a fixed-size bulk sampler and its linear memory.
+    /// The sampler returns the byte offset of `sampleCount` contiguous `f64` results.
+    func instantiateDensityFunctionBulk(
+        module: [UInt8],
+        exportName: String,
+        memoryExportName: String,
+        sampleCount: Int,
+        imports: WASMDensityFunctionImports
+    ) throws -> WASMDensityFunctionBulkInvocation
+
     /// Instantiates `sample_climate(i32, i32, i32) -> (f64, f64, f64, f64, f64, f64)`.
     func instantiateClimateFunctions(
         module: [UInt8],
@@ -87,6 +104,16 @@ public extension WASMRuntime {
     ) throws -> WASMClimateInvocation {
         throw DensityFunctionCompilationError.wasmRuntimeUnavailable
     }
+
+    func instantiateDensityFunctionBulk(
+        module _: [UInt8],
+        exportName _: String,
+        memoryExportName _: String,
+        sampleCount _: Int,
+        imports _: WASMDensityFunctionImports
+    ) throws -> WASMDensityFunctionBulkInvocation {
+        throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+    }
 }
 
 /// A convenience runtime adapter for browser or embedding bridges implemented with closures.
@@ -100,21 +127,27 @@ public struct ClosureWASMRuntime: WASMRuntime {
     public typealias ClimateFunctionInstantiator = @Sendable (
         [UInt8], String, WASMDensityFunctionImports
     ) throws -> WASMClimateInvocation
+    public typealias DensityFunctionBulkInstantiator = @Sendable (
+        [UInt8], String, String, Int, WASMDensityFunctionImports
+    ) throws -> WASMDensityFunctionBulkInvocation
 
     private let densityFunctionInstantiator: DensityFunctionInstantiator
     private let biomeSearchInstantiator: BiomeSearchInstantiator
     private let climateFunctionInstantiator: ClimateFunctionInstantiator?
+    private let densityFunctionBulkInstantiator: DensityFunctionBulkInstantiator?
 
     public var supportsClimateFunctions: Bool { self.climateFunctionInstantiator != nil }
 
     public init(
         instantiateDensityFunction: @escaping DensityFunctionInstantiator,
         instantiateBiomeSearch: @escaping BiomeSearchInstantiator,
-        instantiateClimateFunctions: ClimateFunctionInstantiator? = nil
+        instantiateClimateFunctions: ClimateFunctionInstantiator? = nil,
+        instantiateDensityFunctionBulk: DensityFunctionBulkInstantiator? = nil
     ) {
         self.densityFunctionInstantiator = instantiateDensityFunction
         self.biomeSearchInstantiator = instantiateBiomeSearch
         self.climateFunctionInstantiator = instantiateClimateFunctions
+        self.densityFunctionBulkInstantiator = instantiateDensityFunctionBulk
     }
 
     public func instantiateClimateFunctions(
@@ -134,6 +167,25 @@ public struct ClosureWASMRuntime: WASMRuntime {
         imports: WASMDensityFunctionImports
     ) throws -> WASMDensityFunctionInvocation {
         try self.densityFunctionInstantiator(module, exportName, imports)
+    }
+
+    public func instantiateDensityFunctionBulk(
+        module: [UInt8],
+        exportName: String,
+        memoryExportName: String,
+        sampleCount: Int,
+        imports: WASMDensityFunctionImports
+    ) throws -> WASMDensityFunctionBulkInvocation {
+        guard let densityFunctionBulkInstantiator else {
+            throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+        }
+        return try densityFunctionBulkInstantiator(
+            module,
+            exportName,
+            memoryExportName,
+            sampleCount,
+            imports
+        )
     }
 
     public func instantiateBiomeSearch(

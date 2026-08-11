@@ -49,6 +49,75 @@ public final class CompiledDensityFunction: @unchecked Sendable {
     }
 }
 
+/// A fixed-shape compiled bulk sampler. One invocation evaluates the complete z/x/y-ordered volume.
+public final class CompiledDensityFunctionBulk: @unchecked Sendable {
+    public let strategy: CompilationBackend
+    public let bufferContext: CompiledDensityFunctionBufferContext
+    private let stateLock = NSLock()
+    private var storedWasmModule: [UInt8]?
+    private var implementation: WASMDensityFunctionBulkInvocation
+
+    /// A module exporting `sample_bulk` and `memory`, present only for the WASM strategy.
+    public var wasmModule: [UInt8]? {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self.storedWasmModule
+    }
+
+    init(
+        strategy: CompilationBackend,
+        wasmModule: [UInt8]? = nil,
+        bufferContext: CompiledDensityFunctionBufferContext,
+        implementation: @escaping WASMDensityFunctionBulkInvocation
+    ) {
+        self.strategy = strategy
+        self.storedWasmModule = wasmModule
+        self.bufferContext = bufferContext
+        self.implementation = implementation
+    }
+
+    func replaceImplementation(with replacement: CompiledDensityFunctionBulk) {
+        precondition(self.strategy == replacement.strategy, "Cannot replace a bulk sampler with a different backend.")
+        precondition(
+            self.bufferContext.xCount == replacement.bufferContext.xCount
+                && self.bufferContext.yCount == replacement.bufferContext.yCount
+                && self.bufferContext.zCount == replacement.bufferContext.zCount
+                && self.bufferContext.xStep == replacement.bufferContext.xStep
+                && self.bufferContext.yStep == replacement.bufferContext.yStep
+                && self.bufferContext.zStep == replacement.bufferContext.zStep,
+            "Cannot replace a bulk sampler with a different volume."
+        )
+        replacement.stateLock.lock()
+        let replacementModule = replacement.storedWasmModule
+        let replacementImplementation = replacement.implementation
+        replacement.stateLock.unlock()
+        self.stateLock.lock()
+        self.storedWasmModule = replacementModule
+        self.implementation = replacementImplementation
+        self.stateLock.unlock()
+    }
+
+    /// Fills `output` in z/x/y order. Its count must equal `bufferContext.sampleCount`.
+    public func fill(
+        at basePosition: PosInt3D,
+        into output: UnsafeMutableBufferPointer<Double>
+    ) {
+        precondition(output.count == self.bufferContext.sampleCount, "Incorrect bulk output size.")
+        guard let baseAddress = output.baseAddress else { return }
+        self.stateLock.lock()
+        let implementation = self.implementation
+        self.stateLock.unlock()
+        implementation(basePosition.x, basePosition.y, basePosition.z, baseAddress)
+    }
+
+    /// Evaluates and returns the fixed bulk volume in z/x/y order.
+    public func callAsFunction(at basePosition: PosInt3D) -> [Double] {
+        var output = [Double](repeating: 0, count: self.bufferContext.sampleCount)
+        output.withUnsafeMutableBufferPointer { self.fill(at: basePosition, into: $0) }
+        return output
+    }
+}
+
 final class CompiledWASMClimateFunctions: @unchecked Sendable {
     let wasmModule: [UInt8]
     private let implementation: WASMClimateInvocation
@@ -493,6 +562,97 @@ public func compile(
         throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
 #endif
     }
+}
+
+/// Compiles a fixed-shape density volume with the selected backend.
+///
+/// WASM modules expose one `sample_bulk` call which writes contiguous `f64` values to module memory,
+/// allowing an embedding to transfer the complete result with one typed-array copy. LLVM modules use
+/// their optimized native buffer loop behind the same sampler API.
+public func compile(
+    densityFunction root: any DensityFunction,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    strategy: CompilationBackend = .llvm,
+    registry: Registry<DensityFunction> = Registry(),
+    options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions(),
+    runtime: (any WASMRuntime)? = nil
+) throws -> CompiledDensityFunctionBulk {
+    _ = try validateCompiledDensityFunctionBufferContext(bufferContext)
+
+    if strategy == .llvm {
+        let nativeFunction = try compileDensityFunctionBufferWithLLVM(
+            densityFunction: root,
+            bufferContext: bufferContext,
+            registry: registry,
+            options: options
+        )
+        let implementation: WASMDensityFunctionBulkInvocation = { baseX, baseY, baseZ, output in
+            withUnsafePointer(to: bufferContext) { contextPointer in
+                nativeFunction(UnsafeRawPointer(contextPointer), baseX, baseY, baseZ, output)
+            }
+        }
+        return CompiledDensityFunctionBulk(
+            strategy: .llvm,
+            bufferContext: bufferContext,
+            implementation: implementation
+        )
+    }
+
+    let program = try buildDensityFunctionIR(densityFunction: root, registry: registry)
+    let module = try buildDensityFunctionWASMModule(program, bulkContext: bufferContext)
+
+    if let runtime {
+        let imports = WASMDensityFunctionImports(
+            sampleDensity: { index, x, y, z in
+                precondition(index >= 0 && Int(index) < program.densityFunctions.count)
+                return program.densityFunctions[Int(index)].sample(at: PosInt3D(x: x, y: y, z: z))
+            },
+            sampleNoise: { index, x, y, z in
+                precondition(index >= 0 && Int(index) < program.noises.count)
+                return program.noises[Int(index)].sample(x: x, y: y, z: z)
+            }
+        )
+        let implementation = try runtime.instantiateDensityFunctionBulk(
+            module: module,
+            exportName: "sample_bulk",
+            memoryExportName: "memory",
+            sampleCount: bufferContext.sampleCount,
+            imports: imports
+        )
+        return CompiledDensityFunctionBulk(
+            strategy: .wasm,
+            wasmModule: module,
+            bufferContext: bufferContext,
+            implementation: implementation
+        )
+    }
+
+    #if os(WASI) || arch(wasm32)
+    throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+    #else
+    let implementation: WASMDensityFunctionBulkInvocation = { baseX, baseY, baseZ, output in
+        var index = 0
+        for zOffset in 0..<bufferContext.zCount {
+            for xOffset in 0..<bufferContext.xCount {
+                for yOffset in 0..<bufferContext.yCount {
+                    output[index] = evaluateDensityFunctionIR(
+                        program,
+                        x: baseX + xOffset * bufferContext.xStep,
+                        y: baseY + yOffset * bufferContext.yStep,
+                        z: baseZ + zOffset * bufferContext.zStep
+                    )
+                    index += 1
+                }
+            }
+        }
+    }
+    return CompiledDensityFunctionBulk(
+        strategy: .wasm,
+        wasmModule: module,
+        bufferContext: bufferContext,
+        implementation: implementation
+    )
+    #endif
 }
 
 func compileWASMClimateFunctions(
@@ -1960,16 +2120,12 @@ func compileBiomeSearchIRWithLLVM(
     }
 }
 
-public func compile(
+private func compileDensityFunctionBufferWithLLVM(
     densityFunction root: any DensityFunction,
     bufferContext: CompiledDensityFunctionBufferContext,
-    strategy: CompilationBackend = .llvm,
-    registry: Registry<DensityFunction> = Registry(),
-    options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions()
+    registry: Registry<DensityFunction>,
+    options: BufferedDensityFunctionCompilationOptions
 ) throws -> CompiledDensityFunctionBuffer {
-    guard strategy == .llvm else {
-        throw DensityFunctionCompilationError.unsupportedCompilationStrategy(strategy)
-    }
     _ = try validateCompiledDensityFunctionBufferContext(bufferContext)
 
     if options.profilingState != nil {
@@ -4201,13 +4357,12 @@ extension InterpolatedNoise: CompilableDensityFunction {
 
 extension ChunkPositionCache: CompilableDensityFunction {}
 #else
-public func compile(
+private func compileDensityFunctionBufferWithLLVM(
     densityFunction root: any DensityFunction,
     bufferContext: CompiledDensityFunctionBufferContext,
-    strategy: CompilationBackend = .llvm,
-    registry: Registry<DensityFunction> = Registry(),
-    options: BufferedDensityFunctionCompilationOptions = BufferedDensityFunctionCompilationOptions()
+    registry: Registry<DensityFunction>,
+    options: BufferedDensityFunctionCompilationOptions
 ) throws -> CompiledDensityFunctionBuffer {
-    throw DensityFunctionCompilationError.unsupportedCompilationStrategy(strategy)
+    throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
 }
 #endif

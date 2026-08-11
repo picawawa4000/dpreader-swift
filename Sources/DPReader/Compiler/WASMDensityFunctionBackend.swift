@@ -188,6 +188,17 @@ private func appendDoubleLoad(offset: Int, to body: inout WASMEncoder) {
     body.appendUnsigned(offset)
 }
 
+private func appendDoubleStore(to body: inout WASMEncoder) {
+    body.append(0x39) // f64.store
+    body.appendUnsigned(3) // 8-byte alignment
+    body.appendUnsigned(0)
+}
+
+private func alignWASMOffset(_ offset: Int, to alignment: Int) -> Int {
+    precondition(alignment > 0 && alignment.nonzeroBitCount == 1)
+    return (offset + alignment - 1) & -alignment
+}
+
 private func appendInt32Load(offset: Int, to body: inout WASMEncoder) {
     body.append(0x28) // i32.load
     body.appendUnsigned(2) // 4-byte alignment
@@ -709,10 +720,104 @@ private func appendEmbeddedNoiseSample(
     body.append(0xa2) // f64.mul
 }
 
+private func makeWASMBulkFunctionBody(
+    bufferContext: CompiledDensityFunctionBufferContext,
+    outputOffset: Int,
+    scalarFunctionIndex: Int
+) -> [UInt8] {
+    // Parameters are base x/y/z. Locals are z/x/y offsets and the output address.
+    var body = WASMEncoder()
+    body.appendUnsigned(1)
+    body.appendUnsigned(4)
+    body.append(WASMValueType.i32.rawValue)
+
+    appendIntConstant(0, to: &body)
+    appendLocalSet(3, to: &body)
+    appendIntConstant(Int32(outputOffset), to: &body)
+    appendLocalSet(6, to: &body)
+
+    body.append(0x03) // loop z
+    body.append(0x40)
+    appendIntConstant(0, to: &body)
+    appendLocalSet(4, to: &body)
+
+    body.append(0x03) // loop x
+    body.append(0x40)
+    appendIntConstant(0, to: &body)
+    appendLocalSet(5, to: &body)
+
+    body.append(0x03) // loop y
+    body.append(0x40)
+    appendLocalGet(6, to: &body)
+    for (base, offset, step) in [
+        (0, 4, bufferContext.xStep),
+        (1, 5, bufferContext.yStep),
+        (2, 3, bufferContext.zStep)
+    ] {
+        appendLocalGet(base, to: &body)
+        appendLocalGet(offset, to: &body)
+        appendIntConstant(step, to: &body)
+        body.append(0x6c) // i32.mul
+        body.append(0x6a) // i32.add
+    }
+    appendCall(scalarFunctionIndex, to: &body)
+    appendDoubleStore(to: &body)
+
+    appendLocalGet(6, to: &body)
+    appendIntConstant(8, to: &body)
+    body.append(0x6a) // i32.add
+    appendLocalSet(6, to: &body)
+    appendLocalGet(5, to: &body)
+    appendIntConstant(1, to: &body)
+    body.append(0x6a) // i32.add
+    body.append(0x22) // local.tee
+    body.appendUnsigned(5)
+    appendIntConstant(bufferContext.yCount, to: &body)
+    body.append(0x49) // i32.lt_u
+    body.append(0x0d) // br_if y
+    body.appendUnsigned(0)
+    body.append(0x0b) // end y
+
+    appendLocalGet(4, to: &body)
+    appendIntConstant(1, to: &body)
+    body.append(0x6a) // i32.add
+    body.append(0x22) // local.tee
+    body.appendUnsigned(4)
+    appendIntConstant(bufferContext.xCount, to: &body)
+    body.append(0x49) // i32.lt_u
+    body.append(0x0d) // br_if x
+    body.appendUnsigned(0)
+    body.append(0x0b) // end x
+
+    appendLocalGet(3, to: &body)
+    appendIntConstant(1, to: &body)
+    body.append(0x6a) // i32.add
+    body.append(0x22) // local.tee
+    body.appendUnsigned(3)
+    appendIntConstant(bufferContext.zCount, to: &body)
+    body.append(0x49) // i32.lt_u
+    body.append(0x0d) // br_if z
+    body.appendUnsigned(0)
+    body.append(0x0b) // end z
+
+    appendIntConstant(Int32(outputOffset), to: &body)
+    body.append(0x0b)
+    return body.bytes
+}
+
 func buildDensityFunctionWASMModule(
     _ program: DensityFunctionIRProgram,
-    exportName: String = "sample"
+    exportName: String = "sample",
+    bulkContext: CompiledDensityFunctionBufferContext? = nil,
+    bulkExportName: String = "sample_bulk"
 ) throws -> [UInt8] {
+    if bulkContext != nil {
+        guard program.inputTypes == [.i32, .i32, .i32], program.outputs.count == 1 else {
+            throw DensityFunctionCompilationError.badDensityFunction(
+                "WASM bulk compilation requires one scalar output with x/y/z inputs."
+            )
+        }
+    }
     var module = WASMEncoder()
     module.append(contentsOf: [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
 
@@ -751,6 +856,16 @@ func buildDensityFunctionWASMModule(
     biomeTreeLayouts = biomeTreeLayouts.map {
         WASMBiomeTreeLayout(nodeBaseOffset: $0.nodeBaseOffset, stackOffset: biomeStackOffset)
     }
+    let biomeScratchEnd = biomeStackOffset + maximumBiomeTreeNodeCount * MemoryLayout<Int32>.size
+    let bulkOutputOffset = bulkContext.map { _ in alignWASMOffset(biomeScratchEnd, to: 8) }
+    let bulkOutputEnd = if let bulkContext, let bulkOutputOffset {
+        bulkOutputOffset + bulkContext.sampleCount * MemoryLayout<Double>.size
+    } else {
+        biomeScratchEnd
+    }
+    guard bulkOutputEnd <= Int(Int32.max) else {
+        throw DensityFunctionCompilationError.badDensityFunction("WASM bulk output exceeds the 32-bit address space.")
+    }
 
     let importsDensitySampler = program.instructions.contains { instruction in
         if case .sampleDensity = instruction { return true }
@@ -767,8 +882,9 @@ func buildDensityFunctionWASMModule(
     let noiseSamplerFunctionIndex = importsNoiseSampler ? (importsDensitySampler ? 1 : 0) : nil
     let importCount = (importsDensitySampler ? 1 : 0) + (importsNoiseSampler ? 1 : 0)
 
+    let baseTypeCount = embedsNoiseSampler ? 6 : 3
     var types = WASMEncoder()
-    types.appendUnsigned(embedsNoiseSampler ? 6 : 3)
+    types.appendUnsigned(baseTypeCount + (bulkContext == nil ? 0 : 1))
     appendFunctionType(parameters: [.i32, .i32, .i32, .i32], results: [.f64], to: &types)
     appendFunctionType(parameters: [.i32, .f64, .f64, .f64], results: [.f64], to: &types)
     let outputTypes: [DensityFunctionIRValueType] = program.outputs.map { output in
@@ -789,6 +905,10 @@ func buildDensityFunctionWASMModule(
         results: outputTypes.map(wasmValueType),
         to: &types
     )
+    let bulkFunctionTypeIndex = bulkContext.map { _ in baseTypeCount }
+    if bulkContext != nil {
+        appendFunctionType(parameters: [.i32, .i32, .i32], results: [.i32], to: &types)
+    }
     module.appendSection(id: 1, contents: types.bytes)
 
     var imports = WASMEncoder()
@@ -814,9 +934,10 @@ func buildDensityFunctionWASMModule(
     let lerpFunctionIndex = importCount + 3
     let perlinFunctionIndex = importCount + 4
     let mainFunctionIndex = importCount + helperFunctionCount
+    let bulkFunctionIndex = bulkContext.map { _ in mainFunctionIndex + 1 }
 
     var functions = WASMEncoder()
-    functions.appendUnsigned(helperFunctionCount + 1)
+    functions.appendUnsigned(helperFunctionCount + 1 + (bulkContext == nil ? 0 : 1))
     if embedsNoiseSampler {
         functions.appendUnsigned(2) // map
         functions.appendUnsigned(1) // gradient
@@ -825,22 +946,33 @@ func buildDensityFunctionWASMModule(
         functions.appendUnsigned(1) // perlin
     }
     functions.appendUnsigned(mainFunctionTypeIndex)
+    if let bulkFunctionTypeIndex {
+        functions.appendUnsigned(bulkFunctionTypeIndex)
+    }
     module.appendSection(id: 3, contents: functions.bytes)
 
-    if embedsNoiseSampler || !program.biomeSearchTrees.isEmpty {
+    if embedsNoiseSampler || !program.biomeSearchTrees.isEmpty || bulkContext != nil {
         var memories = WASMEncoder()
         memories.appendUnsigned(1)
         memories.append(0x00) // minimum only
-        let requiredByteCount = biomeStackOffset + maximumBiomeTreeNodeCount * MemoryLayout<Int32>.size
+        let requiredByteCount = max(biomeScratchEnd, bulkOutputEnd)
         memories.appendUnsigned(max(1, (requiredByteCount + 65_535) / 65_536))
         module.appendSection(id: 5, contents: memories.bytes)
     }
 
     var exports = WASMEncoder()
-    exports.appendUnsigned(1)
+    exports.appendUnsigned(bulkContext == nil ? 1 : 3)
     exports.appendName(exportName)
     exports.append(0x00)
     exports.appendUnsigned(mainFunctionIndex)
+    if let bulkFunctionIndex {
+        exports.appendName(bulkExportName)
+        exports.append(0x00)
+        exports.appendUnsigned(bulkFunctionIndex)
+        exports.appendName("memory")
+        exports.append(0x02)
+        exports.appendUnsigned(0)
+    }
     module.appendSection(id: 7, contents: exports.bytes)
 
     var body = WASMEncoder()
@@ -986,7 +1118,7 @@ func buildDensityFunctionWASMModule(
     body.append(0x0b)
 
     var code = WASMEncoder()
-    code.appendUnsigned(helperFunctionCount + 1)
+    code.appendUnsigned(helperFunctionCount + 1 + (bulkContext == nil ? 0 : 1))
     if embedsNoiseSampler {
         for helperBody in [
             makeWASMMapFunctionBody(),
@@ -1006,6 +1138,15 @@ func buildDensityFunctionWASMModule(
     }
     code.appendUnsigned(body.bytes.count)
     code.append(contentsOf: body.bytes)
+    if let bulkContext, let bulkOutputOffset {
+        let bulkBody = makeWASMBulkFunctionBody(
+            bufferContext: bulkContext,
+            outputOffset: bulkOutputOffset,
+            scalarFunctionIndex: mainFunctionIndex
+        )
+        code.appendUnsigned(bulkBody.count)
+        code.append(contentsOf: bulkBody)
+    }
     module.appendSection(id: 10, contents: code.bytes)
     if !staticData.bytes.isEmpty {
         var data = WASMEncoder()

@@ -2164,15 +2164,13 @@ private func benchmarkCompiledVanillaTerrainDensityBufferZXY(
     basePos: PosInt3D,
     bufferContext: CompiledDensityFunctionBufferContext,
     output: inout [Double],
-    compiledDensity: CompiledDensityFunctionBuffer
+    compiledDensity: CompiledDensityFunctionBulk
 ) -> VanillaTerrainDensityBenchmarkResult {
     precondition(output.count == bufferContext.sampleCount, "Unexpected terrain density output buffer size.")
 
     let start = DispatchTime.now().uptimeNanoseconds
-    withUnsafePointer(to: bufferContext) { contextPointer in
-        output.withUnsafeMutableBufferPointer { bufferPointer in
-            compiledDensity(UnsafeRawPointer(contextPointer), basePos.x, basePos.y, basePos.z, bufferPointer.baseAddress)
-        }
+    output.withUnsafeMutableBufferPointer { bufferPointer in
+        compiledDensity.fill(at: basePos, into: bufferPointer)
     }
     let end = DispatchTime.now().uptimeNanoseconds
 

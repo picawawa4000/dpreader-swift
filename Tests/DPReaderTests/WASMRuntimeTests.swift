@@ -100,6 +100,19 @@ private final class CapturingClimateWASMRuntime: WASMRuntime, @unchecked Sendabl
     }
 }
 
+private final class BulkInvocationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() {
+        self.lock.withLock { self.value += 1 }
+    }
+
+    var count: Int {
+        self.lock.withLock { self.value }
+    }
+}
+
 @Test func testWASMBackendUsesHostRuntimeForDensityInvocation() throws {
     let densityFunction = ShiftDensityFunction(noise: HostRuntimeTestNoise(), shiftType: .SHIFT_XZ)
     let compiled = try compile(
@@ -294,4 +307,194 @@ private final class CapturingClimateWASMRuntime: WASMRuntime, @unchecked Sendabl
         print("vanilla climate WASM module:", moduleData.count, "bytes")
         print("eliminated vanilla sample_noise callbacks per climate point:", previousScalarNoiseCallbacks)
     }
+}
+
+@Test func testWASMBulkMatchesRepeatedSinglePointGeneration() throws {
+    var random = XoroshiroRandom(seed: 0x6a09_e667_f3bc_c909)
+    let sampler = DoublePerlinNoise(
+        random: &random,
+        firstOctave: -5,
+        amplitudes: [1.0, 0.75, 0.5, 0.25],
+        useModernInitialization: true
+    )
+    let bakedNoise = BakedNoise(
+        fromKey: RegistryKey(referencing: "test:bulk_wasm_noise"),
+        withSampler: sampler
+    )
+    let densityFunction = BinaryDensityFunction(
+        firstOperand: NoiseDensityFunction(noise: bakedNoise, scaleXZ: 0.125, scaleY: 0.25),
+        secondOperand: YClampedGradient(fromY: -64, toY: 192, fromValue: -1, toValue: 1),
+        type: .ADD
+    )
+    let bufferContext = CompiledDensityFunctionBufferContext(
+        xCount: 6,
+        yCount: 5,
+        zCount: 4,
+        xStep: 2,
+        yStep: 3,
+        zStep: 5
+    )
+    let basePosition = PosInt3D(x: -37, y: -23, z: 41)
+    let bulk = try compile(
+        densityFunction: densityFunction,
+        bufferContext: bufferContext,
+        strategy: .wasm
+    )
+    let scalar = try compile(densityFunction: densityFunction, strategy: .wasm)
+    let bulkValues = bulk(at: basePosition)
+
+    var repeatedValues: [Double] = []
+    repeatedValues.reserveCapacity(bufferContext.sampleCount)
+    for zOffset in 0..<bufferContext.zCount {
+        for xOffset in 0..<bufferContext.xCount {
+            for yOffset in 0..<bufferContext.yCount {
+                repeatedValues.append(scalar(
+                    basePosition.x + xOffset * bufferContext.xStep,
+                    basePosition.y + yOffset * bufferContext.yStep,
+                    basePosition.z + zOffset * bufferContext.zStep
+                ))
+            }
+        }
+    }
+    #expect(bulkValues == repeatedValues)
+
+    let moduleData = Data(try #require(bulk.wasmModule))
+    #expect(moduleData.range(of: Data("sample_noise".utf8)) == nil)
+    #expect(moduleData.range(of: Data("sample_bulk".utf8)) != nil)
+    #expect(moduleData.range(of: Data("memory".utf8)) != nil)
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_DENSITY_BULK_WASM_OUTPUT_PATH"] {
+        try moduleData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("density bulk WASM module:", moduleData.count, "bytes")
+    }
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_SIMPLE_BULK_WASM_OUTPUT_PATH"] {
+        let simpleBulk = try compile(
+            densityFunction: YClampedGradient(fromY: -64, toY: 192, fromValue: -1, toValue: 1),
+            bufferContext: CompiledDensityFunctionBufferContext(xCount: 16, yCount: 16, zCount: 16),
+            strategy: .wasm
+        )
+        let simpleModule = try #require(simpleBulk.wasmModule)
+        try Data(simpleModule).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("simple density bulk WASM module:", simpleModule.count, "bytes")
+    }
+
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    guard let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)) else { return }
+    let moduleURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dpreader-density-bulk-\(UUID().uuidString).wasm")
+    try moduleData.write(to: moduleURL, options: .atomic)
+    defer { try? FileManager.default.removeItem(at: moduleURL) }
+
+    let script = """
+    const fs = require('fs');
+    const bytes = fs.readFileSync(process.argv[1]);
+    const module = new WebAssembly.Module(bytes);
+    if (WebAssembly.Module.imports(module).length !== 0) throw new Error('unexpected imports');
+    const instance = new WebAssembly.Instance(module, {});
+    const base = [\(basePosition.x), \(basePosition.y), \(basePosition.z)];
+    const counts = [\(bufferContext.xCount), \(bufferContext.yCount), \(bufferContext.zCount)];
+    const steps = [\(bufferContext.xStep), \(bufferContext.yStep), \(bufferContext.zStep)];
+    const pointer = instance.exports.sample_bulk(...base);
+    const actual = new Float64Array(instance.exports.memory.buffer, pointer, \(bufferContext.sampleCount));
+    let index = 0;
+    for (let z = 0; z < counts[2]; z++) {
+      for (let x = 0; x < counts[0]; x++) {
+        for (let y = 0; y < counts[1]; y++) {
+          const expected = instance.exports.sample(
+            base[0] + x * steps[0], base[1] + y * steps[1], base[2] + z * steps[2]
+          );
+          if (!Object.is(actual[index], expected)) {
+            throw new Error(`bulk mismatch at ${index}: ${actual[index]} != ${expected}`);
+          }
+          index++;
+        }
+      }
+    }
+    """
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: nodePath)
+    process.arguments = ["-e", script, moduleURL.path]
+    let errorPipe = Pipe()
+    process.standardError = errorPipe
+    try process.run()
+    process.waitUntilExit()
+    let errorOutput = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    #expect(process.terminationStatus == 0, "Node WASM bulk comparison failed: \(errorOutput)")
+}
+
+@Test func testWASMBulkUsesOneRuntimeInvocation() throws {
+    let bufferContext = CompiledDensityFunctionBufferContext(xCount: 4, yCount: 3, zCount: 2)
+    let counter = BulkInvocationCounter()
+    let runtime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _ in 0 } },
+        instantiateDensityFunctionBulk: { module, exportName, memoryExportName, sampleCount, _ in
+            #expect(module.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+            #expect(exportName == "sample_bulk")
+            #expect(memoryExportName == "memory")
+            #expect(sampleCount == bufferContext.sampleCount)
+            return { _, _, _, output in
+                counter.increment()
+                output.update(repeating: 3.25, count: sampleCount)
+            }
+        }
+    )
+    let compiled = try compile(
+        densityFunction: ConstantDensityFunction(value: 3.25),
+        bufferContext: bufferContext,
+        strategy: .wasm,
+        runtime: runtime
+    )
+    #expect(compiled(at: PosInt3D(x: 10, y: 20, z: 30)) == [Double](
+        repeating: 3.25,
+        count: bufferContext.sampleCount
+    ))
+    #expect(counter.count == 1)
+}
+
+@Test func testWorldGeneratorBulkSamplerFollowsReseeding() throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else { return }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let settings = RegistryKey<NoiseSettings>(referencing: "minecraft:overworld")
+    let volume = CompiledDensityFunctionBufferContext(
+        xCount: 3,
+        yCount: 2,
+        zCount: 2,
+        xStep: 11,
+        yStep: 17,
+        zStep: 23
+    )
+    let basePosition = PosInt3D(x: 1_337, y: 31, z: -7_919)
+    let firstSeed: WorldSeed = 503_815_372
+    let secondSeed: WorldSeed = 50_123_537_021
+    let generator = try WorldGenerator(
+        withWorldSeed: firstSeed,
+        usingDataPacks: [pack],
+        usingSettings: settings,
+        buildSearchTrees: false,
+        compilationBackend: .wasm
+    )
+    let sampler = try generator.makeFinalDensityBulkSampler(for: volume)
+    #expect(sampler.strategy == .wasm)
+    let firstValues = sampler(at: basePosition)
+
+    try generator.setWorldSeed(secondSeed)
+    let reseededValues = sampler(at: basePosition)
+    let freshGenerator = try WorldGenerator(
+        withWorldSeed: secondSeed,
+        usingDataPacks: [pack],
+        usingSettings: settings,
+        buildSearchTrees: false
+    )
+    let expectedValues = try freshGenerator.makeFinalDensityBulkSampler(
+        for: volume,
+        strategy: .wasm
+    )(at: basePosition)
+
+    #expect(reseededValues == expectedValues)
+    #expect(reseededValues != firstValues)
 }
