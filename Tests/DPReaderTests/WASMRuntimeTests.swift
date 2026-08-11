@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import DPReader
 
@@ -10,6 +11,8 @@ private struct HostRuntimeTestNoise: DensityFunctionNoise {
 }
 
 private struct TestHostWASMRuntime: WASMRuntime {
+    let supportsClimateFunctions = true
+
     func instantiateDensityFunction(
         module: [UInt8],
         exportName: String,
@@ -29,6 +32,71 @@ private struct TestHostWASMRuntime: WASMRuntime {
         precondition(module.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
         precondition(exportName == "search")
         return { temperature, _, _, _, _, _ in temperature < 0 ? 0 : 1 }
+    }
+
+    func instantiateClimateFunctions(
+        module: [UInt8],
+        exportName: String,
+        imports _: WASMDensityFunctionImports
+    ) throws -> WASMClimateInvocation {
+        precondition(module.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+        precondition(exportName == "sample_climate")
+        return { x, y, z in
+            WASMClimateSample(
+                temperature: Double(x),
+                humidity: Double(y),
+                continentalness: Double(z),
+                erosion: Double(x + y),
+                weirdness: Double(y + z),
+                depth: Double(x + z)
+            )
+        }
+    }
+}
+
+private final class CapturingClimateWASMRuntime: WASMRuntime, @unchecked Sendable {
+    let supportsClimateFunctions = true
+    private let lock = NSLock()
+    private var densityInstantiationCount = 0
+    private var climateModules: [[UInt8]] = []
+
+    func instantiateDensityFunction(
+        module _: [UInt8],
+        exportName _: String,
+        imports _: WASMDensityFunctionImports
+    ) throws -> WASMDensityFunctionInvocation {
+        self.lock.withLock { self.densityInstantiationCount += 1 }
+        return { _, _, _ in 0 }
+    }
+
+    func instantiateClimateFunctions(
+        module: [UInt8],
+        exportName: String,
+        imports _: WASMDensityFunctionImports
+    ) throws -> WASMClimateInvocation {
+        precondition(exportName == "sample_climate")
+        self.lock.withLock { self.climateModules.append(module) }
+        return { _, _, _ in
+            WASMClimateSample(
+                temperature: 0,
+                humidity: 0,
+                continentalness: 0,
+                erosion: 0,
+                weirdness: 0,
+                depth: 0
+            )
+        }
+    }
+
+    func instantiateBiomeSearch(
+        module _: [UInt8],
+        exportName _: String
+    ) throws -> WASMBiomeSearchInvocation {
+        { _, _, _, _, _, _ in 0 }
+    }
+
+    var snapshot: (densityCount: Int, climateModules: [[UInt8]]) {
+        self.lock.withLock { (self.densityInstantiationCount, self.climateModules) }
     }
 }
 
@@ -92,4 +160,138 @@ private struct TestHostWASMRuntime: WASMRuntime {
         weirdness: 0,
         depth: 0
     )) == keyB)
+}
+
+@Test func testWASMBakedNoiseStaysInsideGeneratedModule() throws {
+    var random = XoroshiroRandom(seed: 0x1234_5678_9abc_def0)
+    let sampler = DoublePerlinNoise(
+        random: &random,
+        firstOctave: -5,
+        amplitudes: [1.0, 0.5, 0.0, 0.25],
+        useModernInitialization: true
+    )
+    let bakedNoise = BakedNoise(
+        fromKey: RegistryKey(referencing: "test:embedded_wasm_noise"),
+        withSampler: sampler
+    )
+    let densityFunction = NoiseDensityFunction(noise: bakedNoise, scaleXZ: 0.125, scaleY: 0.25)
+    let compiled = try compile(densityFunction: densityFunction, strategy: .wasm)
+    let module = try #require(compiled.wasmModule)
+
+    #expect(Data(module).range(of: Data("sample_noise".utf8)) == nil)
+    #expect(Data(module).range(of: Data("sample_density".utf8)) == nil)
+
+    let positions = [
+        PosInt3D(x: -17, y: 5, z: 29),
+        PosInt3D(x: 0, y: 0, z: 0),
+        PosInt3D(x: 1234, y: -64, z: -987)
+    ]
+    for position in positions {
+        #expect(compiled(position.x, position.y, position.z) == densityFunction.sample(at: position))
+    }
+
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_DENSITY_WASM_OUTPUT_PATH"] {
+        try Data(module).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("embedded density WASM expected samples:", positions.map { densityFunction.sample(at: $0) })
+    }
+}
+
+@Test func testWASMClimateCompilationUsesOneMultiValueExport() throws {
+    var random = XoroshiroRandom(seed: 0x0fed_cba9_8765_4321)
+    let sampler = DoublePerlinNoise(
+        random: &random,
+        firstOctave: -4,
+        amplitudes: [1.0, 0.5, 0.25],
+        useModernInitialization: true
+    )
+    let bakedNoise = BakedNoise(
+        fromKey: RegistryKey(referencing: "test:climate_wasm_noise"),
+        withSampler: sampler
+    )
+    let scales: [(Double, Double)] = [(0.1, 0.2), (0.2, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.6), (0.6, 0.7)]
+    let roots: [any DensityFunction] = scales.map {
+        NoiseDensityFunction(noise: bakedNoise, scaleXZ: $0.0, scaleY: $0.1)
+    }
+    let compiled = try compileWASMClimateFunctions(
+        roots,
+        registry: Registry(),
+        runtime: TestHostWASMRuntime()
+    )
+    #expect(Data(compiled.wasmModule).range(of: Data("sample_noise".utf8)) == nil)
+    #expect(compiled.sample(x: 2, y: 3, z: 5) == WASMClimateSample(
+        temperature: 2,
+        humidity: 3,
+        continentalness: 5,
+        erosion: 5,
+        weirdness: 8,
+        depth: 7
+    ))
+
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_CLIMATE_WASM_OUTPUT_PATH"] {
+        try Data(compiled.wasmModule).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        let position = PosInt3D(x: 17, y: -23, z: 41)
+        print("embedded climate WASM expected samples:", roots.map { $0.sample(at: position) })
+    }
+}
+
+@Test func testVanillaWASMClimateModuleHasNoHostNoiseCallbacks() throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else { return }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let runtime = CapturingClimateWASMRuntime()
+    let generator = try WorldGenerator(
+        withWorldSeed: 50123537021,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld"),
+        buildSearchTrees: false,
+        compilationBackend: .wasm,
+        wasmRuntime: runtime
+    )
+    let router = try generator.terrainSettingsForTesting().noiseRouter
+    let roots: [any DensityFunction] = [
+        router.temperature,
+        router.humidity,
+        router.continents,
+        router.erosion,
+        router.weirdness,
+        router.depth
+    ]
+    let frontend = try buildDensityFunctionIR(
+        densityFunctions: roots,
+        registry: generator.densityFunctionRegistryForTesting()
+    )
+    let previousScalarNoiseCallbacks = try roots.reduce(into: 0) { count, root in
+        let scalarProgram = try buildDensityFunctionIR(
+            densityFunction: root,
+            registry: generator.densityFunctionRegistryForTesting()
+        )
+        count += scalarProgram.instructions.count { instruction in
+            if case .sampleNoise = instruction { true } else { false }
+        }
+    }
+    #expect(previousScalarNoiseCallbacks > 0)
+    #expect(frontend.densityFunctions.count == 1)
+    #expect(frontend.densityFunctions.first is SplineDensityFunction)
+    let fallbackPosition = PosInt3D(x: 17, y: -23, z: 41)
+    let sampledPoint = generator.sampleNoisePoint(at: fallbackPosition)
+    #expect(sampledPoint.depth == router.depth.sample(at: fallbackPosition))
+    let captured = runtime.snapshot
+    #expect(captured.densityCount == 0)
+    #expect(captured.climateModules.count == 1)
+    let moduleData = Data(try #require(captured.climateModules.first))
+    #expect(moduleData.range(of: Data("sample_noise".utf8)) == nil)
+    // Vanilla depth contains one float-precision spline. The wrapper evaluates that complete root in
+    // Swift after the WASM return, avoiding a nested callback without changing spline precision.
+    #expect(moduleData.range(of: Data("sample_density".utf8)) == nil)
+    #expect(moduleData.count < 100_000)
+
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_VANILLA_CLIMATE_WASM_OUTPUT_PATH"] {
+        try moduleData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("vanilla climate WASM module:", moduleData.count, "bytes")
+        print("eliminated vanilla sample_noise callbacks per climate point:", previousScalarNoiseCallbacks)
+    }
 }

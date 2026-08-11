@@ -20,4 +20,5 @@ These may not be possible, but if they are, they should be done because they wou
 ## Cleanup
 
 - De-vibecode-ify `VanillaChunkTerrainSampler.swift`, and merge it into `WorldGenerator.swift`.
-- Do the same for the compiler.
+- Do the same for the compiler (which is really quite a mess).
+  - Specifically, the WASM runtime implementation is... not great.

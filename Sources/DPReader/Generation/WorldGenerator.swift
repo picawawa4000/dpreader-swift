@@ -14,13 +14,41 @@ private enum ConfiguredBiomeSampler {
     case theEnd
 }
 
-private struct CompiledBiomeDensityFunctions {
-    let temperature: CompiledDensityFunction
-    let humidity: CompiledDensityFunction
-    let continentalness: CompiledDensityFunction
-    let erosion: CompiledDensityFunction
-    let weirdness: CompiledDensityFunction
-    let depth: CompiledDensityFunction
+private enum CompiledBiomeDensityFunctions {
+    case scalar(
+        temperature: CompiledDensityFunction,
+        humidity: CompiledDensityFunction,
+        continentalness: CompiledDensityFunction,
+        erosion: CompiledDensityFunction,
+        weirdness: CompiledDensityFunction,
+        depth: CompiledDensityFunction
+    )
+    case wasm(CompiledWASMClimateFunctions)
+
+    @inline(__always)
+    func sample(at pos: PosInt3D) -> NoisePoint {
+        switch self {
+        case .scalar(let temperature, let humidity, let continentalness, let erosion, let weirdness, let depth):
+            return NoisePoint(
+                temperature: temperature(pos.x, pos.y, pos.z),
+                humidity: humidity(pos.x, pos.y, pos.z),
+                continentalness: continentalness(pos.x, pos.y, pos.z),
+                erosion: erosion(pos.x, pos.y, pos.z),
+                weirdness: weirdness(pos.x, pos.y, pos.z),
+                depth: depth(pos.x, pos.y, pos.z)
+            )
+        case .wasm(let compiled):
+            let point = compiled.sample(x: pos.x, y: pos.y, z: pos.z)
+            return NoisePoint(
+                temperature: point.temperature,
+                humidity: point.humidity,
+                continentalness: point.continentalness,
+                erosion: point.erosion,
+                weirdness: point.weirdness,
+                depth: point.depth
+            )
+        }
+    }
 }
 
 @inline(__always)
@@ -2273,7 +2301,23 @@ public final class WorldGenerator {
         guard let config = self.config else { return }
         let router = config.noiseRouter
         let registry = self.registries.densityFunctionRegistry
-        self.compiledBiomeDensityFunctions = try CompiledBiomeDensityFunctions(
+        let climateFunctions: [any DensityFunction] = [
+            router.temperature,
+            router.humidity,
+            router.continents,
+            router.erosion,
+            router.weirdness,
+            router.depth
+        ]
+        if compilationBackend == .wasm, let wasmRuntime, wasmRuntime.supportsClimateFunctions {
+            self.compiledBiomeDensityFunctions = .wasm(try compileWASMClimateFunctions(
+                climateFunctions,
+                registry: registry,
+                runtime: wasmRuntime
+            ))
+            return
+        }
+        self.compiledBiomeDensityFunctions = try .scalar(
             temperature: compile(
                 densityFunction: router.temperature,
                 strategy: compilationBackend,
@@ -2919,14 +2963,7 @@ public final class WorldGenerator {
             return NoisePoint(temperature: 0, humidity: 0, continentalness: 0, erosion: 0, weirdness: 0, depth: 0)
         }
         if let compiled = self.compiledBiomeDensityFunctions {
-            return NoisePoint(
-                temperature: compiled.temperature(pos.x, pos.y, pos.z),
-                humidity: compiled.humidity(pos.x, pos.y, pos.z),
-                continentalness: compiled.continentalness(pos.x, pos.y, pos.z),
-                erosion: compiled.erosion(pos.x, pos.y, pos.z),
-                weirdness: compiled.weirdness(pos.x, pos.y, pos.z),
-                depth: compiled.depth(pos.x, pos.y, pos.z)
-            )
+            return compiled.sample(at: pos)
         }
         return NoisePoint(
             temperature: self.config!.noiseRouter.temperature.sample(at: pos),

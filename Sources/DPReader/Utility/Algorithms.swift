@@ -508,6 +508,15 @@ public final class PerlinNoise {
     private let permutationInts: [Int]
     private let originX, originY, originZ: Double
 
+    var wasmSnapshot: WASMPerlinNoiseSnapshot {
+        WASMPerlinNoiseSnapshot(
+            permutation: self.permutation,
+            originX: self.originX,
+            originY: self.originY,
+            originZ: self.originZ
+        )
+    }
+
     public init<R: Random>(random rng: inout R, withScale scale: Double = 256.0) {
         self.originX = rng.nextDouble() * scale
         self.originY = rng.nextDouble() * scale
@@ -667,6 +676,12 @@ public final class OctavePerlinNoise {
         return out
     }
 
+    var wasmSnapshots: [WASMOctaveNoiseSnapshot] {
+        self.octaves.map {
+            WASMOctaveNoiseSnapshot(noise: $0.noise.wasmSnapshot, amplitude: $0.amplitude, lacunarity: $0.lacunarity)
+        }
+    }
+
     private struct Octave {
         let noise: PerlinNoise
         let amplitude: Double
@@ -683,6 +698,14 @@ public final class DoublePerlinNoise {
     internal let secondSampler: OctavePerlinNoise
     private let amplitude: Double
     private static let multiplier = 337.0 / 331.0
+
+    var wasmSnapshot: WASMDoublePerlinNoiseSnapshot {
+        WASMDoublePerlinNoiseSnapshot(
+            firstOctaves: self.firstSampler.wasmSnapshots,
+            secondOctaves: self.secondSampler.wasmSnapshots,
+            amplitude: self.amplitude
+        )
+    }
 
     public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
         self.firstSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
@@ -712,6 +735,25 @@ public final class DoublePerlinNoise {
         )
         return self.amplitude * (firstOutput + secondOutput)
     }
+}
+
+struct WASMPerlinNoiseSnapshot {
+    let permutation: [UInt8]
+    let originX: Double
+    let originY: Double
+    let originZ: Double
+}
+
+struct WASMOctaveNoiseSnapshot {
+    let noise: WASMPerlinNoiseSnapshot
+    let amplitude: Double
+    let lacunarity: Double
+}
+
+struct WASMDoublePerlinNoiseSnapshot {
+    let firstOctaves: [WASMOctaveNoiseSnapshot]
+    let secondOctaves: [WASMOctaveNoiseSnapshot]
+    let amplitude: Double
 }
 
 public final class InterpolatedNoise: DensityFunction {

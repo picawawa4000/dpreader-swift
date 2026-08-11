@@ -49,6 +49,55 @@ public final class CompiledDensityFunction: @unchecked Sendable {
     }
 }
 
+final class CompiledWASMClimateFunctions: @unchecked Sendable {
+    let wasmModule: [UInt8]
+    private let implementation: WASMClimateInvocation
+    private let fallbackFunctions: [Int: any DensityFunction]
+
+    init(
+        wasmModule: [UInt8],
+        implementation: @escaping WASMClimateInvocation,
+        fallbackFunctions: [Int: any DensityFunction]
+    ) {
+        self.wasmModule = wasmModule
+        self.implementation = implementation
+        self.fallbackFunctions = fallbackFunctions
+    }
+
+    func sample(x: Int32, y: Int32, z: Int32) -> WASMClimateSample {
+        let compiled = self.implementation(x, y, z)
+        guard !self.fallbackFunctions.isEmpty else { return compiled }
+
+        let position = PosInt3D(x: x, y: y, z: z)
+        var temperature = compiled.temperature
+        var humidity = compiled.humidity
+        var continentalness = compiled.continentalness
+        var erosion = compiled.erosion
+        var weirdness = compiled.weirdness
+        var depth = compiled.depth
+        for (index, function) in self.fallbackFunctions {
+            let value = function.sample(at: position)
+            switch index {
+            case 0: temperature = value
+            case 1: humidity = value
+            case 2: continentalness = value
+            case 3: erosion = value
+            case 4: weirdness = value
+            case 5: depth = value
+            default: preconditionFailure("Invalid climate function index.")
+            }
+        }
+        return WASMClimateSample(
+            temperature: temperature,
+            humidity: humidity,
+            continentalness: continentalness,
+            erosion: erosion,
+            weirdness: weirdness,
+            depth: depth
+        )
+    }
+}
+
 /// The block dimensions of one generation cell.
 public struct DensityFunctionCellSize: Sendable, Hashable {
     public let horizontalBlockCount: Int32
@@ -444,6 +493,53 @@ public func compile(
         throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
 #endif
     }
+}
+
+func compileWASMClimateFunctions(
+    _ densityFunctions: [any DensityFunction],
+    registry: Registry<DensityFunction>,
+    runtime: any WASMRuntime
+) throws -> CompiledWASMClimateFunctions {
+    precondition(densityFunctions.count == 6, "A climate program requires six density functions.")
+    var fallbackFunctions: [Int: any DensityFunction] = [:]
+    var wasmDensityFunctions: [any DensityFunction] = []
+    wasmDensityFunctions.reserveCapacity(densityFunctions.count)
+    for (index, densityFunction) in densityFunctions.enumerated() {
+        let scalarProgram = try buildDensityFunctionIR(densityFunction: densityFunction, registry: registry)
+        let isSelfContained = scalarProgram.densityFunctions.isEmpty
+            && scalarProgram.noises.allSatisfy { $0 is BakedNoise }
+        if isSelfContained {
+            wasmDensityFunctions.append(densityFunction)
+        } else {
+            // Calling an unsupported node back through JavaScript is much more expensive than keeping
+            // that complete root on the Swift side of the single combined WASM invocation.
+            fallbackFunctions[index] = densityFunction
+            wasmDensityFunctions.append(ConstantDensityFunction(value: 0))
+        }
+    }
+
+    let program = try buildDensityFunctionIR(densityFunctions: wasmDensityFunctions, registry: registry)
+    let module = try buildDensityFunctionWASMModule(program, exportName: "sample_climate")
+    let imports = WASMDensityFunctionImports(
+        sampleDensity: { index, x, y, z in
+            precondition(index >= 0 && Int(index) < program.densityFunctions.count)
+            return program.densityFunctions[Int(index)].sample(at: PosInt3D(x: x, y: y, z: z))
+        },
+        sampleNoise: { index, x, y, z in
+            precondition(index >= 0 && Int(index) < program.noises.count)
+            return program.noises[Int(index)].sample(x: x, y: y, z: z)
+        }
+    )
+    let implementation = try runtime.instantiateClimateFunctions(
+        module: module,
+        exportName: "sample_climate",
+        imports: imports
+    )
+    return CompiledWASMClimateFunctions(
+        wasmModule: module,
+        implementation: implementation,
+        fallbackFunctions: fallbackFunctions
+    )
 }
 
 #if canImport(CLLVM)

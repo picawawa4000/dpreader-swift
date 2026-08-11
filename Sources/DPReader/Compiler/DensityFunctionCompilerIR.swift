@@ -55,7 +55,8 @@ final class DensityFunctionIRProgram: @unchecked Sendable {
 
     let inputTypes: [DensityFunctionIRValueType]
     let instructions: [DensityFunctionIRInstruction]
-    let output: Int
+    let outputs: [Int]
+    var output: Int { self.outputs[0] }
     let densityFunctions: [any DensityFunction]
     let noises: [any DensityFunctionNoise]
     let biomeSearchTrees: [BiomeSearchIRTree]
@@ -70,7 +71,24 @@ final class DensityFunctionIRProgram: @unchecked Sendable {
     ) {
         self.inputTypes = inputTypes
         self.instructions = instructions
-        self.output = output
+        self.outputs = [output]
+        self.densityFunctions = densityFunctions
+        self.noises = noises
+        self.biomeSearchTrees = biomeSearchTrees
+    }
+
+    init(
+        inputTypes: [DensityFunctionIRValueType] = [.i32, .i32, .i32],
+        instructions: [DensityFunctionIRInstruction],
+        outputs: [Int],
+        densityFunctions: [any DensityFunction],
+        noises: [any DensityFunctionNoise],
+        biomeSearchTrees: [BiomeSearchIRTree] = []
+    ) {
+        precondition(!outputs.isEmpty)
+        self.inputTypes = inputTypes
+        self.instructions = instructions
+        self.outputs = outputs
         self.densityFunctions = densityFunctions
         self.noises = noises
         self.biomeSearchTrees = biomeSearchTrees
@@ -90,10 +108,15 @@ private final class DensityFunctionIRBuilder {
     }
 
     func build(_ root: any DensityFunction) throws -> DensityFunctionIRProgram {
-        let output = try self.compile(root)
+        try self.build([root])
+    }
+
+    func build(_ roots: [any DensityFunction]) throws -> DensityFunctionIRProgram {
+        precondition(!roots.isEmpty)
+        let outputs = try roots.map { try self.compile($0) }
         return DensityFunctionIRProgram(
             instructions: self.instructions,
-            output: output,
+            outputs: outputs,
             densityFunctions: self.densityFunctions,
             noises: self.noises
         )
@@ -337,6 +360,13 @@ func buildDensityFunctionIR(
     registry: Registry<DensityFunction>
 ) throws -> DensityFunctionIRProgram {
     try DensityFunctionIRBuilder(registry: registry).build(densityFunction)
+}
+
+func buildDensityFunctionIR(
+    densityFunctions: [any DensityFunction],
+    registry: Registry<DensityFunction>
+) throws -> DensityFunctionIRProgram {
+    try DensityFunctionIRBuilder(registry: registry).build(densityFunctions)
 }
 
 private enum DensityFunctionIRRuntimeValue {
