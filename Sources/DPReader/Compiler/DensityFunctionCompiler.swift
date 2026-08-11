@@ -12,6 +12,7 @@ public enum DensityFunctionCompilationError: Error {
     case nonCompilableDensityFunction
     case badDensityFunction(String)
     case llvmError(String)
+    case wasmRuntimeUnavailable
 }
 
 private typealias NativeCompiledDensityFunction = @convention(c) (Int32, Int32, Int32) -> Double
@@ -398,15 +399,44 @@ private func findPreferredBulkGenerationCellCounts(
 public func compile(
     densityFunction root: any DensityFunction,
     strategy: CompilationBackend = .llvm,
-    registry: Registry<DensityFunction> = Registry()
+    registry: Registry<DensityFunction> = Registry(),
+    runtime: (any WASMRuntime)? = nil
 ) throws -> CompiledDensityFunction {
     let program = try buildDensityFunctionIR(densityFunction: root, registry: registry)
     switch strategy {
     case .wasm:
         let module = try buildDensityFunctionWASMModule(program)
+        if let runtime {
+            let imports = WASMDensityFunctionImports(
+                sampleDensity: { index, x, y, z in
+                    precondition(index >= 0 && Int(index) < program.densityFunctions.count)
+                    return program.densityFunctions[Int(index)].sample(at: PosInt3D(x: x, y: y, z: z))
+                },
+                sampleNoise: { index, x, y, z in
+                    precondition(index >= 0 && Int(index) < program.noises.count)
+                    return program.noises[Int(index)].sample(x: x, y: y, z: z)
+                }
+            )
+            let implementation = try runtime.instantiateDensityFunction(
+                module: module,
+                exportName: "sample",
+                imports: imports
+            )
+            return CompiledDensityFunction(
+                strategy: .wasm,
+                wasmModule: module,
+                implementation: implementation
+            )
+        }
+        #if os(WASI) || arch(wasm32)
+        // A WASI host must execute emitted WASM through its resident engine. Evaluating the IR here would
+        // hide a missing browser/embedding bridge and defeat the purpose of selecting this backend.
+        throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+        #else
         return CompiledDensityFunction(strategy: .wasm, wasmModule: module) { x, y, z in
             evaluateDensityFunctionIR(program, x: x, y: y, z: z)
         }
+        #endif
     case .llvm:
 #if canImport(CLLVM)
         return try compileDensityFunctionIRWithLLVM(program, registry: registry)

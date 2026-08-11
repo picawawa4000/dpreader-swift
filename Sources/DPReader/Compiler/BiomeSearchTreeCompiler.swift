@@ -162,13 +162,26 @@ func buildBiomeSearchIR(tree: BiomeSearchIRTree) -> DensityFunctionIRProgram {
 /// Compiles a biome search tree using the requested density-function compiler backend.
 public func compile(
     biomeSearchTree tree: BiomeSearchTree,
-    strategy: CompilationBackend = .llvm
+    strategy: CompilationBackend = .llvm,
+    runtime: (any WASMRuntime)? = nil
 ) throws -> CompiledBiomeSearchTree {
     let snapshot = tree.makeCompilerSnapshot()
     let program = buildBiomeSearchIR(tree: snapshot.tree)
     switch strategy {
     case .wasm:
         let module = try buildDensityFunctionWASMModule(program, exportName: "search")
+        if let runtime {
+            let implementation = try runtime.instantiateBiomeSearch(module: module, exportName: "search")
+            return CompiledBiomeSearchTree(
+                strategy: .wasm,
+                wasmModule: module,
+                biomes: snapshot.biomes,
+                implementation: implementation
+            )
+        }
+        #if os(WASI) || arch(wasm32)
+        throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+        #else
         return CompiledBiomeSearchTree(strategy: .wasm, wasmModule: module, biomes: snapshot.biomes) {
             temperature, humidity, continentalness, erosion, weirdness, depth in
             evaluateBiomeSearchIR(
@@ -183,6 +196,7 @@ public func compile(
                 )
             )
         }
+        #endif
     case .llvm:
         #if canImport(CLLVM)
         return try compileBiomeSearchIRWithLLVM(program, biomes: snapshot.biomes)
@@ -195,8 +209,9 @@ public func compile(
 public extension BiomeSearchTree {
     /// Compiles this tree with the requested shared compiler backend.
     func compile(
-        strategy: CompilationBackend = .llvm
+        strategy: CompilationBackend = .llvm,
+        runtime: (any WASMRuntime)? = nil
     ) throws -> CompiledBiomeSearchTree {
-        try DPReader.compile(biomeSearchTree: self, strategy: strategy)
+        try DPReader.compile(biomeSearchTree: self, strategy: strategy, runtime: runtime)
     }
 }

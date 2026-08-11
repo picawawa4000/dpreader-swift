@@ -2087,6 +2087,7 @@ public final class WorldGenerator {
     private var unbakedConfig: NoiseSettings?
     private let configuredSettingsKeyName: String?
     private let compilationBackend: CompilationBackend?
+    private let wasmRuntime: (any WASMRuntime)?
     private var configuredDimensionKey: RegistryKey<Dimension>?
     private var registries = WorldGenerationRegistries()
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
@@ -2106,18 +2107,21 @@ public final class WorldGenerator {
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
     ///   - config: A registry key pointing to the noise settings to use for generation. While this can be omitted, it should not be except for debugging purposes.
     ///   - compilationBackend: Optionally compiles biome climate functions and search trees with this backend.
+    ///   - wasmRuntime: The host WebAssembly engine bridge used when `compilationBackend` is `.wasm`.
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
     public init(
         withWorldSeed seed: WorldSeed,
         usingDataPacks datapacks: [DataPack],
         usingSettings configKey: RegistryKey<NoiseSettings>? = nil,
         buildSearchTrees: Bool = true,
-        compilationBackend: CompilationBackend? = nil
+        compilationBackend: CompilationBackend? = nil,
+        wasmRuntime: (any WASMRuntime)? = nil
     ) throws {
         self.worldSeed = seed
         self.voronoiSHA = VoronoiBiomeSubsampler.makeVoronoiSHA(seed)
         self.configuredSettingsKeyName = configKey?.name
         self.compilationBackend = compilationBackend
+        self.wasmRuntime = wasmRuntime
         try self.initialiseDataPacks(datapacks, usingSettings: configKey, buildSearchTrees: buildSearchTrees)
         try self.setWorldSeed(seed)
     }
@@ -2259,7 +2263,7 @@ public final class WorldGenerator {
             if let existing = compiledSearchTreesByIdentity[identity] {
                 compiled = existing
             } else {
-                compiled = try tree.compile(strategy: compilationBackend)
+                compiled = try tree.compile(strategy: compilationBackend, runtime: self.wasmRuntime)
                 compiledSearchTreesByIdentity[identity] = compiled
             }
             compiledSearchTrees[key] = compiled
@@ -2270,12 +2274,42 @@ public final class WorldGenerator {
         let router = config.noiseRouter
         let registry = self.registries.densityFunctionRegistry
         self.compiledBiomeDensityFunctions = try CompiledBiomeDensityFunctions(
-            temperature: compile(densityFunction: router.temperature, strategy: compilationBackend, registry: registry),
-            humidity: compile(densityFunction: router.humidity, strategy: compilationBackend, registry: registry),
-            continentalness: compile(densityFunction: router.continents, strategy: compilationBackend, registry: registry),
-            erosion: compile(densityFunction: router.erosion, strategy: compilationBackend, registry: registry),
-            weirdness: compile(densityFunction: router.weirdness, strategy: compilationBackend, registry: registry),
-            depth: compile(densityFunction: router.depth, strategy: compilationBackend, registry: registry)
+            temperature: compile(
+                densityFunction: router.temperature,
+                strategy: compilationBackend,
+                registry: registry,
+                runtime: self.wasmRuntime
+            ),
+            humidity: compile(
+                densityFunction: router.humidity,
+                strategy: compilationBackend,
+                registry: registry,
+                runtime: self.wasmRuntime
+            ),
+            continentalness: compile(
+                densityFunction: router.continents,
+                strategy: compilationBackend,
+                registry: registry,
+                runtime: self.wasmRuntime
+            ),
+            erosion: compile(
+                densityFunction: router.erosion,
+                strategy: compilationBackend,
+                registry: registry,
+                runtime: self.wasmRuntime
+            ),
+            weirdness: compile(
+                densityFunction: router.weirdness,
+                strategy: compilationBackend,
+                registry: registry,
+                runtime: self.wasmRuntime
+            ),
+            depth: compile(
+                densityFunction: router.depth,
+                strategy: compilationBackend,
+                registry: registry,
+                runtime: self.wasmRuntime
+            )
         )
     }
 
@@ -4966,7 +5000,7 @@ public final class WorldGenerator {
         guard let searchTree = self.searchTrees[dimension] else {
             throw WorldGenerationErrors.biomeSearchTreeNotPresent(dimension.name)
         }
-        return try compile(biomeSearchTree: searchTree, strategy: target)
+        return try compile(biomeSearchTree: searchTree, strategy: target, runtime: self.wasmRuntime)
     }
 }
 
