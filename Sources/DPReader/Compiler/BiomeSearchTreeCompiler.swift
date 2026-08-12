@@ -159,6 +159,51 @@ func buildBiomeSearchIR(tree: BiomeSearchIRTree) -> DensityFunctionIRProgram {
     )
 }
 
+/// Builds one x/y/z program whose first six outputs are the climate point and whose final
+/// f64 output is the biome index. Keeping the search in the same program lets WASM bulk
+/// execution cross the embedding boundary once for the complete volume.
+func buildClimateBiomeIR(
+    densityFunctions: [any DensityFunction],
+    registry: Registry<DensityFunction>,
+    tree: BiomeSearchIRTree
+) throws -> DensityFunctionIRProgram {
+    precondition(densityFunctions.count == 6, "A climate-biome program requires six density functions.")
+    let climate = try buildDensityFunctionIR(densityFunctions: densityFunctions, registry: registry)
+    var instructions = climate.instructions
+
+    @inline(__always)
+    func append(_ instruction: DensityFunctionIRInstruction) -> Int {
+        let result = climate.inputTypes.count + instructions.count
+        instructions.append(instruction)
+        return result
+    }
+
+    let scale = append(.constant(10_000.0))
+    let scaledClimate = climate.outputs.map { output in
+        append(.convertDoubleToSignedInt64(append(.multiply(output, scale))))
+    }
+    let offset = append(.constantInt64(0))
+    let point = [
+        scaledClimate[0],
+        scaledClimate[1],
+        scaledClimate[2],
+        scaledClimate[3],
+        scaledClimate[5],
+        scaledClimate[4],
+        offset
+    ]
+    let biomeIndex = append(.searchBiome(index: 0, point: point))
+    let biomeIndexAsDouble = append(.convertSignedIntToDouble(biomeIndex))
+    return DensityFunctionIRProgram(
+        inputTypes: climate.inputTypes,
+        instructions: instructions,
+        outputs: climate.outputs + [biomeIndexAsDouble],
+        densityFunctions: climate.densityFunctions,
+        noises: climate.noises,
+        biomeSearchTrees: [tree]
+    )
+}
+
 /// Compiles a biome search tree using the requested density-function compiler backend.
 public func compile(
     biomeSearchTree tree: BiomeSearchTree,

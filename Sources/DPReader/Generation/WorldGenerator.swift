@@ -2036,6 +2036,85 @@ private final class WeakCompiledDensityFunctionBulk {
     }
 }
 
+/// One climate point and the biome selected from it by a multi-noise biome source.
+public struct ClimateBiomeSample {
+    public let climate: NoisePoint
+    public let biome: RegistryKey<Biome>
+
+    public init(climate: NoisePoint, biome: RegistryKey<Biome>) {
+        self.climate = climate
+        self.biome = biome
+    }
+}
+
+/// A fixed-shape compiled sampler which evaluates climate values and biome selection together.
+public final class CompiledClimateBiomeBulkSampler: @unchecked Sendable {
+    public let strategy: CompilationBackend
+    public let bufferContext: CompiledDensityFunctionBufferContext
+    public let dimension: RegistryKey<Dimension>
+    private let stateLock = NSLock()
+    private var storedWasmModule: [UInt8]?
+    private var implementation: (PosInt3D) -> [ClimateBiomeSample]
+
+    /// A module exporting `sample_bulk` and `memory`, present only for the WASM strategy.
+    public var wasmModule: [UInt8]? {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self.storedWasmModule
+    }
+
+    init(
+        strategy: CompilationBackend,
+        wasmModule: [UInt8]? = nil,
+        bufferContext: CompiledDensityFunctionBufferContext,
+        dimension: RegistryKey<Dimension>,
+        implementation: @escaping (PosInt3D) -> [ClimateBiomeSample]
+    ) {
+        self.strategy = strategy
+        self.storedWasmModule = wasmModule
+        self.bufferContext = bufferContext
+        self.dimension = dimension
+        self.implementation = implementation
+    }
+
+    func replaceImplementation(with replacement: CompiledClimateBiomeBulkSampler) {
+        precondition(self.strategy == replacement.strategy)
+        precondition(self.dimension == replacement.dimension)
+        precondition(
+            self.bufferContext.xCount == replacement.bufferContext.xCount
+                && self.bufferContext.yCount == replacement.bufferContext.yCount
+                && self.bufferContext.zCount == replacement.bufferContext.zCount
+                && self.bufferContext.xStep == replacement.bufferContext.xStep
+                && self.bufferContext.yStep == replacement.bufferContext.yStep
+                && self.bufferContext.zStep == replacement.bufferContext.zStep
+        )
+        replacement.stateLock.lock()
+        let replacementModule = replacement.storedWasmModule
+        let replacementImplementation = replacement.implementation
+        replacement.stateLock.unlock()
+        self.stateLock.lock()
+        self.storedWasmModule = replacementModule
+        self.implementation = replacementImplementation
+        self.stateLock.unlock()
+    }
+
+    /// Evaluates the fixed volume in z/x/y order.
+    public func callAsFunction(at basePosition: PosInt3D) -> [ClimateBiomeSample] {
+        self.stateLock.lock()
+        let implementation = self.implementation
+        self.stateLock.unlock()
+        return implementation(basePosition)
+    }
+}
+
+private final class WeakCompiledClimateBiomeBulkSampler {
+    weak var value: CompiledClimateBiomeBulkSampler?
+
+    init(_ value: CompiledClimateBiomeBulkSampler) {
+        self.value = value
+    }
+}
+
 private struct SectionBiomeLatticeMap {
     let uniquePositions: [BiomeLatticePosition]
     let blockToUniqueIndex: [UInt16]
@@ -2132,6 +2211,7 @@ public final class WorldGenerator {
     private var directPointSamplingDensityFunctions: DirectPointSamplingDensityFunctions?
     private var compiledBiomeDensityFunctions: CompiledBiomeDensityFunctions?
     private var finalDensityBulkSamplers: [WeakCompiledDensityFunctionBulk] = []
+    private var climateBiomeBulkSamplers: [WeakCompiledClimateBiomeBulkSampler] = []
     // Terrain generation walks a shared baked density-function graph composed of reference types.
     // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
     private let terrainGenerationLock = NSLock()
@@ -2195,6 +2275,7 @@ public final class WorldGenerator {
         try self.bakeDensityFunctions()
         try self.compileConfiguredFunctions()
         try self.refreshFinalDensityBulkSamplers()
+        try self.refreshClimateBiomeBulkSamplers()
     }
 
     /// Labelled spelling retained for callers that prefer an explicit seed argument.
@@ -2407,6 +2488,223 @@ public final class WorldGenerator {
             sampler.replaceImplementation(with: replacement)
         }
         self.finalDensityBulkSamplers = liveSamplers.map(WeakCompiledDensityFunctionBulk.init)
+    }
+
+    private func compileClimateBiomeBulkSampler(
+        for volume: CompiledDensityFunctionBufferContext,
+        in dimension: RegistryKey<Dimension>,
+        strategy: CompilationBackend
+    ) throws -> CompiledClimateBiomeBulkSampler {
+        let functions = try self.validatedDirectPointSamplingDensityFunctions(
+            for: "Climate-biome bulk sampling"
+        ).cacheless.biomeDensityFunctions
+        let climateFunctions: [any DensityFunction] = [
+            functions.temperature,
+            functions.humidity,
+            functions.continentalness,
+            functions.erosion,
+            functions.weirdness,
+            functions.depth
+        ]
+        guard !self.usesTheEndBiomeGetter(for: dimension), let searchTree = self.searchTrees[dimension] else {
+            throw WorldGenerationErrors.biomeSearchTreeNotPresent(dimension.name)
+        }
+        let registry = self.registries.densityFunctionRegistry
+
+        if strategy == .llvm {
+            let compiledClimate = try climateFunctions.map { densityFunction in
+                try compile(
+                    densityFunction: densityFunction,
+                    bufferContext: volume,
+                    strategy: .llvm,
+                    registry: registry
+                )
+            }
+            let compiledSearch = try compile(biomeSearchTree: searchTree, strategy: .llvm)
+            return CompiledClimateBiomeBulkSampler(
+                strategy: .llvm,
+                bufferContext: volume,
+                dimension: dimension
+            ) { basePosition in
+                let values = compiledClimate.map { $0(at: basePosition) }
+                return (0..<volume.sampleCount).map { index in
+                    let point = NoisePoint(
+                        temperature: values[0][index],
+                        humidity: values[1][index],
+                        continentalness: values[2][index],
+                        erosion: values[3][index],
+                        weirdness: values[4][index],
+                        depth: values[5][index]
+                    )
+                    return ClimateBiomeSample(climate: point, biome: compiledSearch(point))
+                }
+            }
+        }
+
+        let snapshot = searchTree.makeCompilerSnapshot()
+        var fallbackFunctions: [Int: any DensityFunction] = [:]
+        var wasmClimateFunctions: [any DensityFunction] = []
+        wasmClimateFunctions.reserveCapacity(climateFunctions.count)
+        for (index, densityFunction) in climateFunctions.enumerated() {
+            let scalarProgram = try buildDensityFunctionIR(densityFunction: densityFunction, registry: registry)
+            let isSelfContained = scalarProgram.densityFunctions.isEmpty
+                && scalarProgram.noises.allSatisfy { $0 is BakedNoise }
+            if isSelfContained {
+                wasmClimateFunctions.append(densityFunction)
+            } else {
+                fallbackFunctions[index] = densityFunction
+                wasmClimateFunctions.append(ConstantDensityFunction(value: 0))
+            }
+        }
+        let program = try buildClimateBiomeIR(
+            densityFunctions: wasmClimateFunctions,
+            registry: registry,
+            tree: snapshot.tree
+        )
+        let module = try buildDensityFunctionWASMModule(program, bulkContext: volume)
+        let (rawValueCount, rawValueCountOverflow) = volume.sampleCount.multipliedReportingOverflow(
+            by: program.outputs.count
+        )
+        guard !rawValueCountOverflow else {
+            throw DensityFunctionCompilationError.badDensityFunction("Climate-biome bulk output size overflowed Int.")
+        }
+        let invocation: WASMDensityFunctionBulkInvocation?
+        if let wasmRuntime = self.wasmRuntime {
+            let imports = WASMDensityFunctionImports(
+                sampleDensity: { index, x, y, z in
+                    precondition(index >= 0 && Int(index) < program.densityFunctions.count)
+                    return program.densityFunctions[Int(index)].sample(at: PosInt3D(x: x, y: y, z: z))
+                },
+                sampleNoise: { index, x, y, z in
+                    precondition(index >= 0 && Int(index) < program.noises.count)
+                    return program.noises[Int(index)].sample(x: x, y: y, z: z)
+                }
+            )
+            invocation = try wasmRuntime.instantiateDensityFunctionBulk(
+                module: module,
+                exportName: "sample_bulk",
+                memoryExportName: "memory",
+                sampleCount: rawValueCount,
+                imports: imports
+            )
+        } else {
+            #if os(WASI) || arch(wasm32)
+            throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+            #else
+            invocation = nil
+            #endif
+        }
+
+        return CompiledClimateBiomeBulkSampler(
+            strategy: .wasm,
+            wasmModule: module,
+            bufferContext: volume,
+            dimension: dimension
+        ) { basePosition in
+            var rawValues = [Double](repeating: 0, count: rawValueCount)
+            if let invocation {
+                rawValues.withUnsafeMutableBufferPointer { output in
+                    invocation(basePosition.x, basePosition.y, basePosition.z, output.baseAddress!)
+                }
+            }
+
+            var samples: [ClimateBiomeSample] = []
+            samples.reserveCapacity(volume.sampleCount)
+            var biomePoint = [Int64](repeating: 0, count: 7)
+            var sampleIndex = 0
+            for zOffset in 0..<volume.zCount {
+                for xOffset in 0..<volume.xCount {
+                    for yOffset in 0..<volume.yCount {
+                        let position = PosInt3D(
+                            x: basePosition.x + xOffset * volume.xStep,
+                            y: basePosition.y + yOffset * volume.yStep,
+                            z: basePosition.z + zOffset * volume.zStep
+                        )
+                        let rawIndex = sampleIndex * program.outputs.count
+                        var temperature: Double
+                        var humidity: Double
+                        var continentalness: Double
+                        var erosion: Double
+                        var weirdness: Double
+                        var depth: Double
+                        if invocation != nil {
+                            temperature = rawValues[rawIndex]
+                            humidity = rawValues[rawIndex + 1]
+                            continentalness = rawValues[rawIndex + 2]
+                            erosion = rawValues[rawIndex + 3]
+                            weirdness = rawValues[rawIndex + 4]
+                            depth = rawValues[rawIndex + 5]
+                            for (index, densityFunction) in fallbackFunctions {
+                                let value = densityFunction.sample(at: position)
+                                switch index {
+                                case 0: temperature = value
+                                case 1: humidity = value
+                                case 2: continentalness = value
+                                case 3: erosion = value
+                                case 4: weirdness = value
+                                case 5: depth = value
+                                default: preconditionFailure("Invalid climate function index.")
+                                }
+                            }
+                        } else {
+                            temperature = climateFunctions[0].sample(at: position)
+                            humidity = climateFunctions[1].sample(at: position)
+                            continentalness = climateFunctions[2].sample(at: position)
+                            erosion = climateFunctions[3].sample(at: position)
+                            weirdness = climateFunctions[4].sample(at: position)
+                            depth = climateFunctions[5].sample(at: position)
+                        }
+                        let point = NoisePoint(
+                            temperature: temperature,
+                            humidity: humidity,
+                            continentalness: continentalness,
+                            erosion: erosion,
+                            weirdness: weirdness,
+                            depth: depth
+                        )
+                        let biomeIndex: Int32
+                        if invocation != nil && fallbackFunctions.isEmpty {
+                            biomeIndex = Int32(rawValues[rawIndex + 6])
+                        } else {
+                            biomePoint[0] = Int64(point.temperature * 10_000)
+                            biomePoint[1] = Int64(point.humidity * 10_000)
+                            biomePoint[2] = Int64(point.continentalness * 10_000)
+                            biomePoint[3] = Int64(point.erosion * 10_000)
+                            biomePoint[4] = Int64(point.depth * 10_000)
+                            biomePoint[5] = Int64(point.weirdness * 10_000)
+                            biomeIndex = snapshot.tree.search(biomePoint)
+                        }
+                        precondition(biomeIndex >= 0 && Int(biomeIndex) < snapshot.biomes.count)
+                        samples.append(ClimateBiomeSample(
+                            climate: point,
+                            biome: snapshot.biomes[Int(biomeIndex)]
+                        ))
+                        sampleIndex += 1
+                    }
+                }
+            }
+            return samples
+        }
+    }
+
+    private func refreshClimateBiomeBulkSamplers() throws {
+        let liveSamplers = self.climateBiomeBulkSamplers.compactMap(\.value)
+        var replacements: [(CompiledClimateBiomeBulkSampler, CompiledClimateBiomeBulkSampler)] = []
+        replacements.reserveCapacity(liveSamplers.count)
+        for sampler in liveSamplers {
+            replacements.append((
+                sampler,
+                try self.compileClimateBiomeBulkSampler(
+                    for: sampler.bufferContext,
+                    in: sampler.dimension,
+                    strategy: sampler.strategy
+                )
+            ))
+        }
+        for (sampler, replacement) in replacements {
+            sampler.replaceImplementation(with: replacement)
+        }
+        self.climateBiomeBulkSamplers = liveSamplers.map(WeakCompiledClimateBiomeBulkSampler.init)
     }
 
     /// Convert the density functions to a usable format.
@@ -3714,6 +4012,38 @@ public final class WorldGenerator {
             strategy: selectedStrategy
         )
         self.finalDensityBulkSamplers.append(WeakCompiledDensityFunctionBulk(sampler))
+        return sampler
+    }
+
+    /// Returns a compiled sampler for the six climate values and selected biome across a fixed volume.
+    /// Results use z/x/y order. The dimension must use a multi-noise biome search tree. As with the
+    /// final-density bulk sampler, an existing sampler is refreshed by ``setWorldSeed(_:)``.
+    public func makeClimateBiomeBulkSampler(
+        for volume: CompiledDensityFunctionBufferContext,
+        in dimension: RegistryKey<Dimension>,
+        strategy: CompilationBackend? = nil
+    ) throws -> CompiledClimateBiomeBulkSampler {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
+        let selectedStrategy: CompilationBackend
+        if let strategy {
+            selectedStrategy = strategy
+        } else if let compilationBackend = self.compilationBackend {
+            selectedStrategy = compilationBackend
+        } else {
+            #if canImport(CLLVM)
+            selectedStrategy = .llvm
+            #else
+            selectedStrategy = .wasm
+            #endif
+        }
+        let sampler = try self.compileClimateBiomeBulkSampler(
+            for: volume,
+            in: dimension,
+            strategy: selectedStrategy
+        )
+        self.climateBiomeBulkSamplers.append(WeakCompiledClimateBiomeBulkSampler(sampler))
         return sampler
     }
 
@@ -5124,13 +5454,29 @@ public final class WorldGenerator {
     }
 }
 
-public struct NoisePoint {
-    let temperature: Double
-    let humidity: Double
-    let continentalness: Double
-    let erosion: Double
-    let weirdness: Double
-    let depth: Double
+public struct NoisePoint: Sendable, Equatable {
+    public let temperature: Double
+    public let humidity: Double
+    public let continentalness: Double
+    public let erosion: Double
+    public let weirdness: Double
+    public let depth: Double
+
+    public init(
+        temperature: Double,
+        humidity: Double,
+        continentalness: Double,
+        erosion: Double,
+        weirdness: Double,
+        depth: Double
+    ) {
+        self.temperature = temperature
+        self.humidity = humidity
+        self.continentalness = continentalness
+        self.erosion = erosion
+        self.weirdness = weirdness
+        self.depth = depth
+    }
 }
 
 enum WorldGenerationErrors: Error {

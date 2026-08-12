@@ -498,3 +498,177 @@ private final class BulkInvocationCounter: @unchecked Sendable {
     #expect(reseededValues == expectedValues)
     #expect(reseededValues != firstValues)
 }
+
+@Test func testWorldGeneratorClimateBiomeBulkSamplerMatchesPointsAndReseeding() throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else { return }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let settings = RegistryKey<NoiseSettings>(referencing: "minecraft:overworld")
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    let volume = CompiledDensityFunctionBufferContext(
+        xCount: 2,
+        yCount: 2,
+        zCount: 2,
+        xStep: 13,
+        yStep: 19,
+        zStep: 29
+    )
+    let basePosition = PosInt3D(x: 4_101, y: 47, z: -9_007)
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: settings,
+        compilationBackend: .wasm
+    )
+    let sampler = try generator.makeClimateBiomeBulkSampler(
+        for: volume,
+        in: dimension
+    )
+    let firstSamples = sampler(at: basePosition)
+    #expect(firstSamples.count == volume.sampleCount)
+    #expect(sampler.strategy == .wasm)
+
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    if let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)),
+        let wasmModule = sampler.wasmModule
+    {
+        let moduleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dpreader-climate-biome-bulk-\(UUID().uuidString).wasm")
+        try Data(wasmModule).write(to: moduleURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: moduleURL) }
+        let script = """
+        const fs = require('fs');
+        const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+        if (WebAssembly.Module.imports(module).length !== 0) throw new Error('unexpected imports');
+        const instance = new WebAssembly.Instance(module, {});
+        const base = [\(basePosition.x), \(basePosition.y), \(basePosition.z)];
+        const counts = [\(volume.xCount), \(volume.yCount), \(volume.zCount)];
+        const steps = [\(volume.xStep), \(volume.yStep), \(volume.zStep)];
+        const pointer = instance.exports.sample_bulk(...base);
+        const actual = new Float64Array(instance.exports.memory.buffer, pointer, \(volume.sampleCount * 7));
+        let sampleIndex = 0;
+        for (let z = 0; z < counts[2]; z++) {
+          for (let x = 0; x < counts[0]; x++) {
+            for (let y = 0; y < counts[1]; y++) {
+              const expected = instance.exports.sample(
+                base[0] + x * steps[0], base[1] + y * steps[1], base[2] + z * steps[2]
+              );
+              for (let value = 0; value < 7; value++) {
+                const index = sampleIndex * 7 + value;
+                if (!Object.is(actual[index], expected[value])) {
+                  throw new Error(`bulk mismatch at ${index}: ${actual[index]} != ${expected[value]}`);
+                }
+              }
+              sampleIndex++;
+            }
+          }
+        }
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = ["-e", script, moduleURL.path]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        let errorOutput = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(process.terminationStatus == 0, "Node climate-biome bulk comparison failed: \(errorOutput)")
+    }
+
+    func expectedSamples() throws -> [ClimateBiomeSample] {
+        var samples: [ClimateBiomeSample] = []
+        for zOffset in 0..<volume.zCount {
+            for xOffset in 0..<volume.xCount {
+                for yOffset in 0..<volume.yCount {
+                    let position = PosInt3D(
+                        x: basePosition.x + xOffset * volume.xStep,
+                        y: basePosition.y + yOffset * volume.yStep,
+                        z: basePosition.z + zOffset * volume.zStep
+                    )
+                    let biome = try generator.sampleBiome(at: position, in: dimension)
+                    samples.append(ClimateBiomeSample(
+                        climate: generator.sampleNoisePoint(at: position),
+                        biome: try #require(biome)
+                    ))
+                }
+            }
+        }
+        return samples
+    }
+
+    let firstExpected = try expectedSamples()
+    for (actual, expected) in zip(firstSamples, firstExpected) {
+        #expect(actual.climate == expected.climate)
+        #expect(actual.biome == expected.biome)
+    }
+
+    #if canImport(CLLVM)
+    let llvmSampler = try generator.makeClimateBiomeBulkSampler(
+        for: volume,
+        in: dimension,
+        strategy: .llvm
+    )
+    let llvmSamples = llvmSampler(at: basePosition)
+    for (actual, expected) in zip(llvmSamples, firstExpected) {
+        #expect(abs(actual.climate.temperature - expected.climate.temperature) < 1e-12)
+        #expect(abs(actual.climate.humidity - expected.climate.humidity) < 1e-12)
+        #expect(abs(actual.climate.continentalness - expected.climate.continentalness) < 1e-12)
+        #expect(abs(actual.climate.erosion - expected.climate.erosion) < 1e-12)
+        #expect(abs(actual.climate.weirdness - expected.climate.weirdness) < 1e-12)
+        #expect(abs(actual.climate.depth - expected.climate.depth) < 1e-8)
+        #expect(actual.biome == expected.biome)
+    }
+    #endif
+
+    try generator.setWorldSeed(50_123_537_021)
+    let reseededSamples = sampler(at: basePosition)
+    let reseededExpected = try expectedSamples()
+    for (actual, expected) in zip(reseededSamples, reseededExpected) {
+        #expect(actual.climate == expected.climate)
+        #expect(actual.biome == expected.biome)
+    }
+    #expect(zip(firstSamples, reseededSamples).contains { $0.0.climate != $0.1.climate })
+}
+
+@Test func testWorldGeneratorClimateBiomeWASMBulkUsesOneRuntimeInvocation() throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else { return }
+
+    let volume = CompiledDensityFunctionBufferContext(xCount: 3, yCount: 2, zCount: 2)
+    let counter = BulkInvocationCounter()
+    let runtime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _ in 0 } },
+        instantiateDensityFunctionBulk: { _, exportName, memoryExportName, sampleCount, _ in
+            #expect(exportName == "sample_bulk")
+            #expect(memoryExportName == "memory")
+            #expect(sampleCount == volume.sampleCount * 7)
+            return { _, _, _, output in
+                counter.increment()
+                output.update(repeating: 0, count: sampleCount)
+            }
+        }
+    )
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld"),
+        wasmRuntime: runtime
+    )
+    let sampler = try generator.makeClimateBiomeBulkSampler(
+        for: volume,
+        in: RegistryKey(referencing: "minecraft:overworld"),
+        strategy: .wasm
+    )
+
+    #expect(sampler(at: PosInt3D(x: 0, y: 64, z: 0)).count == volume.sampleCount)
+    #expect(counter.count == 1)
+}

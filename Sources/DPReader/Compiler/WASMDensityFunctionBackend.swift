@@ -424,8 +424,8 @@ private func appendBiomeSearchFromMemory(
     body.append(0x50) // i64.eqz
     body.append(0x04) // if exact match
     body.append(0x40)
-    appendLocalGet(resultLocal, to: &body)
-    body.append(0x0f) // return
+    body.append(0x0c) // br $done
+    body.appendUnsigned(4)
     body.append(0x0b) // end exact match
     body.append(0x05) // else internal node
 
@@ -723,13 +723,17 @@ private func appendEmbeddedNoiseSample(
 private func makeWASMBulkFunctionBody(
     bufferContext: CompiledDensityFunctionBufferContext,
     outputOffset: Int,
-    scalarFunctionIndex: Int
+    scalarFunctionIndex: Int,
+    outputValueCount: Int
 ) -> [UInt8] {
-    // Parameters are base x/y/z. Locals are z/x/y offsets and the output address.
+    // Parameters are base x/y/z. Locals are z/x/y offsets, the output address, and
+    // one temporary per scalar result so multi-value returns can be stored in order.
     var body = WASMEncoder()
-    body.appendUnsigned(1)
+    body.appendUnsigned(2)
     body.appendUnsigned(4)
     body.append(WASMValueType.i32.rawValue)
+    body.appendUnsigned(outputValueCount)
+    body.append(WASMValueType.f64.rawValue)
 
     appendIntConstant(0, to: &body)
     appendLocalSet(3, to: &body)
@@ -748,7 +752,6 @@ private func makeWASMBulkFunctionBody(
 
     body.append(0x03) // loop y
     body.append(0x40)
-    appendLocalGet(6, to: &body)
     for (base, offset, step) in [
         (0, 4, bufferContext.xStep),
         (1, 5, bufferContext.yStep),
@@ -761,12 +764,18 @@ private func makeWASMBulkFunctionBody(
         body.append(0x6a) // i32.add
     }
     appendCall(scalarFunctionIndex, to: &body)
-    appendDoubleStore(to: &body)
-
-    appendLocalGet(6, to: &body)
-    appendIntConstant(8, to: &body)
-    body.append(0x6a) // i32.add
-    appendLocalSet(6, to: &body)
+    for outputIndex in (0..<outputValueCount).reversed() {
+        appendLocalSet(7 + outputIndex, to: &body)
+    }
+    for outputIndex in 0..<outputValueCount {
+        appendLocalGet(6, to: &body)
+        appendLocalGet(7 + outputIndex, to: &body)
+        appendDoubleStore(to: &body)
+        appendLocalGet(6, to: &body)
+        appendIntConstant(8, to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalSet(6, to: &body)
+    }
     appendLocalGet(5, to: &body)
     appendIntConstant(1, to: &body)
     body.append(0x6a) // i32.add
@@ -812,9 +821,15 @@ func buildDensityFunctionWASMModule(
     bulkExportName: String = "sample_bulk"
 ) throws -> [UInt8] {
     if bulkContext != nil {
-        guard program.inputTypes == [.i32, .i32, .i32], program.outputs.count == 1 else {
+        let outputsAreDoubles = program.outputs.allSatisfy { output in
+            let instructionIndex = output - program.inputTypes.count
+            return instructionIndex >= 0
+                && instructionIndex < program.instructions.count
+                && program.instructions[instructionIndex].resultType == .f64
+        }
+        guard program.inputTypes == [.i32, .i32, .i32], outputsAreDoubles else {
             throw DensityFunctionCompilationError.badDensityFunction(
-                "WASM bulk compilation requires one scalar output with x/y/z inputs."
+                "WASM bulk compilation requires f64 outputs with x/y/z inputs."
             )
         }
     }
@@ -858,10 +873,21 @@ func buildDensityFunctionWASMModule(
     }
     let biomeScratchEnd = biomeStackOffset + maximumBiomeTreeNodeCount * MemoryLayout<Int32>.size
     let bulkOutputOffset = bulkContext.map { _ in alignWASMOffset(biomeScratchEnd, to: 8) }
-    let bulkOutputEnd = if let bulkContext, let bulkOutputOffset {
-        bulkOutputOffset + bulkContext.sampleCount * MemoryLayout<Double>.size
+    let bulkOutputEnd: Int
+    if let bulkContext, let bulkOutputOffset {
+        let (valueCount, valueCountOverflow) = bulkContext.sampleCount.multipliedReportingOverflow(
+            by: program.outputs.count
+        )
+        let (byteCount, byteCountOverflow) = valueCount.multipliedReportingOverflow(
+            by: MemoryLayout<Double>.size
+        )
+        let (endOffset, endOffsetOverflow) = bulkOutputOffset.addingReportingOverflow(byteCount)
+        guard !valueCountOverflow, !byteCountOverflow, !endOffsetOverflow else {
+            throw DensityFunctionCompilationError.badDensityFunction("WASM bulk output size overflowed Int.")
+        }
+        bulkOutputEnd = endOffset
     } else {
-        biomeScratchEnd
+        bulkOutputEnd = biomeScratchEnd
     }
     guard bulkOutputEnd <= Int(Int32.max) else {
         throw DensityFunctionCompilationError.badDensityFunction("WASM bulk output exceeds the 32-bit address space.")
@@ -1142,7 +1168,8 @@ func buildDensityFunctionWASMModule(
         let bulkBody = makeWASMBulkFunctionBody(
             bufferContext: bulkContext,
             outputOffset: bulkOutputOffset,
-            scalarFunctionIndex: mainFunctionIndex
+            scalarFunctionIndex: mainFunctionIndex,
+            outputValueCount: program.outputs.count
         )
         code.appendUnsigned(bulkBody.count)
         code.append(contentsOf: bulkBody)
