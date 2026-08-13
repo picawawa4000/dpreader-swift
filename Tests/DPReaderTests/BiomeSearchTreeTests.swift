@@ -128,7 +128,7 @@ import Testing
     let ir = buildBiomeSearchIR(tree: snapshot.tree)
     let wasm = try tree.compile(strategy: .wasm)
 
-    #expect(ir.inputTypes == [.f64, .f64, .f64, .f64, .f64, .f64])
+    #expect(ir.inputTypes == [.f64, .f64, .f64, .f64, .f64, .f64, .i64, .i32])
     #expect(ir.biomeSearchTrees.count == 1)
     #expect(wasm.strategy == .wasm)
     #expect(wasm.wasmModule?.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
@@ -172,6 +172,8 @@ import Testing
     let tree = try BiomeSearchTree(entries: entries)
     let wasm = try tree.compile(strategy: .wasm)
     let compiled = try tree.compile(strategy: .llvm)
+    let wasmWithAlternative = try tree.compile(strategy: .wasm, useAlternativeNode: true)
+    let llvmWithAlternative = try tree.compile(strategy: .llvm, useAlternativeNode: true)
     let wasmModule = try #require(wasm.wasmModule)
     #expect(wasmModule.count < 1_500_000)
     if let outputPath = ProcessInfo.processInfo.environment["DPREADER_BIOME_WASM_OUTPUT_PATH"] {
@@ -200,6 +202,15 @@ import Testing
         let expected = tree.getUnchecked(point)
         #expect(wasm(point) == expected)
         #expect(compiled(point) == expected)
+    }
+
+    tree.resetAlternative()
+    wasmWithAlternative.resetAlternative()
+    llvmWithAlternative.resetAlternative()
+    for point in points {
+        let expected = tree.getUnchecked(point)
+        #expect(wasmWithAlternative(point) == expected)
+        #expect(llvmWithAlternative(point) == expected)
     }
 
     if ProcessInfo.processInfo.environment["DPREADER_BIOME_COMPILER_BENCHMARK"] == "1" {

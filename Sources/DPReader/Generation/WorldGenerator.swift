@@ -2202,6 +2202,7 @@ public final class WorldGenerator {
     private var unbakedConfig: NoiseSettings?
     private let configuredSettingsKeyName: String?
     private let compilationBackend: CompilationBackend?
+    private let useBiomeSearchAlternative: Bool
     private let wasmRuntime: (any WASMRuntime)?
     private var configuredDimensionKey: RegistryKey<Dimension>?
     private var registries = WorldGenerationRegistries()
@@ -2224,6 +2225,7 @@ public final class WorldGenerator {
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
     ///   - config: A registry key pointing to the noise settings to use for generation. While this can be omitted, it should not be except for debugging purposes.
     ///   - compilationBackend: Optionally compiles biome climate functions and search trees with this backend.
+    ///   - useBiomeSearchAlternative: Reuses the previous winning leaf when searching each compiled biome tree.
     ///   - wasmRuntime: The host WebAssembly engine bridge used when `compilationBackend` is `.wasm`.
     /// It is recommended (though not required) to place the vanilla datapack at the end of this array.
     public init(
@@ -2232,12 +2234,14 @@ public final class WorldGenerator {
         usingSettings configKey: RegistryKey<NoiseSettings>? = nil,
         buildSearchTrees: Bool = true,
         compilationBackend: CompilationBackend? = nil,
+        useBiomeSearchAlternative: Bool = false,
         wasmRuntime: (any WASMRuntime)? = nil
     ) throws {
         self.worldSeed = seed
         self.voronoiSHA = VoronoiBiomeSubsampler.makeVoronoiSHA(seed)
         self.configuredSettingsKeyName = configKey?.name
         self.compilationBackend = compilationBackend
+        self.useBiomeSearchAlternative = useBiomeSearchAlternative
         self.wasmRuntime = wasmRuntime
         try self.initialiseDataPacks(datapacks, usingSettings: configKey, buildSearchTrees: buildSearchTrees)
         try self.setWorldSeed(seed)
@@ -2382,7 +2386,11 @@ public final class WorldGenerator {
             if let existing = compiledSearchTreesByIdentity[identity] {
                 compiled = existing
             } else {
-                compiled = try tree.compile(strategy: compilationBackend, runtime: self.wasmRuntime)
+                compiled = try tree.compile(
+                    strategy: compilationBackend,
+                    useAlternativeNode: self.useBiomeSearchAlternative,
+                    runtime: self.wasmRuntime
+                )
                 compiledSearchTreesByIdentity[identity] = compiled
             }
             compiledSearchTrees[key] = compiled
@@ -2520,7 +2528,11 @@ public final class WorldGenerator {
                     registry: registry
                 )
             }
-            let compiledSearch = try compile(biomeSearchTree: searchTree, strategy: .llvm)
+            let compiledSearch = try compile(
+                biomeSearchTree: searchTree,
+                strategy: .llvm,
+                useAlternativeNode: self.useBiomeSearchAlternative
+            )
             return CompiledClimateBiomeBulkSampler(
                 strategy: .llvm,
                 bufferContext: volume,
@@ -5450,7 +5462,12 @@ public final class WorldGenerator {
         guard let searchTree = self.searchTrees[dimension] else {
             throw WorldGenerationErrors.biomeSearchTreeNotPresent(dimension.name)
         }
-        return try compile(biomeSearchTree: searchTree, strategy: target, runtime: self.wasmRuntime)
+        return try compile(
+            biomeSearchTree: searchTree,
+            strategy: target,
+            useAlternativeNode: self.useBiomeSearchAlternative,
+            runtime: self.wasmRuntime
+        )
     }
 }
 

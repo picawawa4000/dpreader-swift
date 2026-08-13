@@ -371,6 +371,9 @@ private func appendBiomeSearchFromMemory(
     tree: BiomeSearchIRTree,
     layout: WASMBiomeTreeLayout,
     point: [Int],
+    initialBestDistance: Int?,
+    initialBestNode: Int?,
+    returnNodeIndex: Bool,
     resultLocal: Int,
     bestDistanceLocal: Int,
     candidateDistanceLocal: Int,
@@ -385,14 +388,20 @@ private func appendBiomeSearchFromMemory(
 ) {
     let root = tree.nodes[tree.rootIndex]
     if root.isLeaf {
-        appendIntConstant(root.valueIndex, to: &body)
+        appendIntConstant(returnNodeIndex ? Int32(tree.rootIndex) : root.valueIndex, to: &body)
         return
     }
 
-    appendInt64Constant(Int64.max, to: &body)
+    if let initialBestDistance, let initialBestNode {
+        appendLocalGet(initialBestDistance, to: &body)
+        appendLocalGet(initialBestNode, to: &body)
+        appendLocalSet(resultLocal, to: &body)
+    } else {
+        appendInt64Constant(Int64.max, to: &body)
+        appendIntConstant(-1, to: &body)
+        appendLocalSet(resultLocal, to: &body)
+    }
     appendLocalSet(bestDistanceLocal, to: &body)
-    appendIntConstant(-1, to: &body)
-    appendLocalSet(resultLocal, to: &body)
     appendIntConstant(0, to: &body)
     appendLocalSet(stackCountLocal, to: &body)
 
@@ -456,14 +465,14 @@ private func appendBiomeSearchFromMemory(
     appendLocalGet(nodeAddressLocal, to: &body)
     appendInt32Load(offset: 0, to: &body)
     body.append(0x22) // local.tee
-    body.appendUnsigned(nodeIndexLocal)
+    body.appendUnsigned(childIndexLocal)
     appendIntConstant(0, to: &body)
     body.append(0x4e) // i32.ge_s
     body.append(0x04) // if leaf
     body.append(0x40)
     appendLocalGet(candidateDistanceLocal, to: &body)
     appendLocalSet(bestDistanceLocal, to: &body)
-    appendLocalGet(nodeIndexLocal, to: &body)
+    appendLocalGet(returnNodeIndex ? nodeIndexLocal : childIndexLocal, to: &body)
     appendLocalSet(resultLocal, to: &body)
     appendLocalGet(candidateDistanceLocal, to: &body)
     body.append(0x50) // i64.eqz
@@ -1375,7 +1384,7 @@ func buildDensityFunctionWASMModule(
                 appendLocalGet(z, to: &body)
                 appendCall(noiseSamplerFunctionIndex!, to: &body)
             }
-        case .searchBiome(let index, let point):
+        case .searchBiome(let index, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
             let resultLocal = program.inputTypes.count + instructionIndex
             let bestDistanceLocal = scratchLocalStart
             let candidateDistanceLocal = scratchLocalStart + 1
@@ -1391,6 +1400,9 @@ func buildDensityFunctionWASMModule(
                 tree: tree,
                 layout: biomeTreeLayouts[index],
                 point: point,
+                initialBestDistance: initialBestDistance,
+                initialBestNode: initialBestNode,
+                returnNodeIndex: returnNodeIndex,
                 resultLocal: resultLocal,
                 bestDistanceLocal: bestDistanceLocal,
                 candidateDistanceLocal: candidateDistanceLocal,

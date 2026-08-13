@@ -31,7 +31,7 @@ private struct TestHostWASMRuntime: WASMRuntime {
     ) throws -> WASMBiomeSearchInvocation {
         precondition(module.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
         precondition(exportName == "search")
-        return { temperature, _, _, _, _, _ in temperature < 0 ? 0 : 1 }
+        return { temperature, _, _, _, _, _, _, _ in temperature < 0 ? 0 : 1 }
     }
 
     func instantiateClimateFunctions(
@@ -92,7 +92,7 @@ private final class CapturingClimateWASMRuntime: WASMRuntime, @unchecked Sendabl
         module _: [UInt8],
         exportName _: String
     ) throws -> WASMBiomeSearchInvocation {
-        { _, _, _, _, _, _ in 0 }
+        { _, _, _, _, _, _, _, _ in 0 }
     }
 
     var snapshot: (densityCount: Int, climateModules: [[UInt8]]) {
@@ -110,6 +110,27 @@ private final class BulkInvocationCounter: @unchecked Sendable {
 
     var count: Int {
         self.lock.withLock { self.value }
+    }
+}
+
+private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedInputs: [(distance: Int64, node: Int32)] = []
+    let returnedNode: Int32
+
+    init(returnedNode: Int32) {
+        self.returnedNode = returnedNode
+    }
+
+    func invoke(initialDistance: Int64, initialNode: Int32) -> Int32 {
+        self.lock.withLock {
+            self.storedInputs.append((initialDistance, initialNode))
+        }
+        return self.returnedNode
+    }
+
+    var inputs: [(distance: Int64, node: Int32)] {
+        self.lock.withLock { self.storedInputs }
     }
 }
 
@@ -173,6 +194,156 @@ private final class BulkInvocationCounter: @unchecked Sendable {
         weirdness: 0,
         depth: 0
     )) == keyB)
+}
+
+@Test func testCompiledBiomeSearchAlternativeIsStoredPerTreeAndThreadSafe() throws {
+    let keyA = RegistryKey<Biome>(referencing: "test:a")
+    let keyB = RegistryKey<Biome>(referencing: "test:b")
+    let zero = ParameterRange(min: 0, max: 0)
+    let tree = try BiomeSearchTree(entries: [
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: -10_000, max: -1),
+                humidity: zero,
+                continentalness: zero,
+                erosion: zero,
+                depth: zero,
+                weirdness: zero,
+                offset: zero
+            ),
+            keyA
+        ),
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: 0, max: 10_000),
+                humidity: zero,
+                continentalness: zero,
+                erosion: zero,
+                depth: zero,
+                weirdness: zero,
+                offset: zero
+            ),
+            keyB
+        )
+    ])
+    let snapshot = tree.makeCompilerSnapshot()
+    let leafIndex = try #require(snapshot.tree.nodes.indices.first {
+        snapshot.tree.nodes[$0].isLeaf && snapshot.tree.nodes[$0].valueIndex == 0
+    })
+    let recorder = BiomeAlternativeInvocationRecorder(returnedNode: Int32(leafIndex))
+    let runtime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in
+            { _, _, _, _, _, _, initialDistance, initialNode in
+                recorder.invoke(initialDistance: initialDistance, initialNode: initialNode)
+            }
+        }
+    )
+    let compiled = try tree.compile(
+        strategy: .wasm,
+        useAlternativeNode: true,
+        runtime: runtime
+    )
+    let point = NoisePoint(
+        temperature: -0.5,
+        humidity: 0,
+        continentalness: 0,
+        erosion: 0,
+        weirdness: 0,
+        depth: 0
+    )
+
+    #expect(compiled.usesAlternativeNode)
+    DispatchQueue.concurrentPerform(iterations: 32) { _ in
+        _ = compiled(point)
+    }
+    let concurrentInputs = recorder.inputs
+    #expect(concurrentInputs.count == 32)
+    #expect(concurrentInputs.contains { $0.node == -1 && $0.distance == Int64.max })
+    #expect(concurrentInputs.allSatisfy {
+        ($0.node == -1 && $0.distance == Int64.max)
+            || ($0.node == Int32(leafIndex) && $0.distance == 0)
+    })
+
+    compiled.resetAlternative()
+    #expect(compiled(point) == keyA)
+    #expect(recorder.inputs.last?.node == -1)
+
+    let secondRecorder = BiomeAlternativeInvocationRecorder(returnedNode: Int32(leafIndex))
+    let secondRuntime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in
+            { _, _, _, _, _, _, initialDistance, initialNode in
+                secondRecorder.invoke(initialDistance: initialDistance, initialNode: initialNode)
+            }
+        }
+    )
+    let secondCompiled = try tree.compile(
+        strategy: .wasm,
+        useAlternativeNode: true,
+        runtime: secondRuntime
+    )
+    #expect(secondCompiled(point) == keyA)
+    #expect(secondRecorder.inputs.first?.node == -1)
+}
+
+@Test func testGeneratedWASMBiomeSearchUsesAlternativeNodeInputs() throws {
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    guard let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)) else { return }
+
+    let keyA = RegistryKey<Biome>(referencing: "test:a")
+    let keyB = RegistryKey<Biome>(referencing: "test:b")
+    let zero = ParameterRange(min: 0, max: 0)
+    let tree = try BiomeSearchTree(entries: [
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: -10_000, max: -1), humidity: zero,
+                continentalness: zero, erosion: zero, depth: zero, weirdness: zero, offset: zero
+            ),
+            keyA
+        ),
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: 0, max: 10_000), humidity: zero,
+                continentalness: zero, erosion: zero, depth: zero, weirdness: zero, offset: zero
+            ),
+            keyB
+        )
+    ])
+    let snapshot = tree.makeCompilerSnapshot()
+    let nodeA = try #require(snapshot.tree.nodes.indices.first {
+        snapshot.tree.nodes[$0].isLeaf && snapshot.tree.nodes[$0].valueIndex == 0
+    })
+    let nodeB = try #require(snapshot.tree.nodes.indices.first {
+        snapshot.tree.nodes[$0].isLeaf && snapshot.tree.nodes[$0].valueIndex == 1
+    })
+    let compiled = try tree.compile(strategy: .wasm, useAlternativeNode: true)
+    let moduleURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dpreader-biome-alternative-\(UUID().uuidString).wasm")
+    try Data(try #require(compiled.wasmModule)).write(to: moduleURL, options: .atomic)
+    defer { try? FileManager.default.removeItem(at: moduleURL) }
+
+    let script = """
+    const fs = require('fs');
+    WebAssembly.instantiate(fs.readFileSync(process.argv[1])).then(({ instance }) => {
+      const search = instance.exports.search;
+      const none = 9223372036854775807n;
+      const a = search(-0.5, 0, 0, 0, 0, 0, none, -1);
+      const b = search(0.5, 0, 0, 0, 0, 0, 25010001n, a);
+      if (a !== \(nodeA) || b !== \(nodeB)) {
+        throw new Error(`unexpected alternative search nodes: ${a}, ${b}`);
+      }
+    });
+    """
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: nodePath)
+    process.arguments = ["-e", script, moduleURL.path]
+    let errorPipe = Pipe()
+    process.standardError = errorPipe
+    try process.run()
+    process.waitUntilExit()
+    let errorOutput = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    #expect(process.terminationStatus == 0, "Node WASM biome search failed: \(errorOutput)")
 }
 
 @Test func testWASMBakedNoiseStaysInsideGeneratedModule() throws {
@@ -430,7 +601,7 @@ private final class BulkInvocationCounter: @unchecked Sendable {
     let counter = BulkInvocationCounter()
     let runtime = ClosureWASMRuntime(
         instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
-        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _, _, _ in 0 } },
         instantiateDensityFunctionBulk: { module, exportName, memoryExportName, sampleCount, _ in
             #expect(module.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
             #expect(exportName == "sample_bulk")
@@ -649,7 +820,7 @@ private final class BulkInvocationCounter: @unchecked Sendable {
     let counter = BulkInvocationCounter()
     let runtime = ClosureWASMRuntime(
         instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
-        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _, _, _ in 0 } },
         instantiateDensityFunctionBulk: { _, exportName, memoryExportName, sampleCount, _ in
             #expect(exportName == "sample_bulk")
             #expect(memoryExportName == "memory")

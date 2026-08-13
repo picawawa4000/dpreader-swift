@@ -50,7 +50,7 @@ public struct WASMClimateSample: Sendable, Equatable {
 
 public typealias WASMClimateInvocation = @Sendable (Int32, Int32, Int32) -> WASMClimateSample
 public typealias WASMBiomeSearchInvocation = @Sendable (
-    Double, Double, Double, Double, Double, Double
+    Double, Double, Double, Double, Double, Double, Int64, Int32
 ) -> Int32
 
 /// Instantiates emitted WASM with the embedding environment's WebAssembly engine.
@@ -87,7 +87,8 @@ public protocol WASMRuntime: Sendable {
         imports: WASMDensityFunctionImports
     ) throws -> WASMClimateInvocation
 
-    /// Instantiates a module exporting `search(f64, f64, f64, f64, f64, f64) -> i32`.
+    /// Instantiates a module exporting `search(f64, f64, f64, f64, f64, f64, i64, i32) -> i32`.
+    /// The final inputs are an optional previous leaf's squared distance and node index.
     func instantiateBiomeSearch(
         module: [UInt8],
         exportName: String

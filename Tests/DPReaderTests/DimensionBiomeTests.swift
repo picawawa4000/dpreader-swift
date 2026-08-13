@@ -113,9 +113,21 @@ private func makeVanillaDimensionBiomeWorldGenerator(seed: UInt64, settings: Str
         withWorldSeed: 503_815_372,
         usingDataPacks: [pack],
         usingSettings: settings,
-        compilationBackend: .wasm
+        compilationBackend: .wasm,
+        useBiomeSearchAlternative: true
     )
+    let initialCompiledTree = try generator.getCompiledBiomeSearchTree(
+        forTarget: .wasm,
+        inDimension: dimension
+    )
+    #expect(initialCompiledTree.usesAlternativeNode)
     try generator.setWorldSeed(501_235_370_21)
+    let reseededCompiledTree = try generator.getCompiledBiomeSearchTree(
+        forTarget: .wasm,
+        inDimension: dimension
+    )
+    #expect(reseededCompiledTree.usesAlternativeNode)
+    #expect(reseededCompiledTree !== initialCompiledTree)
 
     let reseededPoint = generator.sampleNoisePoint(at: position)
     let reseededBiome = try generator.sampleBiome(at: position, in: dimension)

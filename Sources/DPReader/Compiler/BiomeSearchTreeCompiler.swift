@@ -38,13 +38,57 @@ final class BiomeSearchIRTree: @unchecked Sendable {
         return result
     }
 
-    func search(_ point: [Int64]) -> Int32 {
+    @inline(__always)
+    func squaredDistance(
+        nodeIndex: Int,
+        temperature: Int64,
+        humidity: Int64,
+        continentalness: Int64,
+        erosion: Int64,
+        weirdness: Int64,
+        depth: Int64
+    ) -> Int64 {
+        let node = self.nodes[nodeIndex]
+        var result: Int64 = 0
+
+        @inline(__always)
+        func accumulate(_ value: Int64, dimension: Int) {
+            let distance: Int64
+            if value > node.maximums[dimension] {
+                distance = value &- node.maximums[dimension]
+            } else if value < node.minimums[dimension] {
+                distance = node.minimums[dimension] &- value
+            } else {
+                return
+            }
+            result &+= distance &* distance
+        }
+
+        accumulate(continentalness, dimension: 2)
+        accumulate(erosion, dimension: 3)
+        accumulate(weirdness, dimension: 5)
+        accumulate(depth, dimension: 4)
+        accumulate(temperature, dimension: 0)
+        accumulate(humidity, dimension: 1)
+        accumulate(0, dimension: 6)
+        return result
+    }
+
+    func search(
+        _ point: [Int64],
+        initialBestDistance: Int64 = Int64.max,
+        initialBestNode: Int32 = -1,
+        returnNodeIndex: Bool = false
+    ) -> Int32 {
         precondition(point.count == 7)
         if self.nodes[self.rootIndex].isLeaf {
-            return self.nodes[self.rootIndex].valueIndex
+            return returnNodeIndex ? Int32(self.rootIndex) : self.nodes[self.rootIndex].valueIndex
         }
-        var bestIndex: Int32 = -1
-        var bestDistance = Int64.max
+        let hasValidInitialNode = initialBestNode >= 0
+            && Int(initialBestNode) < self.nodes.count
+            && self.nodes[Int(initialBestNode)].isLeaf
+        var bestNode = hasValidInitialNode ? initialBestNode : -1
+        var bestDistance = hasValidInitialNode ? initialBestDistance : Int64.max
 
         @inline(__always)
         func visit(_ nodeIndex: Int) -> Bool {
@@ -53,7 +97,7 @@ final class BiomeSearchIRTree: @unchecked Sendable {
                 let candidateDistance = self.squaredDistance(nodeIndex: nodeIndex, point: point)
                 if candidateDistance <= bestDistance {
                     bestDistance = candidateDistance
-                    bestIndex = node.valueIndex
+                    bestNode = Int32(nodeIndex)
                 }
                 return bestDistance == 0
             }
@@ -70,30 +114,57 @@ final class BiomeSearchIRTree: @unchecked Sendable {
         }
 
         _ = visit(self.rootIndex)
-        return bestIndex
+        guard bestNode >= 0 else { return -1 }
+        return returnNodeIndex ? bestNode : self.nodes[Int(bestNode)].valueIndex
     }
 }
 
-/// A stateless biome selector lowered through the same IR and backend pipeline as compiled density functions.
-/// Ties follow deterministic tree order, equivalent to looking up after `BiomeSearchTree.resetAlternative()`.
+private final class CompiledBiomeSearchAlternativeState: @unchecked Sendable {
+    let lock = NSLock()
+    var nodeIndex: Int32 = -1
+}
+
+/// A biome selector lowered through the same IR and backend pipeline as compiled density functions.
 public final class CompiledBiomeSearchTree: @unchecked Sendable {
     public let strategy: CompilationBackend
-    /// A module exporting `search(f64, f64, f64, f64, f64, f64) -> i32`, present for WASM compilation.
+    /// A module exporting `search(f64, f64, f64, f64, f64, f64, i64, i32) -> i32`,
+    /// present for WASM compilation. The final inputs are the optional alternative's distance and node index.
     public let wasmModule: [UInt8]?
     /// Maps the `i32` result exported by `wasmModule` to biome keys.
     public let biomes: [RegistryKey<Biome>]
-    private let implementation: @Sendable (Double, Double, Double, Double, Double, Double) -> Int32
+    /// Whether this tree reuses its previous winning leaf as the next search's initial candidate.
+    public let usesAlternativeNode: Bool
+    private let tree: BiomeSearchIRTree
+    private let alternativeState: CompiledBiomeSearchAlternativeState?
+    private let implementation: @Sendable (
+        Double, Double, Double, Double, Double, Double, Int64, Int32
+    ) -> Int32
 
     init(
         strategy: CompilationBackend,
         wasmModule: [UInt8]? = nil,
         biomes: [RegistryKey<Biome>],
-        implementation: @escaping @Sendable (Double, Double, Double, Double, Double, Double) -> Int32
+        tree: BiomeSearchIRTree,
+        useAlternativeNode: Bool,
+        implementation: @escaping @Sendable (
+            Double, Double, Double, Double, Double, Double, Int64, Int32
+        ) -> Int32
     ) {
         self.strategy = strategy
         self.wasmModule = wasmModule
         self.biomes = biomes
+        self.tree = tree
+        self.usesAlternativeNode = useAlternativeNode
+        self.alternativeState = useAlternativeNode ? CompiledBiomeSearchAlternativeState() : nil
         self.implementation = implementation
+    }
+
+    /// Clears the previous winning leaf used as the alternative candidate.
+    public func resetAlternative() {
+        guard let alternativeState else { return }
+        alternativeState.lock.withLock {
+            alternativeState.nodeIndex = -1
+        }
     }
 
     @inline(__always)
@@ -105,7 +176,44 @@ public final class CompiledBiomeSearchTree: @unchecked Sendable {
         weirdness: Double,
         depth: Double
     ) -> RegistryKey<Biome> {
-        let index = self.implementation(temperature, humidity, continentalness, erosion, weirdness, depth)
+        let invoke: (Int64, Int32) -> Int32 = { initialBestDistance, initialBestNode in
+            self.implementation(
+                temperature,
+                humidity,
+                continentalness,
+                erosion,
+                weirdness,
+                depth,
+                initialBestDistance,
+                initialBestNode
+            )
+        }
+        let index: Int32
+        if let alternativeState {
+            let initialNode = alternativeState.lock.withLock { alternativeState.nodeIndex }
+            let initialDistance = initialNode >= 0
+                ? self.tree.squaredDistance(
+                    nodeIndex: Int(initialNode),
+                    temperature: Int64(temperature * 10_000.0),
+                    humidity: Int64(humidity * 10_000.0),
+                    continentalness: Int64(continentalness * 10_000.0),
+                    erosion: Int64(erosion * 10_000.0),
+                    weirdness: Int64(weirdness * 10_000.0),
+                    depth: Int64(depth * 10_000.0)
+                )
+                : Int64.max
+            let nodeIndex = invoke(initialDistance, initialNode)
+            precondition(
+                nodeIndex >= 0 && Int(nodeIndex) < self.tree.nodes.count && self.tree.nodes[Int(nodeIndex)].isLeaf,
+                "Compiled biome search returned an invalid node index."
+            )
+            alternativeState.lock.withLock {
+                alternativeState.nodeIndex = nodeIndex
+            }
+            index = self.tree.nodes[Int(nodeIndex)].valueIndex
+        } else {
+            index = invoke(Int64.max, -1)
+        }
         precondition(index >= 0 && Int(index) < self.biomes.count, "Compiled biome search returned an invalid biome index.")
         return self.biomes[Int(index)]
     }
@@ -123,8 +231,8 @@ public final class CompiledBiomeSearchTree: @unchecked Sendable {
     }
 }
 
-func buildBiomeSearchIR(tree: BiomeSearchIRTree) -> DensityFunctionIRProgram {
-    let inputTypes: [DensityFunctionIRValueType] = Array(repeating: .f64, count: 6)
+func buildBiomeSearchIR(tree: BiomeSearchIRTree, useAlternativeNode: Bool = false) -> DensityFunctionIRProgram {
+    let inputTypes: [DensityFunctionIRValueType] = Array(repeating: .f64, count: 6) + [.i64, .i32]
     var instructions: [DensityFunctionIRInstruction] = []
 
     @inline(__always)
@@ -148,7 +256,13 @@ func buildBiomeSearchIR(tree: BiomeSearchIRTree) -> DensityFunctionIRProgram {
         scaledInputs[4],
         offset
     ]
-    let output = append(.searchBiome(index: 0, point: point))
+    let output = append(.searchBiome(
+        index: 0,
+        point: point,
+        initialBestDistance: useAlternativeNode ? 6 : nil,
+        initialBestNode: useAlternativeNode ? 7 : nil,
+        returnNodeIndex: useAlternativeNode
+    ))
     return DensityFunctionIRProgram(
         inputTypes: inputTypes,
         instructions: instructions,
@@ -192,7 +306,13 @@ func buildClimateBiomeIR(
         scaledClimate[4],
         offset
     ]
-    let biomeIndex = append(.searchBiome(index: 0, point: point))
+    let biomeIndex = append(.searchBiome(
+        index: 0,
+        point: point,
+        initialBestDistance: nil,
+        initialBestNode: nil,
+        returnNodeIndex: false
+    ))
     let biomeIndexAsDouble = append(.convertSignedIntToDouble(biomeIndex))
     return DensityFunctionIRProgram(
         inputTypes: climate.inputTypes,
@@ -208,10 +328,11 @@ func buildClimateBiomeIR(
 public func compile(
     biomeSearchTree tree: BiomeSearchTree,
     strategy: CompilationBackend = .llvm,
+    useAlternativeNode: Bool = false,
     runtime: (any WASMRuntime)? = nil
 ) throws -> CompiledBiomeSearchTree {
     let snapshot = tree.makeCompilerSnapshot()
-    let program = buildBiomeSearchIR(tree: snapshot.tree)
+    let program = buildBiomeSearchIR(tree: snapshot.tree, useAlternativeNode: useAlternativeNode)
     switch strategy {
     case .wasm:
         let module = try buildDensityFunctionWASMModule(program, exportName: "search")
@@ -221,14 +342,21 @@ public func compile(
                 strategy: .wasm,
                 wasmModule: module,
                 biomes: snapshot.biomes,
+                tree: snapshot.tree,
+                useAlternativeNode: useAlternativeNode,
                 implementation: implementation
             )
         }
         #if os(WASI) || arch(wasm32)
         throw DensityFunctionCompilationError.wasmRuntimeUnavailable
         #else
-        return CompiledBiomeSearchTree(strategy: .wasm, wasmModule: module, biomes: snapshot.biomes) {
-            temperature, humidity, continentalness, erosion, weirdness, depth in
+        return CompiledBiomeSearchTree(
+            strategy: .wasm,
+            wasmModule: module,
+            biomes: snapshot.biomes,
+            tree: snapshot.tree,
+            useAlternativeNode: useAlternativeNode
+        ) { temperature, humidity, continentalness, erosion, weirdness, depth, initialBestDistance, initialBestNode in
             evaluateBiomeSearchIR(
                 program,
                 point: NoisePoint(
@@ -238,13 +366,20 @@ public func compile(
                     erosion: erosion,
                     weirdness: weirdness,
                     depth: depth
-                )
+                ),
+                initialBestDistance: initialBestDistance,
+                initialBestNode: initialBestNode
             )
         }
         #endif
     case .llvm:
         #if canImport(CLLVM)
-        return try compileBiomeSearchIRWithLLVM(program, biomes: snapshot.biomes)
+        return try compileBiomeSearchIRWithLLVM(
+            program,
+            tree: snapshot.tree,
+            biomes: snapshot.biomes,
+            useAlternativeNode: useAlternativeNode
+        )
         #else
         throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
         #endif
@@ -255,8 +390,14 @@ public extension BiomeSearchTree {
     /// Compiles this tree with the requested shared compiler backend.
     func compile(
         strategy: CompilationBackend = .llvm,
+        useAlternativeNode: Bool = false,
         runtime: (any WASMRuntime)? = nil
     ) throws -> CompiledBiomeSearchTree {
-        try DPReader.compile(biomeSearchTree: self, strategy: strategy, runtime: runtime)
+        try DPReader.compile(
+            biomeSearchTree: self,
+            strategy: strategy,
+            useAlternativeNode: useAlternativeNode,
+            runtime: runtime
+        )
     }
 }

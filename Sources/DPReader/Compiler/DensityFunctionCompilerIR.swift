@@ -31,7 +31,13 @@ enum DensityFunctionIRInstruction {
     case select(condition: Int, whenTrue: Int, whenFalse: Int)
     case sampleDensity(index: Int, x: Int, y: Int, z: Int)
     case sampleNoise(index: Int, x: Int, y: Int, z: Int)
-    case searchBiome(index: Int, point: [Int])
+    case searchBiome(
+        index: Int,
+        point: [Int],
+        initialBestDistance: Int?,
+        initialBestNode: Int?,
+        returnNodeIndex: Bool
+    )
 
     var resultType: DensityFunctionIRValueType {
         switch self {
@@ -440,9 +446,14 @@ private func evaluateDensityFunctionIR(
                 y: double(sampleY),
                 z: double(sampleZ)
             ))
-        case .searchBiome(let index, let point):
+        case .searchBiome(let index, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
             precondition(point.count == 7, "Biome search IR requires seven parameters.")
-            result = .i32(program.biomeSearchTrees[index].search(point.map(int64)))
+            result = .i32(program.biomeSearchTrees[index].search(
+                point.map(int64),
+                initialBestDistance: initialBestDistance.map { int64($0) } ?? Int64.max,
+                initialBestNode: initialBestNode.map { int($0) } ?? -1,
+                returnNodeIndex: returnNodeIndex
+            ))
         }
         values.append(result)
     }
@@ -465,7 +476,12 @@ func evaluateDensityFunctionIR(
     return result
 }
 
-func evaluateBiomeSearchIR(_ program: DensityFunctionIRProgram, point: NoisePoint) -> Int32 {
+func evaluateBiomeSearchIR(
+    _ program: DensityFunctionIRProgram,
+    point: NoisePoint,
+    initialBestDistance: Int64 = Int64.max,
+    initialBestNode: Int32 = -1
+) -> Int32 {
     guard case .i32(let result) = evaluateDensityFunctionIR(
         program,
         inputs: [
@@ -474,7 +490,9 @@ func evaluateBiomeSearchIR(_ program: DensityFunctionIRProgram, point: NoisePoin
             .f64(point.continentalness),
             .f64(point.erosion),
             .f64(point.weirdness),
-            .f64(point.depth)
+            .f64(point.depth),
+            .i64(initialBestDistance),
+            .i32(initialBestNode)
         ]
     ) else {
         preconditionFailure("Biome search IR did not produce i32.")
