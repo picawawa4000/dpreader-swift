@@ -362,6 +362,10 @@ private final class BulkInvocationCounter: @unchecked Sendable {
     #expect(moduleData.range(of: Data("sample_noise".utf8)) == nil)
     #expect(moduleData.range(of: Data("sample_bulk".utf8)) != nil)
     #expect(moduleData.range(of: Data("memory".utf8)) != nil)
+    #expect(
+        moduleData.range(of: Data([0xfd, 0xf0, 0x01])) != nil,
+        "Single-output bulk modules should contain paired f64x2 IR arithmetic."
+    )
     if let outputPath = ProcessInfo.processInfo.environment["DPREADER_DENSITY_BULK_WASM_OUTPUT_PATH"] {
         try moduleData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
         print("density bulk WASM module:", moduleData.count, "bytes")

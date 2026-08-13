@@ -8,6 +8,7 @@ private enum TerrainTestErrors: Error {
     case unexpectedDensityFunctionType
     case missingVanillaNoiseSettings(String)
     case invalidProfileLogPath(String)
+    case wasmBenchmarkFailed(String)
 }
 
 private let vanillaTerrainMinY: Int32 = -64
@@ -1539,6 +1540,12 @@ private final class LockedArray<Value>: @unchecked Sendable {
         output: &compiledBufferedBuffer,
         compiledDensity: compiledBufferedDensity
     )
+    let wasm = try benchmarkDensityFunctionWASMInNode(
+        densityFunction: benchmarkContext.finalDensity,
+        registry: benchmarkContext.densityFunctionRegistry,
+        bufferContext: benchmarkContext.bufferContext,
+        basePos: basePos
+    )
 
     #expect(interpreted.sampleCount == compiledBuffered.sampleCount)
 
@@ -1554,6 +1561,11 @@ private final class LockedArray<Value>: @unchecked Sendable {
     ) {
         Issue.record("Buffered compiled mismatch: \(mismatch)")
     }
+    if let wasm {
+        #expect(wasm.result.solidCount == interpretedSolidCount)
+        #expect(wasm.result.first == interpretedBuffer.first)
+        #expect(wasm.result.last == interpretedBuffer.last)
+    }
 
     let bufferedSpeedup = Double(interpreted.totalNanos) / Double(max(compiledBuffered.totalNanos, 1))
     print(
@@ -1566,6 +1578,22 @@ private final class LockedArray<Value>: @unchecked Sendable {
         "buffered speedup", String(format: "%.2f", bufferedSpeedup), "x;",
         "solid count", interpretedSolidCount
     )
+    if let wasm {
+        print(
+            "benchmarkCompiledVanillaTerrainFinalDensityZXY.wasm:",
+            interpreted.sampleCount, "samples;",
+            wasm.result.iterations, "iterations in Node WebAssembly;",
+            wasm.result.nanosPerIteration, "ns/iteration",
+            "(\(wasm.result.nanosPerIteration / 1_000_000)ms);",
+            "vs repeated single", String(format: "%.2f", wasm.result.bulkToSingleSpeedup), "x",
+            "(single", wasm.result.repeatedSingleNanos, "ns);",
+            "host callbacks", wasm.result.callbackCount / wasm.result.iterations, "per iteration;",
+            "module", wasm.moduleByteCount, "bytes;",
+            "host callback values are precomputed outside the timed region"
+        )
+    } else {
+        print("benchmarkCompiledVanillaTerrainFinalDensityZXY.wasm: unavailable (Node missing or unsupported host noise/import volume)")
+    }
 
     if let report = profilingState?.latestReport() {
         printBufferedDensityFunctionProfilingReport(
@@ -1627,6 +1655,11 @@ private final class LockedArray<Value>: @unchecked Sendable {
     let chunkCount = chunkSide * chunkSide
     let functionFilter = ProcessInfo.processInfo.environment["DPREADER_CELL_BULK_BENCHMARK_FUNCTION"]
     let compiledOnly = ProcessInfo.processInfo.environment["DPREADER_CELL_BULK_BENCHMARK_COMPILED_ONLY"] == "1"
+    let wasmBufferContext = CompiledDensityFunctionBufferContext(
+        xCount: context.cellVolume.xCount * context.cellSize.horizontalBlockCount,
+        yCount: context.cellVolume.yCount * context.cellSize.verticalBlockCount,
+        zCount: context.cellVolume.zCount * context.cellSize.horizontalBlockCount
+    )
 
     for (label, function) in context.functions where functionFilter.map({ $0 == label }) ?? true {
         let interpreted: (hash: UInt64, count: Int, nanos: UInt64)?
@@ -1649,6 +1682,23 @@ private final class LockedArray<Value>: @unchecked Sendable {
             registry: context.registry,
             basePos: context.basePos
         )
+        let wasm = try benchmarkDensityFunctionWASMInNode(
+            densityFunction: function,
+            registry: context.registry,
+            bufferContext: wasmBufferContext,
+            basePos: context.basePos,
+            iterations: 1
+        )
+        let scalarWASM = environmentFlagEnabled("DPREADER_WASM_BULK_PROFILE_SCALAR")
+            ? try benchmarkDensityFunctionWASMInNode(
+                densityFunction: function,
+                registry: context.registry,
+                bufferContext: wasmBufferContext,
+                basePos: context.basePos,
+                iterations: 1,
+                useBulkSIMD: false
+            )
+            : nil
         if let interpreted {
             let compiledChecksum = densityFunctionChecksum(compiled.values)
             #expect(compiledChecksum == interpreted.hash, "Cell-bulk noise router benchmark checksum mismatch for \(label)")
@@ -1663,6 +1713,33 @@ private final class LockedArray<Value>: @unchecked Sendable {
                 "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY:", label,
                 compiled.values.count, "samples; compiled", compiled.nanos, "ns; caches", compiled.cacheCount,
                 "; compiled", compiled.nanos / UInt64(chunkCount), "nspc"
+            )
+        }
+        if let wasm {
+            let compiledSolidCount = solidTerrainDensitySampleCount(in: compiled.values)
+            #expect(wasm.result.solidCount == compiledSolidCount, "WASM noise router solid-count mismatch for \(label)")
+            let backendComparison = wasm.result.callbackCount == 0
+                ? "LLVM/WASM \(String(format: "%.2f", Double(compiled.nanos) / Double(max(wasm.result.nanosPerIteration, 1))))x"
+                : "LLVM/WASM not comparable: host callback values were precomputed"
+            print(
+                "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY.wasm:", label,
+                wasmBufferContext.sampleCount, "samples; Node WebAssembly", wasm.result.nanosPerIteration, "ns;",
+                wasm.result.nanosPerIteration / UInt64(chunkCount), "nspc;",
+                backendComparison, ";",
+                "bulk/single", String(format: "%.2f", wasm.result.bulkToSingleSpeedup), "x;",
+                "host callbacks", wasm.result.callbackCount, "; module", wasm.moduleByteCount, "bytes"
+            )
+        } else {
+            print(
+                "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY.wasm:", label,
+                "unavailable (Node missing or unsupported host noise/import volume)"
+            )
+        }
+        if let wasm, let scalarWASM {
+            print(
+                "benchmarkCompiledVanillaNoiseRouterFunctionsCellBulkZXY.wasm.simd:", label,
+                "scalar IR", scalarWASM.result.nanosPerIteration, "ns; paired SIMD IR", wasm.result.nanosPerIteration, "ns; speedup",
+                String(format: "%.2f", Double(scalarWASM.result.nanosPerIteration) / Double(max(wasm.result.nanosPerIteration, 1))), "x"
             )
         }
     }
@@ -1903,6 +1980,169 @@ private struct VanillaTerrainDensityBenchmarkContext {
 private struct VanillaTerrainDensityBenchmarkResult {
     let totalNanos: UInt64
     let sampleCount: UInt64
+}
+
+private struct NodeWASMBulkBenchmarkResult: Decodable {
+    let totalNanos: UInt64
+    let nanosPerIteration: UInt64
+    let iterations: Int
+    let callbackCount: Int
+    let repeatedSingleNanos: UInt64
+    let repeatedSingleCallbackCount: Int
+    let bulkToSingleSpeedup: Double
+    let sum: Double
+    let solidCount: UInt64
+    let first: Double
+    let last: Double
+}
+
+private func benchmarkDensityFunctionWASMInNode(
+    densityFunction: any DensityFunction,
+    registry: Registry<DensityFunction>,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    basePos: PosInt3D,
+    iterations: Int? = nil,
+    useBulkSIMD: Bool = true
+) throws -> (result: NodeWASMBulkBenchmarkResult, moduleByteCount: Int)? {
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    guard let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)) else {
+        return nil
+    }
+
+    let program = try buildDensityFunctionIR(densityFunction: densityFunction, registry: registry)
+    guard program.noises.allSatisfy({ $0 is BakedNoise }) else {
+        return nil
+    }
+    // A callback table is only a benchmark adapter. Avoid allocating another enormous volume for
+    // unsupported custom nodes in the multi-chunk benchmark; self-contained vanilla roots proceed.
+    guard program.densityFunctions.isEmpty || bufferContext.sampleCount <= 1_000_000 else {
+        return nil
+    }
+    let module = try buildDensityFunctionWASMModule(
+        program,
+        bulkContext: bufferContext,
+        useBulkSIMD: useBulkSIMD
+    )
+    let benchmarkIterations = iterations
+        ?? max(1, Int(ProcessInfo.processInfo.environment["DPREADER_WASM_BULK_BENCHMARK_ITERATIONS"] ?? "") ?? 3)
+
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dpreader-wasm-profile-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+    let moduleURL = temporaryDirectory.appendingPathComponent("density.wasm")
+    let callbacksURL = temporaryDirectory.appendingPathComponent("callbacks.bin")
+    try Data(module).write(to: moduleURL, options: .atomic)
+
+    var callbackValues: [Double] = []
+    callbackValues.reserveCapacity(program.densityFunctions.count * bufferContext.sampleCount)
+    for callback in program.densityFunctions {
+        for zOffset in 0..<bufferContext.zCount {
+            for xOffset in 0..<bufferContext.xCount {
+                for yOffset in 0..<bufferContext.yCount {
+                    callbackValues.append(callback.sample(at: PosInt3D(
+                        x: basePos.x &+ xOffset &* bufferContext.xStep,
+                        y: basePos.y &+ yOffset &* bufferContext.yStep,
+                        z: basePos.z &+ zOffset &* bufferContext.zStep
+                    )))
+                }
+            }
+        }
+    }
+    let callbackData = callbackValues.withUnsafeBufferPointer { Data(buffer: $0) }
+    try callbackData.write(to: callbacksURL, options: .atomic)
+
+    let script = """
+    const fs = require('fs');
+    const moduleBytes = fs.readFileSync(process.argv[1]);
+    const callbackBytes = Uint8Array.from(fs.readFileSync(process.argv[2]));
+    const callbackValues = new Float64Array(callbackBytes.buffer);
+    const base = [\(basePos.x), \(basePos.y), \(basePos.z)];
+    const counts = [\(bufferContext.xCount), \(bufferContext.yCount), \(bufferContext.zCount)];
+    const steps = [\(bufferContext.xStep), \(bufferContext.yStep), \(bufferContext.zStep)];
+    const sampleCount = \(bufferContext.sampleCount);
+    let callbackCount = 0;
+    function sampleIndex(x, y, z) {
+      const xo = (x - base[0]) / steps[0];
+      const yo = (y - base[1]) / steps[1];
+      const zo = (z - base[2]) / steps[2];
+      if (!Number.isInteger(xo) || !Number.isInteger(yo) || !Number.isInteger(zo)
+          || xo < 0 || xo >= counts[0] || yo < 0 || yo >= counts[1] || zo < 0 || zo >= counts[2]) {
+        throw new Error(`callback outside profiled volume: ${x},${y},${z}`);
+      }
+      return (zo * counts[0] + xo) * counts[1] + yo;
+    }
+    const imports = { dpreader: {
+      sample_density(index, x, y, z) {
+        callbackCount++;
+        return callbackValues[index * sampleCount + sampleIndex(x, y, z)];
+      },
+      sample_noise() { throw new Error('unexpected host noise callback'); }
+    }};
+    const module = new WebAssembly.Module(moduleBytes);
+    const instance = new WebAssembly.Instance(module, imports);
+    instance.exports.sample_bulk(...base);
+    callbackCount = 0;
+    const iterations = \(benchmarkIterations);
+    const start = process.hrtime.bigint();
+    let pointer = 0;
+    for (let iteration = 0; iteration < iterations; iteration++) {
+      pointer = instance.exports.sample_bulk(...base);
+    }
+    const totalNanos = process.hrtime.bigint() - start;
+    const bulkCallbackCount = callbackCount;
+    const values = new Float64Array(instance.exports.memory.buffer, pointer, sampleCount);
+    let sum = 0;
+    let solidCount = 0;
+    for (const value of values) {
+      sum += value;
+      if (value > 0) solidCount++;
+    }
+    callbackCount = 0;
+    let repeatedSingleSum = 0;
+    const repeatedSingleStart = process.hrtime.bigint();
+    for (let z = 0; z < counts[2]; z++) {
+      for (let x = 0; x < counts[0]; x++) {
+        for (let y = 0; y < counts[1]; y++) {
+          repeatedSingleSum += instance.exports.sample(
+            base[0] + x * steps[0], base[1] + y * steps[1], base[2] + z * steps[2]
+          );
+        }
+      }
+    }
+    const repeatedSingleNanos = process.hrtime.bigint() - repeatedSingleStart;
+    if (!Object.is(sum, repeatedSingleSum)) {
+      throw new Error(`bulk/repeated-single sum mismatch: ${sum} != ${repeatedSingleSum}`);
+    }
+    process.stdout.write(JSON.stringify({
+      totalNanos: Number(totalNanos),
+      nanosPerIteration: Number(totalNanos / BigInt(iterations)),
+      iterations,
+      callbackCount: bulkCallbackCount,
+      repeatedSingleNanos: Number(repeatedSingleNanos),
+      repeatedSingleCallbackCount: callbackCount,
+      bulkToSingleSpeedup: Number(repeatedSingleNanos) / Number(totalNanos / BigInt(iterations)),
+      sum,
+      solidCount,
+      first: values[0],
+      last: values[values.length - 1]
+    }));
+    """
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: nodePath)
+    process.arguments = ["-e", script, moduleURL.path, callbacksURL.path]
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+    try process.run()
+    process.waitUntilExit()
+    let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    let error = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    guard process.terminationStatus == 0 else {
+        throw TerrainTestErrors.wasmBenchmarkFailed(error)
+    }
+    return (try JSONDecoder().decode(NodeWASMBulkBenchmarkResult.self, from: output), module.count)
 }
 
 private struct ProfiledBenchmarkBufferContext: Codable {

@@ -4,6 +4,7 @@ private enum WASMValueType: UInt8 {
     case i32 = 0x7f
     case i64 = 0x7e
     case f64 = 0x7c
+    case v128 = 0x7b
 }
 
 private struct WASMEncoder {
@@ -192,6 +193,50 @@ private func appendDoubleStore(to body: inout WASMEncoder) {
     body.append(0x39) // f64.store
     body.appendUnsigned(3) // 8-byte alignment
     body.appendUnsigned(0)
+}
+
+private func appendDoublePairStore(to body: inout WASMEncoder) {
+    body.append(0xfd) // SIMD prefix
+    body.appendUnsigned(0x0b) // v128.store
+    body.appendUnsigned(4) // Bulk output is 16-byte aligned.
+    body.appendUnsigned(0)
+}
+
+private func appendDoubleSplat(to body: inout WASMEncoder) {
+    body.append(0xfd)
+    body.appendUnsigned(0x14) // f64x2.splat
+}
+
+private func appendDoubleReplaceLane(_ lane: UInt8, to body: inout WASMEncoder) {
+    body.append(0xfd)
+    body.appendUnsigned(0x22) // f64x2.replace_lane
+    body.append(lane)
+}
+
+private func appendSIMDOpcode(_ opcode: Int, to body: inout WASMEncoder) {
+    body.append(0xfd)
+    body.appendUnsigned(opcode)
+}
+
+private func appendDoubleExtractLane(_ lane: UInt8, to body: inout WASMEncoder) {
+    appendSIMDOpcode(0x21, to: &body) // f64x2.extract_lane
+    body.append(lane)
+}
+
+private func supportsWASMPairedSIMD(_ program: DensityFunctionIRProgram) -> Bool {
+    guard program.inputTypes == [.i32, .i32, .i32], program.outputs.count == 1 else { return false }
+    for instruction in program.instructions {
+        switch instruction {
+        case .constant, .convertSignedIntToDouble, .add, .subtract, .multiply, .divide,
+             .negate, .compare, .and, .select, .sampleNoise:
+            continue
+        case .sampleDensity(_, let x, let y, let z):
+            guard x < 3, y < 3, z < 3 else { return false }
+        case .constantInt32, .constantInt64, .convertDoubleToSignedInt64, .searchBiome:
+            return false
+        }
+    }
+    return program.outputs[0] >= program.inputTypes.count
 }
 
 private func alignWASMOffset(_ offset: Int, to alignment: Int) -> Int {
@@ -720,23 +765,170 @@ private func appendEmbeddedNoiseSample(
     body.append(0xa2) // f64.mul
 }
 
+private func makeWASMPairedSIMDFunctionBody(
+    program: DensityFunctionIRProgram,
+    embeddedNoiseLayouts: [Int: WASMEmbeddedNoiseLayout],
+    densitySamplerFunctionIndex: Int?,
+    noiseSamplerFunctionIndex: Int?,
+    perlinFunctionIndex: Int
+) -> [UInt8] {
+    precondition(supportsWASMPairedSIMD(program))
+    // Six scalar parameters contain x/y/z for two adjacent samples. Every IR value is
+    // represented by a v128 local, with the two samples in its low f64/i32 lanes.
+    let vectorLocalStart = 6
+    let temporaryLocalStart = vectorLocalStart + program.inputTypes.count + program.instructions.count
+    func vectorLocal(_ value: Int) -> Int { vectorLocalStart + value }
+
+    var body = WASMEncoder()
+    body.appendUnsigned(2)
+    body.appendUnsigned(program.inputTypes.count + program.instructions.count)
+    body.append(WASMValueType.v128.rawValue)
+    body.appendUnsigned(3)
+    body.append(WASMValueType.f64.rawValue)
+
+    for input in 0..<3 {
+        appendLocalGet(input, to: &body)
+        appendSIMDOpcode(0x11, to: &body) // i32x4.splat
+        appendLocalGet(input + 3, to: &body)
+        appendSIMDOpcode(0x1c, to: &body) // i32x4.replace_lane
+        body.append(1)
+        appendLocalSet(vectorLocal(input), to: &body)
+    }
+
+    func appendExtractedCoordinates(_ coordinates: [Int], lane: UInt8, to body: inout WASMEncoder) {
+        for (temporary, coordinate) in coordinates.enumerated() {
+            appendLocalGet(vectorLocal(coordinate), to: &body)
+            appendDoubleExtractLane(lane, to: &body)
+            appendLocalSet(temporaryLocalStart + temporary, to: &body)
+        }
+    }
+
+    for (instructionIndex, instruction) in program.instructions.enumerated() {
+        switch instruction {
+        case .constant(let value):
+            appendDoubleConstant(value, to: &body)
+            appendDoubleSplat(to: &body)
+        case .convertSignedIntToDouble(let input):
+            appendLocalGet(vectorLocal(input), to: &body)
+            appendSIMDOpcode(0xfe, to: &body) // f64x2.convert_low_i32x4_s
+        case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
+             .multiply(let lhs, let rhs), .divide(let lhs, let rhs):
+            appendLocalGet(vectorLocal(lhs), to: &body)
+            appendLocalGet(vectorLocal(rhs), to: &body)
+            let opcode: Int = switch instruction {
+            case .add: 0xf0 // f64x2.add
+            case .subtract: 0xf1 // f64x2.sub
+            case .multiply: 0xf2 // f64x2.mul
+            case .divide: 0xf3 // f64x2.div
+            default: preconditionFailure()
+            }
+            appendSIMDOpcode(opcode, to: &body)
+        case .negate(let input):
+            appendLocalGet(vectorLocal(input), to: &body)
+            appendSIMDOpcode(0xed, to: &body) // f64x2.neg
+        case .compare(let comparison, let lhs, let rhs):
+            appendLocalGet(vectorLocal(lhs), to: &body)
+            appendLocalGet(vectorLocal(rhs), to: &body)
+            let opcode: Int = switch comparison {
+            case .equal: 0x47
+            case .lessThan: 0x49
+            case .greaterThan: 0x4a
+            case .lessThanOrEqual: 0x4b
+            case .greaterThanOrEqual: 0x4c
+            }
+            appendSIMDOpcode(opcode, to: &body)
+        case .and(let lhs, let rhs):
+            appendLocalGet(vectorLocal(lhs), to: &body)
+            appendLocalGet(vectorLocal(rhs), to: &body)
+            appendSIMDOpcode(0x4e, to: &body) // v128.and
+        case .select(let condition, let whenTrue, let whenFalse):
+            appendLocalGet(vectorLocal(whenTrue), to: &body)
+            appendLocalGet(vectorLocal(whenFalse), to: &body)
+            appendLocalGet(vectorLocal(condition), to: &body)
+            appendSIMDOpcode(0x52, to: &body) // v128.bitselect
+        case .sampleDensity(let index, let x, let y, let z):
+            precondition(x < 3 && y < 3 && z < 3)
+            appendIntConstant(Int32(index), to: &body)
+            for coordinate in [x, y, z] { appendLocalGet(coordinate, to: &body) }
+            appendCall(densitySamplerFunctionIndex!, to: &body)
+            appendDoubleSplat(to: &body)
+            appendIntConstant(Int32(index), to: &body)
+            for coordinate in [x, y, z] { appendLocalGet(coordinate + 3, to: &body) }
+            appendCall(densitySamplerFunctionIndex!, to: &body)
+            appendDoubleReplaceLane(1, to: &body)
+        case .sampleNoise(let index, let x, let y, let z):
+            let coordinates = [x, y, z]
+            appendExtractedCoordinates(coordinates, lane: 0, to: &body)
+            if let embedded = embeddedNoiseLayouts[index] {
+                appendEmbeddedNoiseSample(
+                    layout: embedded,
+                    x: temporaryLocalStart,
+                    y: temporaryLocalStart + 1,
+                    z: temporaryLocalStart + 2,
+                    perlinFunctionIndex: perlinFunctionIndex,
+                    to: &body
+                )
+            } else {
+                appendIntConstant(Int32(index), to: &body)
+                for temporary in 0..<3 { appendLocalGet(temporaryLocalStart + temporary, to: &body) }
+                appendCall(noiseSamplerFunctionIndex!, to: &body)
+            }
+            appendDoubleSplat(to: &body)
+            appendExtractedCoordinates(coordinates, lane: 1, to: &body)
+            if let embedded = embeddedNoiseLayouts[index] {
+                appendEmbeddedNoiseSample(
+                    layout: embedded,
+                    x: temporaryLocalStart,
+                    y: temporaryLocalStart + 1,
+                    z: temporaryLocalStart + 2,
+                    perlinFunctionIndex: perlinFunctionIndex,
+                    to: &body
+                )
+            } else {
+                appendIntConstant(Int32(index), to: &body)
+                for temporary in 0..<3 { appendLocalGet(temporaryLocalStart + temporary, to: &body) }
+                appendCall(noiseSamplerFunctionIndex!, to: &body)
+            }
+            appendDoubleReplaceLane(1, to: &body)
+        case .constantInt32, .constantInt64, .convertDoubleToSignedInt64, .searchBiome:
+            preconditionFailure("Unsupported instruction reached paired SIMD lowering.")
+        }
+        appendLocalSet(vectorLocal(program.inputTypes.count + instructionIndex), to: &body)
+    }
+    appendLocalGet(vectorLocal(program.output), to: &body)
+    body.append(0x0b)
+    return body.bytes
+}
+
 private func makeWASMBulkFunctionBody(
     bufferContext: CompiledDensityFunctionBufferContext,
     outputOffset: Int,
     scalarFunctionIndex: Int,
-    outputValueCount: Int
+    outputValueCount: Int,
+    pairedSIMDFunctionIndex: Int?
 ) -> [UInt8] {
-    // Parameters are base x/y/z. Locals are z/x/y offsets, the output address, and
-    // one temporary per scalar result so multi-value returns can be stored in order.
+    // Parameters are base x/y/z. Carrying coordinates between iterations avoids three
+    // multiply/add pairs in the innermost loop. Supported single-output programs evaluate
+    // adjacent y samples through paired SIMD IR and write them with one f64x2 store.
+    let usesSIMDStores = pairedSIMDFunctionIndex != nil && outputValueCount == 1 && bufferContext.yCount >= 2
+    let evenYCount = bufferContext.yCount & ~1
+    let firstOutputLocal = 10
+    let vectorLocal = firstOutputLocal + outputValueCount
     var body = WASMEncoder()
-    body.appendUnsigned(2)
-    body.appendUnsigned(4)
+    body.appendUnsigned(usesSIMDStores ? 3 : 2)
+    body.appendUnsigned(7)
     body.append(WASMValueType.i32.rawValue)
     body.appendUnsigned(outputValueCount)
     body.append(WASMValueType.f64.rawValue)
+    if usesSIMDStores {
+        body.appendUnsigned(1)
+        body.append(WASMValueType.v128.rawValue)
+    }
 
     appendIntConstant(0, to: &body)
     appendLocalSet(3, to: &body)
+    appendLocalGet(2, to: &body)
+    appendLocalSet(9, to: &body)
     appendIntConstant(Int32(outputOffset), to: &body)
     appendLocalSet(6, to: &body)
 
@@ -744,49 +936,105 @@ private func makeWASMBulkFunctionBody(
     body.append(0x40)
     appendIntConstant(0, to: &body)
     appendLocalSet(4, to: &body)
+    appendLocalGet(0, to: &body)
+    appendLocalSet(7, to: &body)
 
     body.append(0x03) // loop x
     body.append(0x40)
     appendIntConstant(0, to: &body)
     appendLocalSet(5, to: &body)
+    appendLocalGet(1, to: &body)
+    appendLocalSet(8, to: &body)
 
-    body.append(0x03) // loop y
-    body.append(0x40)
-    for (base, offset, step) in [
-        (0, 4, bufferContext.xStep),
-        (1, 5, bufferContext.yStep),
-        (2, 3, bufferContext.zStep)
-    ] {
-        appendLocalGet(base, to: &body)
-        appendLocalGet(offset, to: &body)
-        appendIntConstant(step, to: &body)
-        body.append(0x6c) // i32.mul
+    if usesSIMDStores {
+        body.append(0x03) // loop over pairs of y samples
+        body.append(0x40)
+
+        for local in [7, 8, 9] { appendLocalGet(local, to: &body) }
+        appendLocalGet(7, to: &body)
+        appendLocalGet(8, to: &body)
+        appendIntConstant(bufferContext.yStep, to: &body)
         body.append(0x6a) // i32.add
-    }
-    appendCall(scalarFunctionIndex, to: &body)
-    for outputIndex in (0..<outputValueCount).reversed() {
-        appendLocalSet(7 + outputIndex, to: &body)
-    }
-    for outputIndex in 0..<outputValueCount {
+        appendLocalGet(9, to: &body)
+        appendCall(pairedSIMDFunctionIndex!, to: &body)
+        appendLocalSet(vectorLocal, to: &body)
+
         appendLocalGet(6, to: &body)
-        appendLocalGet(7 + outputIndex, to: &body)
-        appendDoubleStore(to: &body)
+        appendLocalGet(vectorLocal, to: &body)
+        appendDoublePairStore(to: &body)
         appendLocalGet(6, to: &body)
-        appendIntConstant(8, to: &body)
+        appendIntConstant(16, to: &body)
         body.append(0x6a) // i32.add
         appendLocalSet(6, to: &body)
-    }
-    appendLocalGet(5, to: &body)
-    appendIntConstant(1, to: &body)
-    body.append(0x6a) // i32.add
-    body.append(0x22) // local.tee
-    body.appendUnsigned(5)
-    appendIntConstant(bufferContext.yCount, to: &body)
-    body.append(0x49) // i32.lt_u
-    body.append(0x0d) // br_if y
-    body.appendUnsigned(0)
-    body.append(0x0b) // end y
 
+        appendLocalGet(8, to: &body)
+        appendIntConstant(bufferContext.yStep &* 2, to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalSet(8, to: &body)
+        appendLocalGet(5, to: &body)
+        appendIntConstant(2, to: &body)
+        body.append(0x6a) // i32.add
+        body.append(0x22) // local.tee
+        body.appendUnsigned(5)
+        appendIntConstant(evenYCount, to: &body)
+        body.append(0x49) // i32.lt_u
+        body.append(0x0d) // br_if y pair
+        body.appendUnsigned(0)
+        body.append(0x0b) // end y pair
+
+        if bufferContext.yCount != evenYCount {
+            appendLocalGet(7, to: &body)
+            appendLocalGet(8, to: &body)
+            appendLocalGet(9, to: &body)
+            appendCall(scalarFunctionIndex, to: &body)
+            appendLocalSet(firstOutputLocal, to: &body)
+            appendLocalGet(6, to: &body)
+            appendLocalGet(firstOutputLocal, to: &body)
+            appendDoubleStore(to: &body)
+            appendLocalGet(6, to: &body)
+            appendIntConstant(8, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(6, to: &body)
+        }
+    } else {
+        body.append(0x03) // loop y
+        body.append(0x40)
+        appendLocalGet(7, to: &body)
+        appendLocalGet(8, to: &body)
+        appendLocalGet(9, to: &body)
+        appendCall(scalarFunctionIndex, to: &body)
+        for outputIndex in (0..<outputValueCount).reversed() {
+            appendLocalSet(firstOutputLocal + outputIndex, to: &body)
+        }
+        for outputIndex in 0..<outputValueCount {
+            appendLocalGet(6, to: &body)
+            appendLocalGet(firstOutputLocal + outputIndex, to: &body)
+            appendDoubleStore(to: &body)
+            appendLocalGet(6, to: &body)
+            appendIntConstant(8, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(6, to: &body)
+        }
+        appendLocalGet(8, to: &body)
+        appendIntConstant(bufferContext.yStep, to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalSet(8, to: &body)
+        appendLocalGet(5, to: &body)
+        appendIntConstant(1, to: &body)
+        body.append(0x6a) // i32.add
+        body.append(0x22) // local.tee
+        body.appendUnsigned(5)
+        appendIntConstant(bufferContext.yCount, to: &body)
+        body.append(0x49) // i32.lt_u
+        body.append(0x0d) // br_if y
+        body.appendUnsigned(0)
+        body.append(0x0b) // end y
+    }
+
+    appendLocalGet(7, to: &body)
+    appendIntConstant(bufferContext.xStep, to: &body)
+    body.append(0x6a) // i32.add
+    appendLocalSet(7, to: &body)
     appendLocalGet(4, to: &body)
     appendIntConstant(1, to: &body)
     body.append(0x6a) // i32.add
@@ -798,6 +1046,10 @@ private func makeWASMBulkFunctionBody(
     body.appendUnsigned(0)
     body.append(0x0b) // end x
 
+    appendLocalGet(9, to: &body)
+    appendIntConstant(bufferContext.zStep, to: &body)
+    body.append(0x6a) // i32.add
+    appendLocalSet(9, to: &body)
     appendLocalGet(3, to: &body)
     appendIntConstant(1, to: &body)
     body.append(0x6a) // i32.add
@@ -818,7 +1070,8 @@ func buildDensityFunctionWASMModule(
     _ program: DensityFunctionIRProgram,
     exportName: String = "sample",
     bulkContext: CompiledDensityFunctionBufferContext? = nil,
-    bulkExportName: String = "sample_bulk"
+    bulkExportName: String = "sample_bulk",
+    useBulkSIMD: Bool = true
 ) throws -> [UInt8] {
     if bulkContext != nil {
         let outputsAreDoubles = program.outputs.allSatisfy { output in
@@ -872,7 +1125,7 @@ func buildDensityFunctionWASMModule(
         WASMBiomeTreeLayout(nodeBaseOffset: $0.nodeBaseOffset, stackOffset: biomeStackOffset)
     }
     let biomeScratchEnd = biomeStackOffset + maximumBiomeTreeNodeCount * MemoryLayout<Int32>.size
-    let bulkOutputOffset = bulkContext.map { _ in alignWASMOffset(biomeScratchEnd, to: 8) }
+    let bulkOutputOffset = bulkContext.map { _ in alignWASMOffset(biomeScratchEnd, to: 16) }
     let bulkOutputEnd: Int
     if let bulkContext, let bulkOutputOffset {
         let (valueCount, valueCountOverflow) = bulkContext.sampleCount.multipliedReportingOverflow(
@@ -907,10 +1160,13 @@ func buildDensityFunctionWASMModule(
     let densitySamplerFunctionIndex = importsDensitySampler ? 0 : nil
     let noiseSamplerFunctionIndex = importsNoiseSampler ? (importsDensitySampler ? 1 : 0) : nil
     let importCount = (importsDensitySampler ? 1 : 0) + (importsNoiseSampler ? 1 : 0)
+    let usesPairedSIMD = useBulkSIMD
+        && bulkContext.map { $0.yCount >= 2 } == true
+        && supportsWASMPairedSIMD(program)
 
     let baseTypeCount = embedsNoiseSampler ? 6 : 3
     var types = WASMEncoder()
-    types.appendUnsigned(baseTypeCount + (bulkContext == nil ? 0 : 1))
+    types.appendUnsigned(baseTypeCount + (bulkContext == nil ? 0 : 1) + (usesPairedSIMD ? 1 : 0))
     appendFunctionType(parameters: [.i32, .i32, .i32, .i32], results: [.f64], to: &types)
     appendFunctionType(parameters: [.i32, .f64, .f64, .f64], results: [.f64], to: &types)
     let outputTypes: [DensityFunctionIRValueType] = program.outputs.map { output in
@@ -934,6 +1190,14 @@ func buildDensityFunctionWASMModule(
     let bulkFunctionTypeIndex = bulkContext.map { _ in baseTypeCount }
     if bulkContext != nil {
         appendFunctionType(parameters: [.i32, .i32, .i32], results: [.i32], to: &types)
+    }
+    let pairedSIMDFunctionTypeIndex = usesPairedSIMD ? baseTypeCount + 1 : nil
+    if usesPairedSIMD {
+        appendFunctionType(
+            parameters: [.i32, .i32, .i32, .i32, .i32, .i32],
+            results: [.v128],
+            to: &types
+        )
     }
     module.appendSection(id: 1, contents: types.bytes)
 
@@ -960,10 +1224,11 @@ func buildDensityFunctionWASMModule(
     let lerpFunctionIndex = importCount + 3
     let perlinFunctionIndex = importCount + 4
     let mainFunctionIndex = importCount + helperFunctionCount
-    let bulkFunctionIndex = bulkContext.map { _ in mainFunctionIndex + 1 }
+    let pairedSIMDFunctionIndex = usesPairedSIMD ? mainFunctionIndex + 1 : nil
+    let bulkFunctionIndex = bulkContext.map { _ in mainFunctionIndex + 1 + (usesPairedSIMD ? 1 : 0) }
 
     var functions = WASMEncoder()
-    functions.appendUnsigned(helperFunctionCount + 1 + (bulkContext == nil ? 0 : 1))
+    functions.appendUnsigned(helperFunctionCount + 1 + (usesPairedSIMD ? 1 : 0) + (bulkContext == nil ? 0 : 1))
     if embedsNoiseSampler {
         functions.appendUnsigned(2) // map
         functions.appendUnsigned(1) // gradient
@@ -972,6 +1237,9 @@ func buildDensityFunctionWASMModule(
         functions.appendUnsigned(1) // perlin
     }
     functions.appendUnsigned(mainFunctionTypeIndex)
+    if let pairedSIMDFunctionTypeIndex {
+        functions.appendUnsigned(pairedSIMDFunctionTypeIndex)
+    }
     if let bulkFunctionTypeIndex {
         functions.appendUnsigned(bulkFunctionTypeIndex)
     }
@@ -1144,7 +1412,7 @@ func buildDensityFunctionWASMModule(
     body.append(0x0b)
 
     var code = WASMEncoder()
-    code.appendUnsigned(helperFunctionCount + 1 + (bulkContext == nil ? 0 : 1))
+    code.appendUnsigned(helperFunctionCount + 1 + (usesPairedSIMD ? 1 : 0) + (bulkContext == nil ? 0 : 1))
     if embedsNoiseSampler {
         for helperBody in [
             makeWASMMapFunctionBody(),
@@ -1164,12 +1432,24 @@ func buildDensityFunctionWASMModule(
     }
     code.appendUnsigned(body.bytes.count)
     code.append(contentsOf: body.bytes)
+    if usesPairedSIMD {
+        let pairedSIMDBody = makeWASMPairedSIMDFunctionBody(
+            program: program,
+            embeddedNoiseLayouts: embeddedNoiseLayouts,
+            densitySamplerFunctionIndex: densitySamplerFunctionIndex,
+            noiseSamplerFunctionIndex: noiseSamplerFunctionIndex,
+            perlinFunctionIndex: perlinFunctionIndex
+        )
+        code.appendUnsigned(pairedSIMDBody.count)
+        code.append(contentsOf: pairedSIMDBody)
+    }
     if let bulkContext, let bulkOutputOffset {
         let bulkBody = makeWASMBulkFunctionBody(
             bufferContext: bulkContext,
             outputOffset: bulkOutputOffset,
             scalarFunctionIndex: mainFunctionIndex,
-            outputValueCount: program.outputs.count
+            outputValueCount: program.outputs.count,
+            pairedSIMDFunctionIndex: pairedSIMDFunctionIndex
         )
         code.appendUnsigned(bulkBody.count)
         code.append(contentsOf: bulkBody)
