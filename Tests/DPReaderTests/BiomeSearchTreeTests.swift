@@ -2,6 +2,111 @@ import Foundation
 import Testing
 @testable import DPReader
 
+private func makeBiomeIDCompilationNoiseRouter(temperature: any DensityFunction) -> NoiseRouter {
+    let zero = ConstantDensityFunction(value: 0)
+    return NoiseRouter(
+        finalDensity: zero,
+        barrier: zero,
+        fluidLevelFloodedness: zero,
+        fluidLevelSpread: zero,
+        lava: zero,
+        veinToggle: zero,
+        veinRidged: zero,
+        veinGap: zero,
+        temperature: temperature,
+        humidity: zero,
+        continents: zero,
+        erosion: zero,
+        depth: zero,
+        weirdness: zero
+    )
+}
+
+private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
+    let zero = ParameterRange(min: 0, max: 0)
+    return try BiomeSearchTree(entries: [
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: -10_000, max: -1), humidity: zero,
+                continentalness: zero, erosion: zero, depth: zero, weirdness: zero, offset: zero
+            ),
+            RegistryKey(referencing: "test:cold")
+        ),
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: 0, max: 10_000), humidity: zero,
+                continentalness: zero, erosion: zero, depth: zero, weirdness: zero, offset: zero
+            ),
+            RegistryKey(referencing: "test:warm")
+        )
+    ])
+}
+
+@Test func testCompiledNoiseRouterBiomeBulkReturnsPaletteIDs() throws {
+    let router = makeBiomeIDCompilationNoiseRouter(
+        temperature: YClampedGradient(fromY: 0, toY: 3, fromValue: -1, toValue: 1)
+    )
+    let tree = try makeBiomeIDCompilationSearchTree()
+    let volume = CompiledDensityFunctionBufferContext(xCount: 2, yCount: 4, zCount: 2)
+    let wasm = try compile(
+        noiseRouter: router,
+        biomeSearchTree: tree,
+        bufferContext: volume,
+        strategy: .wasm
+    )
+
+    func verify(_ result: CompiledBiomeIDVolume) {
+        #expect(result.biomeIDs.count == volume.sampleCount)
+        #expect(result.palette.count == 2)
+        let names = result.biomeIDs.map { result.palette[Int($0)].name }
+        let expectedColumn = ["test:cold", "test:cold", "test:warm", "test:warm"]
+        #expect(names == Array(repeating: expectedColumn, count: 4).flatMap { $0 })
+    }
+
+    verify(wasm(at: PosInt3D(x: 10, y: 0, z: 20)))
+    #expect(wasm.wasmModule != nil)
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    if let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)),
+       let wasmModule = wasm.wasmModule
+    {
+        let moduleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dpreader-biome-id-bulk-\(UUID().uuidString).wasm")
+        try Data(wasmModule).write(to: moduleURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: moduleURL) }
+        let script = """
+        const fs = require('fs');
+        const instance = new WebAssembly.Instance(
+          new WebAssembly.Module(fs.readFileSync(process.argv[1])), {}
+        );
+        const pointer = instance.exports.sample_bulk(10, 0, 20);
+        const ids = new Int32Array(instance.exports.memory.buffer, pointer, \(volume.sampleCount));
+        for (let index = 0; index < ids.length; index++) {
+          const y = index % \(volume.yCount);
+          const expected = instance.exports.sample(10, y, 20);
+          if (ids[index] !== expected) throw new Error(`mismatch at ${index}`);
+        }
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = ["-e", script, moduleURL.path]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        let errorOutput = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(process.terminationStatus == 0, "Node WASM biome ID bulk comparison failed: \(errorOutput)")
+    }
+    #if canImport(CLLVM)
+    let llvm = try compile(
+        noiseRouter: router,
+        biomeSearchTree: tree,
+        bufferContext: volume,
+        strategy: .llvm
+    )
+    verify(llvm(at: PosInt3D(x: 10, y: 0, z: 20)))
+    #endif
+}
+
 @Test func testBiomeSearchTreeFindsNearestBiome() async throws {
     let registry = Registry<Biome>()
     let biomeA = Biome(

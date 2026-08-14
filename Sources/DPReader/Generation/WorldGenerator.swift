@@ -2115,6 +2115,16 @@ private final class WeakCompiledClimateBiomeBulkSampler {
     }
 }
 
+private final class WeakCompiledNoiseRouterBiomeBulkSampler {
+    weak var value: CompiledNoiseRouterBiomeBulkSampler?
+    let dimension: RegistryKey<Dimension>
+
+    init(_ value: CompiledNoiseRouterBiomeBulkSampler, dimension: RegistryKey<Dimension>) {
+        self.value = value
+        self.dimension = dimension
+    }
+}
+
 private struct SectionBiomeLatticeMap {
     let uniquePositions: [BiomeLatticePosition]
     let blockToUniqueIndex: [UInt16]
@@ -2213,6 +2223,7 @@ public final class WorldGenerator {
     private var compiledBiomeDensityFunctions: CompiledBiomeDensityFunctions?
     private var finalDensityBulkSamplers: [WeakCompiledDensityFunctionBulk] = []
     private var climateBiomeBulkSamplers: [WeakCompiledClimateBiomeBulkSampler] = []
+    private var biomeIDBulkSamplers: [WeakCompiledNoiseRouterBiomeBulkSampler] = []
     // Terrain generation walks a shared baked density-function graph composed of reference types.
     // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
     private let terrainGenerationLock = NSLock()
@@ -2280,6 +2291,7 @@ public final class WorldGenerator {
         try self.compileConfiguredFunctions()
         try self.refreshFinalDensityBulkSamplers()
         try self.refreshClimateBiomeBulkSamplers()
+        try self.refreshBiomeIDBulkSamplers()
     }
 
     /// Labelled spelling retained for callers that prefer an explicit seed argument.
@@ -2717,6 +2729,49 @@ public final class WorldGenerator {
             sampler.replaceImplementation(with: replacement)
         }
         self.climateBiomeBulkSamplers = liveSamplers.map(WeakCompiledClimateBiomeBulkSampler.init)
+    }
+
+    private func compileBiomeIDBulkSampler(
+        for volume: CompiledDensityFunctionBufferContext,
+        in dimension: RegistryKey<Dimension>,
+        strategy: CompilationBackend
+    ) throws -> CompiledNoiseRouterBiomeBulkSampler {
+        guard !self.usesTheEndBiomeGetter(for: dimension), let searchTree = self.searchTrees[dimension] else {
+            throw WorldGenerationErrors.biomeSearchTreeNotPresent(dimension.name)
+        }
+        let settings = try self.validatedTerrainConfig(for: "Biome ID bulk sampling")
+        return try compile(
+            noiseRouter: settings.noiseRouter,
+            biomeSearchTree: searchTree,
+            bufferContext: volume,
+            strategy: strategy,
+            registry: self.registries.densityFunctionRegistry,
+            runtime: self.wasmRuntime
+        )
+    }
+
+    private func refreshBiomeIDBulkSamplers() throws {
+        let liveSamplers = self.biomeIDBulkSamplers.compactMap { reference in
+            reference.value.map { ($0, reference.dimension) }
+        }
+        var replacements: [(CompiledNoiseRouterBiomeBulkSampler, CompiledNoiseRouterBiomeBulkSampler)] = []
+        replacements.reserveCapacity(liveSamplers.count)
+        for (sampler, dimension) in liveSamplers {
+            replacements.append((
+                sampler,
+                try self.compileBiomeIDBulkSampler(
+                    for: sampler.bufferContext,
+                    in: dimension,
+                    strategy: sampler.strategy
+                )
+            ))
+        }
+        for (sampler, replacement) in replacements {
+            sampler.replaceImplementation(with: replacement)
+        }
+        self.biomeIDBulkSamplers = liveSamplers.map {
+            WeakCompiledNoiseRouterBiomeBulkSampler($0.0, dimension: $0.1)
+        }
     }
 
     /// Convert the density functions to a usable format.
@@ -4056,6 +4111,40 @@ public final class WorldGenerator {
             strategy: selectedStrategy
         )
         self.climateBiomeBulkSamplers.append(WeakCompiledClimateBiomeBulkSampler(sampler))
+        return sampler
+    }
+
+    /// Returns a fused fixed-volume sampler for this generator's noise router and biome tree.
+    /// Results contain z/x/y-ordered integer palette indices and the biome-key palette. A retained
+    /// sampler is recompiled in place when ``setWorldSeed(_:)`` changes the generator seed.
+    public func makeBiomeIDBulkSampler(
+        for volume: CompiledDensityFunctionBufferContext,
+        in dimension: RegistryKey<Dimension>,
+        strategy: CompilationBackend? = nil
+    ) throws -> CompiledNoiseRouterBiomeBulkSampler {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
+        let selectedStrategy: CompilationBackend
+        if let strategy {
+            selectedStrategy = strategy
+        } else if let compilationBackend = self.compilationBackend {
+            selectedStrategy = compilationBackend
+        } else {
+            #if canImport(CLLVM)
+            selectedStrategy = .llvm
+            #else
+            selectedStrategy = .wasm
+            #endif
+        }
+        let sampler = try self.compileBiomeIDBulkSampler(
+            for: volume,
+            in: dimension,
+            strategy: selectedStrategy
+        )
+        self.biomeIDBulkSamplers.append(
+            WeakCompiledNoiseRouterBiomeBulkSampler(sampler, dimension: dimension)
+        )
         return sampler
     }
 

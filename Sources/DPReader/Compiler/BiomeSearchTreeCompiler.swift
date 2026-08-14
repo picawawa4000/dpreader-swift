@@ -279,7 +279,8 @@ func buildBiomeSearchIR(tree: BiomeSearchIRTree, useAlternativeNode: Bool = fals
 func buildClimateBiomeIR(
     densityFunctions: [any DensityFunction],
     registry: Registry<DensityFunction>,
-    tree: BiomeSearchIRTree
+    tree: BiomeSearchIRTree,
+    includeClimateOutputs: Bool = true
 ) throws -> DensityFunctionIRProgram {
     precondition(densityFunctions.count == 6, "A climate-biome program requires six density functions.")
     let climate = try buildDensityFunctionIR(densityFunctions: densityFunctions, registry: registry)
@@ -313,15 +314,203 @@ func buildClimateBiomeIR(
         initialBestNode: nil,
         returnNodeIndex: false
     ))
-    let biomeIndexAsDouble = append(.convertSignedIntToDouble(biomeIndex))
+    let outputs: [Int]
+    if includeClimateOutputs {
+        outputs = climate.outputs + [append(.convertSignedIntToDouble(biomeIndex))]
+    } else {
+        outputs = [biomeIndex]
+    }
     return DensityFunctionIRProgram(
         inputTypes: climate.inputTypes,
         instructions: instructions,
-        outputs: climate.outputs + [biomeIndexAsDouble],
+        outputs: outputs,
         densityFunctions: climate.densityFunctions,
         noises: climate.noises,
         biomeSearchTrees: [tree]
     )
+}
+
+/// Integer palette indices for a fixed z/x/y-ordered biome volume, plus the palette
+/// which maps each index to its biome key.
+public struct CompiledBiomeIDVolume {
+    public let biomeIDs: [Int32]
+    public let palette: [RegistryKey<Biome>]
+
+    public init(biomeIDs: [Int32], palette: [RegistryKey<Biome>]) {
+        self.biomeIDs = biomeIDs
+        self.palette = palette
+    }
+}
+
+/// A fixed-shape program combining all six climate functions in a noise router with
+/// its biome search tree. Each invocation crosses the backend boundary once.
+public final class CompiledNoiseRouterBiomeBulkSampler: @unchecked Sendable {
+    public let strategy: CompilationBackend
+    public let bufferContext: CompiledDensityFunctionBufferContext
+    public let palette: [RegistryKey<Biome>]
+    private let stateLock = NSLock()
+    private var storedWasmModule: [UInt8]?
+    private var implementation: WASMBiomeIDBulkInvocation
+
+    /// A module exporting `sample_bulk` and `memory`, present for WASM compilation.
+    public var wasmModule: [UInt8]? {
+        self.stateLock.withLock { self.storedWasmModule }
+    }
+
+    init(
+        strategy: CompilationBackend,
+        wasmModule: [UInt8]? = nil,
+        bufferContext: CompiledDensityFunctionBufferContext,
+        palette: [RegistryKey<Biome>],
+        implementation: @escaping WASMBiomeIDBulkInvocation
+    ) {
+        self.strategy = strategy
+        self.storedWasmModule = wasmModule
+        self.bufferContext = bufferContext
+        self.palette = palette
+        self.implementation = implementation
+    }
+
+    func replaceImplementation(with replacement: CompiledNoiseRouterBiomeBulkSampler) {
+        precondition(self.strategy == replacement.strategy)
+        precondition(self.palette == replacement.palette)
+        precondition(
+            self.bufferContext.xCount == replacement.bufferContext.xCount
+                && self.bufferContext.yCount == replacement.bufferContext.yCount
+                && self.bufferContext.zCount == replacement.bufferContext.zCount
+                && self.bufferContext.xStep == replacement.bufferContext.xStep
+                && self.bufferContext.yStep == replacement.bufferContext.yStep
+                && self.bufferContext.zStep == replacement.bufferContext.zStep
+        )
+        let state = replacement.stateLock.withLock {
+            (replacement.storedWasmModule, replacement.implementation)
+        }
+        self.stateLock.withLock {
+            self.storedWasmModule = state.0
+            self.implementation = state.1
+        }
+    }
+
+    /// Evaluates the fixed volume in z/x/y order.
+    public func callAsFunction(at basePosition: PosInt3D) -> CompiledBiomeIDVolume {
+        let implementation = self.stateLock.withLock { self.implementation }
+        var biomeIDs = [Int32](repeating: 0, count: self.bufferContext.sampleCount)
+        biomeIDs.withUnsafeMutableBufferPointer { output in
+            guard let baseAddress = output.baseAddress else { return }
+            implementation(basePosition.x, basePosition.y, basePosition.z, baseAddress)
+        }
+        for biomeID in biomeIDs {
+            precondition(
+                biomeID >= 0 && Int(biomeID) < self.palette.count,
+                "Compiled biome program returned an invalid palette index."
+            )
+        }
+        return CompiledBiomeIDVolume(biomeIDs: biomeIDs, palette: self.palette)
+    }
+}
+
+#if !os(WASI) && !arch(wasm32)
+private func makeBiomeIDIRFallbackInvocation(
+    program: DensityFunctionIRProgram,
+    bufferContext: CompiledDensityFunctionBufferContext
+) -> WASMBiomeIDBulkInvocation {
+    return { baseX, baseY, baseZ, output in
+        var outputIndex = 0
+        for zOffset in 0..<bufferContext.zCount {
+            let z = baseZ + zOffset * bufferContext.zStep
+            for xOffset in 0..<bufferContext.xCount {
+                let x = baseX + xOffset * bufferContext.xStep
+                for yOffset in 0..<bufferContext.yCount {
+                    let y = baseY + yOffset * bufferContext.yStep
+                    output[outputIndex] = evaluateBiomeIDIR(program, x: x, y: y, z: z)
+                    outputIndex += 1
+                }
+            }
+        }
+    }
+}
+#endif
+
+/// Compiles a noise router's six climate functions and a biome search tree into one
+/// fixed-volume program. The returned IDs index directly into the result's palette.
+public func compile(
+    noiseRouter: NoiseRouter,
+    biomeSearchTree: BiomeSearchTree,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    strategy: CompilationBackend = .llvm,
+    registry: Registry<DensityFunction> = Registry(),
+    runtime: (any WASMRuntime)? = nil
+) throws -> CompiledNoiseRouterBiomeBulkSampler {
+    _ = try validateCompiledDensityFunctionBufferContext(bufferContext)
+    let snapshot = biomeSearchTree.makeCompilerSnapshot()
+    let climateFunctions: [any DensityFunction] = [
+        noiseRouter.temperature,
+        noiseRouter.humidity,
+        noiseRouter.continents,
+        noiseRouter.erosion,
+        noiseRouter.weirdness,
+        noiseRouter.depth
+    ]
+    let program = try buildClimateBiomeIR(
+        densityFunctions: climateFunctions,
+        registry: registry,
+        tree: snapshot.tree,
+        includeClimateOutputs: false
+    )
+
+    switch strategy {
+    case .llvm:
+        #if canImport(CLLVM)
+        let implementation = try compileDensityFunctionIRBulkWithLLVM(
+            program,
+            bufferContext: bufferContext,
+            registry: registry
+        )
+        return CompiledNoiseRouterBiomeBulkSampler(
+            strategy: .llvm,
+            bufferContext: bufferContext,
+            palette: snapshot.biomes,
+            implementation: implementation
+        )
+        #else
+        throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
+        #endif
+    case .wasm:
+        let module = try buildDensityFunctionWASMModule(program, bulkContext: bufferContext)
+        let implementation: WASMBiomeIDBulkInvocation
+        if let runtime {
+            let imports = WASMDensityFunctionImports(
+                sampleDensity: { index, x, y, z in
+                    precondition(index >= 0 && Int(index) < program.densityFunctions.count)
+                    return program.densityFunctions[Int(index)].sample(at: PosInt3D(x: x, y: y, z: z))
+                },
+                sampleNoise: { index, x, y, z in
+                    precondition(index >= 0 && Int(index) < program.noises.count)
+                    return program.noises[Int(index)].sample(x: x, y: y, z: z)
+                }
+            )
+            implementation = try runtime.instantiateBiomeIDBulk(
+                module: module,
+                exportName: "sample_bulk",
+                memoryExportName: "memory",
+                sampleCount: bufferContext.sampleCount,
+                imports: imports
+            )
+        } else {
+            #if os(WASI) || arch(wasm32)
+            throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+            #else
+            implementation = makeBiomeIDIRFallbackInvocation(program: program, bufferContext: bufferContext)
+            #endif
+        }
+        return CompiledNoiseRouterBiomeBulkSampler(
+            strategy: .wasm,
+            wasmModule: module,
+            bufferContext: bufferContext,
+            palette: snapshot.biomes,
+            implementation: implementation
+        )
+    }
 }
 
 /// Compiles a biome search tree using the requested density-function compiler backend.

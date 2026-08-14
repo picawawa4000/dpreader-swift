@@ -914,12 +914,17 @@ private func makeWASMBulkFunctionBody(
     outputOffset: Int,
     scalarFunctionIndex: Int,
     outputValueCount: Int,
+    outputType: DensityFunctionIRValueType,
     pairedSIMDFunctionIndex: Int?
 ) -> [UInt8] {
     // Parameters are base x/y/z. Carrying coordinates between iterations avoids three
     // multiply/add pairs in the innermost loop. Supported single-output programs evaluate
     // adjacent y samples through paired SIMD IR and write them with one f64x2 store.
-    let usesSIMDStores = pairedSIMDFunctionIndex != nil && outputValueCount == 1 && bufferContext.yCount >= 2
+    let usesSIMDStores = outputType == .f64
+        && pairedSIMDFunctionIndex != nil
+        && outputValueCount == 1
+        && bufferContext.yCount >= 2
+    let outputStride = outputType == .i32 ? 4 : 8
     let evenYCount = bufferContext.yCount & ~1
     let firstOutputLocal = 10
     let vectorLocal = firstOutputLocal + outputValueCount
@@ -928,7 +933,7 @@ private func makeWASMBulkFunctionBody(
     body.appendUnsigned(7)
     body.append(WASMValueType.i32.rawValue)
     body.appendUnsigned(outputValueCount)
-    body.append(WASMValueType.f64.rawValue)
+    body.append(wasmValueType(outputType).rawValue)
     if usesSIMDStores {
         body.appendUnsigned(1)
         body.append(WASMValueType.v128.rawValue)
@@ -1018,9 +1023,13 @@ private func makeWASMBulkFunctionBody(
         for outputIndex in 0..<outputValueCount {
             appendLocalGet(6, to: &body)
             appendLocalGet(firstOutputLocal + outputIndex, to: &body)
-            appendDoubleStore(to: &body)
+            if outputType == .i32 {
+                appendInt32Store(to: &body)
+            } else {
+                appendDoubleStore(to: &body)
+            }
             appendLocalGet(6, to: &body)
-            appendIntConstant(8, to: &body)
+            appendIntConstant(Int32(outputStride), to: &body)
             body.append(0x6a) // i32.add
             appendLocalSet(6, to: &body)
         }
@@ -1082,16 +1091,23 @@ func buildDensityFunctionWASMModule(
     bulkExportName: String = "sample_bulk",
     useBulkSIMD: Bool = true
 ) throws -> [UInt8] {
-    if bulkContext != nil {
-        let outputsAreDoubles = program.outputs.allSatisfy { output in
-            let instructionIndex = output - program.inputTypes.count
-            return instructionIndex >= 0
-                && instructionIndex < program.instructions.count
-                && program.instructions[instructionIndex].resultType == .f64
+    let outputTypes: [DensityFunctionIRValueType] = program.outputs.map { output in
+        if output < program.inputTypes.count {
+            program.inputTypes[output]
+        } else {
+            program.instructions[output - program.inputTypes.count].resultType
         }
-        guard program.inputTypes == [.i32, .i32, .i32], outputsAreDoubles else {
+    }
+    let bulkOutputType = outputTypes.first
+    if bulkContext != nil {
+        let outputsHaveSupportedType = bulkOutputType == .f64 || bulkOutputType == .i32
+        guard program.inputTypes == [.i32, .i32, .i32],
+              let bulkOutputType,
+              outputsHaveSupportedType,
+              outputTypes.allSatisfy({ $0 == bulkOutputType })
+        else {
             throw DensityFunctionCompilationError.badDensityFunction(
-                "WASM bulk compilation requires f64 outputs with x/y/z inputs."
+                "WASM bulk compilation requires homogeneous f64 or i32 outputs with x/y/z inputs."
             )
         }
     }
@@ -1140,9 +1156,8 @@ func buildDensityFunctionWASMModule(
         let (valueCount, valueCountOverflow) = bulkContext.sampleCount.multipliedReportingOverflow(
             by: program.outputs.count
         )
-        let (byteCount, byteCountOverflow) = valueCount.multipliedReportingOverflow(
-            by: MemoryLayout<Double>.size
-        )
+        let outputStride = bulkOutputType == .i32 ? MemoryLayout<Int32>.size : MemoryLayout<Double>.size
+        let (byteCount, byteCountOverflow) = valueCount.multipliedReportingOverflow(by: outputStride)
         let (endOffset, endOffsetOverflow) = bulkOutputOffset.addingReportingOverflow(byteCount)
         guard !valueCountOverflow, !byteCountOverflow, !endOffsetOverflow else {
             throw DensityFunctionCompilationError.badDensityFunction("WASM bulk output size overflowed Int.")
@@ -1178,13 +1193,6 @@ func buildDensityFunctionWASMModule(
     types.appendUnsigned(baseTypeCount + (bulkContext == nil ? 0 : 1) + (usesPairedSIMD ? 1 : 0))
     appendFunctionType(parameters: [.i32, .i32, .i32, .i32], results: [.f64], to: &types)
     appendFunctionType(parameters: [.i32, .f64, .f64, .f64], results: [.f64], to: &types)
-    let outputTypes: [DensityFunctionIRValueType] = program.outputs.map { output in
-        if output < program.inputTypes.count {
-            program.inputTypes[output]
-        } else {
-            program.instructions[output - program.inputTypes.count].resultType
-        }
-    }
     if embedsNoiseSampler {
         appendFunctionType(parameters: [.i32, .i32], results: [.i32], to: &types)
         appendFunctionType(parameters: [.f64], results: [.f64], to: &types)
@@ -1461,6 +1469,7 @@ func buildDensityFunctionWASMModule(
             outputOffset: bulkOutputOffset,
             scalarFunctionIndex: mainFunctionIndex,
             outputValueCount: program.outputs.count,
+            outputType: bulkOutputType!,
             pairedSIMDFunctionIndex: pairedSIMDFunctionIndex
         )
         code.appendUnsigned(bulkBody.count)

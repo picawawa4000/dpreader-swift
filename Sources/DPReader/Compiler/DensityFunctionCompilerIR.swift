@@ -476,6 +476,21 @@ func evaluateDensityFunctionIR(
     return result
 }
 
+func evaluateBiomeIDIR(
+    _ program: DensityFunctionIRProgram,
+    x: Int32,
+    y: Int32,
+    z: Int32
+) -> Int32 {
+    guard case .i32(let result) = evaluateDensityFunctionIR(
+        program,
+        inputs: [.i32(x), .i32(y), .i32(z)]
+    ) else {
+        preconditionFailure("Biome ID IR did not produce i32.")
+    }
+    return result
+}
+
 func evaluateBiomeSearchIR(
     _ program: DensityFunctionIRProgram,
     point: NoisePoint,

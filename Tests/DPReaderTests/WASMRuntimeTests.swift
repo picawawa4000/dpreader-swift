@@ -626,6 +626,70 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     #expect(counter.count == 1)
 }
 
+@Test func testNoiseRouterBiomeBulkUsesOneRuntimeInvocation() throws {
+    let zeroDensity = ConstantDensityFunction(value: 0)
+    let router = NoiseRouter(
+        finalDensity: zeroDensity,
+        barrier: zeroDensity,
+        fluidLevelFloodedness: zeroDensity,
+        fluidLevelSpread: zeroDensity,
+        lava: zeroDensity,
+        veinToggle: zeroDensity,
+        veinRidged: zeroDensity,
+        veinGap: zeroDensity,
+        temperature: zeroDensity,
+        humidity: zeroDensity,
+        continents: zeroDensity,
+        erosion: zeroDensity,
+        depth: zeroDensity,
+        weirdness: zeroDensity
+    )
+    let zeroRange = ParameterRange(min: 0, max: 0)
+    let tree = try BiomeSearchTree(entries: [(
+        NoiseHypercube(
+            temperature: zeroRange,
+            humidity: zeroRange,
+            continentalness: zeroRange,
+            erosion: zeroRange,
+            depth: zeroRange,
+            weirdness: zeroRange,
+            offset: zeroRange
+        ),
+        RegistryKey(referencing: "test:only")
+    )])
+    let volume = CompiledDensityFunctionBufferContext(xCount: 4, yCount: 3, zCount: 2)
+    let counter = BulkInvocationCounter()
+    let runtime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, _ in { _, _, _ in 0 } },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _, _, _ in 0 } },
+        instantiateDensityFunctionBulk: { _, exportName, memoryExportName, sampleCount, _ in
+            return { _, _, _, output in
+                output.update(repeating: 0, count: sampleCount)
+            }
+        },
+        instantiateBiomeIDBulk: { _, exportName, memoryExportName, sampleCount, _ in
+            #expect(exportName == "sample_bulk")
+            #expect(memoryExportName == "memory")
+            #expect(sampleCount == volume.sampleCount)
+            return { _, _, _, output in
+                counter.increment()
+                output.update(repeating: 0, count: sampleCount)
+            }
+        }
+    )
+    let sampler = try compile(
+        noiseRouter: router,
+        biomeSearchTree: tree,
+        bufferContext: volume,
+        strategy: .wasm,
+        runtime: runtime
+    )
+    let result = sampler(at: PosInt3D(x: 10, y: 20, z: 30))
+    #expect(result.biomeIDs == [Int32](repeating: 0, count: volume.sampleCount))
+    #expect(result.palette.map(\.name) == ["test:only"])
+    #expect(counter.count == 1)
+}
+
 @Test func testWorldGeneratorBulkSamplerFollowsReseeding() throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
@@ -703,6 +767,10 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
         for: volume,
         in: dimension
     )
+    let biomeIDSampler = try generator.makeBiomeIDBulkSampler(
+        for: volume,
+        in: dimension
+    )
     let firstSamples = sampler(at: basePosition)
     #expect(firstSamples.count == volume.sampleCount)
     #expect(sampler.strategy == .wasm)
@@ -776,6 +844,8 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     }
 
     let firstExpected = try expectedSamples()
+    let firstBiomeIDs = biomeIDSampler(at: basePosition)
+    #expect(firstBiomeIDs.biomeIDs.map { firstBiomeIDs.palette[Int($0)] } == firstExpected.map(\.biome))
     for (actual, expected) in zip(firstSamples, firstExpected) {
         #expect(actual.climate == expected.climate)
         #expect(actual.biome == expected.biome)
@@ -797,11 +867,20 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
         #expect(abs(actual.climate.depth - expected.climate.depth) < 1e-8)
         #expect(actual.biome == expected.biome)
     }
+    let llvmBiomeIDSampler = try generator.makeBiomeIDBulkSampler(
+        for: volume,
+        in: dimension,
+        strategy: .llvm
+    )
+    let llvmBiomeIDs = llvmBiomeIDSampler(at: basePosition)
+    #expect(llvmBiomeIDs.biomeIDs.map { llvmBiomeIDs.palette[Int($0)] } == firstExpected.map(\.biome))
     #endif
 
     try generator.setWorldSeed(50_123_537_021)
     let reseededSamples = sampler(at: basePosition)
     let reseededExpected = try expectedSamples()
+    let reseededBiomeIDs = biomeIDSampler(at: basePosition)
+    #expect(reseededBiomeIDs.biomeIDs.map { reseededBiomeIDs.palette[Int($0)] } == reseededExpected.map(\.biome))
     for (actual, expected) in zip(reseededSamples, reseededExpected) {
         #expect(actual.climate == expected.climate)
         #expect(actual.biome == expected.biome)

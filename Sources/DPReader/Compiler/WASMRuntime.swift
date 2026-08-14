@@ -52,6 +52,9 @@ public typealias WASMClimateInvocation = @Sendable (Int32, Int32, Int32) -> WASM
 public typealias WASMBiomeSearchInvocation = @Sendable (
     Double, Double, Double, Double, Double, Double, Int64, Int32
 ) -> Int32
+public typealias WASMBiomeIDBulkInvocation = @Sendable (
+    Int32, Int32, Int32, UnsafeMutablePointer<Int32>
+) -> Void
 
 /// Instantiates emitted WASM with the embedding environment's WebAssembly engine.
 ///
@@ -79,6 +82,16 @@ public protocol WASMRuntime: Sendable {
         sampleCount: Int,
         imports: WASMDensityFunctionImports
     ) throws -> WASMDensityFunctionBulkInvocation
+
+    /// Instantiates a fixed-size biome sampler whose linear-memory result is `sampleCount`
+    /// contiguous `i32` palette indices.
+    func instantiateBiomeIDBulk(
+        module: [UInt8],
+        exportName: String,
+        memoryExportName: String,
+        sampleCount: Int,
+        imports: WASMDensityFunctionImports
+    ) throws -> WASMBiomeIDBulkInvocation
 
     /// Instantiates `sample_climate(i32, i32, i32) -> (f64, f64, f64, f64, f64, f64)`.
     func instantiateClimateFunctions(
@@ -115,6 +128,16 @@ public extension WASMRuntime {
     ) throws -> WASMDensityFunctionBulkInvocation {
         throw DensityFunctionCompilationError.wasmRuntimeUnavailable
     }
+
+    func instantiateBiomeIDBulk(
+        module _: [UInt8],
+        exportName _: String,
+        memoryExportName _: String,
+        sampleCount _: Int,
+        imports _: WASMDensityFunctionImports
+    ) throws -> WASMBiomeIDBulkInvocation {
+        throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+    }
 }
 
 /// A convenience runtime adapter for browser or embedding bridges implemented with closures.
@@ -131,11 +154,15 @@ public struct ClosureWASMRuntime: WASMRuntime {
     public typealias DensityFunctionBulkInstantiator = @Sendable (
         [UInt8], String, String, Int, WASMDensityFunctionImports
     ) throws -> WASMDensityFunctionBulkInvocation
+    public typealias BiomeIDBulkInstantiator = @Sendable (
+        [UInt8], String, String, Int, WASMDensityFunctionImports
+    ) throws -> WASMBiomeIDBulkInvocation
 
     private let densityFunctionInstantiator: DensityFunctionInstantiator
     private let biomeSearchInstantiator: BiomeSearchInstantiator
     private let climateFunctionInstantiator: ClimateFunctionInstantiator?
     private let densityFunctionBulkInstantiator: DensityFunctionBulkInstantiator?
+    private let biomeIDBulkInstantiator: BiomeIDBulkInstantiator?
 
     public var supportsClimateFunctions: Bool { self.climateFunctionInstantiator != nil }
 
@@ -143,12 +170,14 @@ public struct ClosureWASMRuntime: WASMRuntime {
         instantiateDensityFunction: @escaping DensityFunctionInstantiator,
         instantiateBiomeSearch: @escaping BiomeSearchInstantiator,
         instantiateClimateFunctions: ClimateFunctionInstantiator? = nil,
-        instantiateDensityFunctionBulk: DensityFunctionBulkInstantiator? = nil
+        instantiateDensityFunctionBulk: DensityFunctionBulkInstantiator? = nil,
+        instantiateBiomeIDBulk: BiomeIDBulkInstantiator? = nil
     ) {
         self.densityFunctionInstantiator = instantiateDensityFunction
         self.biomeSearchInstantiator = instantiateBiomeSearch
         self.climateFunctionInstantiator = instantiateClimateFunctions
         self.densityFunctionBulkInstantiator = instantiateDensityFunctionBulk
+        self.biomeIDBulkInstantiator = instantiateBiomeIDBulk
     }
 
     public func instantiateClimateFunctions(
@@ -194,5 +223,18 @@ public struct ClosureWASMRuntime: WASMRuntime {
         exportName: String
     ) throws -> WASMBiomeSearchInvocation {
         try self.biomeSearchInstantiator(module, exportName)
+    }
+
+    public func instantiateBiomeIDBulk(
+        module: [UInt8],
+        exportName: String,
+        memoryExportName: String,
+        sampleCount: Int,
+        imports: WASMDensityFunctionImports
+    ) throws -> WASMBiomeIDBulkInvocation {
+        guard let biomeIDBulkInstantiator else {
+            throw DensityFunctionCompilationError.wasmRuntimeUnavailable
+        }
+        return try biomeIDBulkInstantiator(module, exportName, memoryExportName, sampleCount, imports)
     }
 }

@@ -19,6 +19,9 @@ private typealias NativeCompiledDensityFunction = @convention(c) (Int32, Int32, 
 private typealias NativeCompiledBiomeSearch = @convention(c) (
     Double, Double, Double, Double, Double, Double, Int64, Int32
 ) -> Int32
+private typealias NativeCompiledDensityFunctionIRBulk = @convention(c) (
+    Int32, Int32, Int32, UnsafeMutablePointer<Int32>?
+) -> Void
 public typealias CompiledDensityFunctionBuffer = @convention(c) (
     UnsafeRawPointer?,
     Int32,
@@ -369,7 +372,7 @@ public final class BufferedDensityFunctionProfilingState: @unchecked Sendable {
 
 private let doublePointerAlignmentBytes: UInt64 = 8
 
-private func validateCompiledDensityFunctionBufferContext(
+func validateCompiledDensityFunctionBufferContext(
     _ bufferContext: CompiledDensityFunctionBufferContext
 ) throws -> (sampleCount: Int64, planeStride: Int64) {
     guard bufferContext.xCount > 0 else {
@@ -2145,6 +2148,171 @@ func compileBiomeSearchIRWithLLVM(
                 initialBestNode
             )
         }
+    }
+}
+
+func compileDensityFunctionIRBulkWithLLVM(
+    _ program: DensityFunctionIRProgram,
+    bufferContext: CompiledDensityFunctionBufferContext,
+    registry: Registry<DensityFunction>
+) throws -> WASMBiomeIDBulkInvocation {
+    let validated = try validateCompiledDensityFunctionBufferContext(bufferContext)
+    guard program.inputTypes == [.i32, .i32, .i32], program.outputs.count == 1 else {
+        throw DensityFunctionCompilationError.badDensityFunction(
+            "LLVM IR bulk compilation requires x/y/z inputs and one output."
+        )
+    }
+    let output = program.outputs[0]
+    let outputType = output < program.inputTypes.count
+        ? program.inputTypes[output]
+        : program.instructions[output - program.inputTypes.count].resultType
+    guard outputType == .i32 else {
+        throw DensityFunctionCompilationError.badDensityFunction("LLVM biome ID bulk output must be i32.")
+    }
+
+    return try JITCompiler.shared.withLock {
+        for function in program.densityFunctions {
+            JITCompiler.shared.retain(function as AnyObject)
+        }
+        JITCompiler.shared.retain(registry)
+
+        guard let llvmContext = LLVMContextCreate() else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM context.")
+        }
+        var shouldDisposeContext = true
+        defer { if shouldDisposeContext { LLVMContextDispose(llvmContext) } }
+
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "_")
+        let moduleName = "density_ir_bulk_module_\(suffix)"
+        let scalarName = "density_ir_bulk_scalar_\(suffix)"
+        let bulkName = "density_ir_bulk_\(suffix)"
+        guard let module = LLVMModuleCreateWithNameInContext(moduleName, llvmContext) else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM module.")
+        }
+        var shouldDisposeModule = true
+        defer { if shouldDisposeModule { LLVMDisposeModule(module) } }
+
+        guard let doubleType = LLVMDoubleTypeInContext(llvmContext),
+              let int32Type = LLVMInt32TypeInContext(llvmContext),
+              let int64Type = LLVMInt64TypeInContext(llvmContext),
+              let voidType = LLVMVoidTypeInContext(llvmContext),
+              let outputPointerType = LLVMPointerType(int32Type, 0)
+        else {
+            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM primitive types.")
+        }
+
+        var scalarParameterTypes: [LLVMTypeRef?] = [int32Type, int32Type, int32Type]
+        let scalarType = scalarParameterTypes.withUnsafeMutableBufferPointer {
+            LLVMFunctionType(int32Type, $0.baseAddress, UInt32($0.count), 0)
+        }
+        let scalarFunction = LLVMAddFunction(module, scalarName, scalarType)!
+        let scalarEntry = LLVMAppendBasicBlockInContext(llvmContext, scalarFunction, "entry")!
+        let builder = LLVMCreateBuilderInContext(llvmContext)!
+        defer { LLVMDisposeBuilder(builder) }
+        LLVMPositionBuilderAtEnd(builder, scalarEntry)
+        let context = DensityFunctionCompilationContext(
+            llvmContext: llvmContext,
+            builder: builder,
+            doubleType: doubleType,
+            int32Type: int32Type,
+            int64Type: int64Type,
+            densityFunctionRegistry: registry
+        )
+        let scalarResult = lowerDensityFunctionIR(
+            program,
+            in: context,
+            inputs: (0..<3).map { LLVMGetParam(scalarFunction, UInt32($0))! }
+        )
+        LLVMBuildRet(builder, scalarResult)
+
+        var bulkParameterTypes: [LLVMTypeRef?] = [int32Type, int32Type, int32Type, outputPointerType]
+        let bulkType = bulkParameterTypes.withUnsafeMutableBufferPointer {
+            LLVMFunctionType(voidType, $0.baseAddress, UInt32($0.count), 0)
+        }
+        let bulkFunction = LLVMAddFunction(module, bulkName, bulkType)!
+        let bulkEntry = LLVMAppendBasicBlockInContext(llvmContext, bulkFunction, "entry")!
+        let loop = LLVMAppendBasicBlockInContext(llvmContext, bulkFunction, "loop")!
+        let done = LLVMAppendBasicBlockInContext(llvmContext, bulkFunction, "done")!
+        LLVMPositionBuilderAtEnd(builder, bulkEntry)
+        let baseX = LLVMGetParam(bulkFunction, 0)!
+        let baseY = LLVMGetParam(bulkFunction, 1)!
+        let baseZ = LLVMGetParam(bulkFunction, 2)!
+        let outputBuffer = LLVMGetParam(bulkFunction, 3)!
+        let outputIsNull = LLVMBuildIsNull(builder, outputBuffer, "output.is_null")!
+        LLVMBuildCondBr(builder, outputIsNull, done, loop)
+
+        LLVMPositionBuilderAtEnd(builder, loop)
+        let index = LLVMBuildPhi(builder, int64Type, "index")!
+        let yCount = context.int64Constant(UInt64(bufferContext.yCount))
+        let planeCount = context.int64Constant(UInt64(Int64(bufferContext.xCount) * Int64(bufferContext.yCount)))
+        let yOffset64 = LLVMBuildSRem(builder, index, yCount, "y.offset")!
+        let xOffset64 = LLVMBuildSRem(
+            builder,
+            LLVMBuildSDiv(builder, index, yCount, "xy.index")!,
+            context.int64Constant(UInt64(bufferContext.xCount)),
+            "x.offset"
+        )!
+        let zOffset64 = LLVMBuildSDiv(builder, index, planeCount, "z.offset")!
+        func coordinate(_ base: LLVMValueRef, _ offset: LLVMValueRef, step: Int32, name: String) -> LLVMValueRef {
+            let offset32 = LLVMBuildTrunc(builder, offset, int32Type, "\(name).offset.i32")!
+            let scaled = LLVMBuildMul(builder, offset32, context.int32Constant(step), "\(name).scaled")!
+            return LLVMBuildAdd(builder, base, scaled, name)!
+        }
+        let x = coordinate(baseX, xOffset64, step: bufferContext.xStep, name: "x")
+        let y = coordinate(baseY, yOffset64, step: bufferContext.yStep, name: "y")
+        let z = coordinate(baseZ, zOffset64, step: bufferContext.zStep, name: "z")
+        var arguments: [LLVMValueRef?] = [x, y, z]
+        let value = arguments.withUnsafeMutableBufferPointer {
+            LLVMBuildCall2(builder, scalarType, scalarFunction, $0.baseAddress, UInt32($0.count), "sample")
+        }!
+        var indices: [LLVMValueRef?] = [index]
+        let outputPointer = indices.withUnsafeMutableBufferPointer {
+            LLVMBuildInBoundsGEP2(builder, int32Type, outputBuffer, $0.baseAddress, UInt32($0.count), "output.pointer")
+        }!
+        LLVMBuildStore(builder, value, outputPointer)
+        let nextIndex = LLVMBuildAdd(builder, index, context.int64Constant(1), "index.next")!
+        let shouldContinue = LLVMBuildICmp(
+            builder,
+            LLVMIntULT,
+            nextIndex,
+            context.int64Constant(UInt64(validated.sampleCount)),
+            "loop.continue"
+        )!
+        LLVMBuildCondBr(builder, shouldContinue, loop, done)
+        var incomingValues: [LLVMValueRef?] = [context.int64Constant(0), nextIndex]
+        var incomingBlocks: [LLVMBasicBlockRef?] = [bulkEntry, loop]
+        LLVMAddIncoming(index, &incomingValues, &incomingBlocks, 2)
+
+        LLVMPositionBuilderAtEnd(builder, done)
+        LLVMBuildRetVoid(builder)
+
+        try verify(module)
+        try optimize(module)
+        try verify(module)
+
+        let threadSafeContext = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(llvmContext)
+        shouldDisposeContext = false
+        let threadSafeModule = LLVMOrcCreateNewThreadSafeModule(module, threadSafeContext)
+        shouldDisposeModule = false
+        LLVMOrcDisposeThreadSafeContext(threadSafeContext)
+        var shouldDisposeThreadSafeModule = true
+        defer { if shouldDisposeThreadSafeModule { LLVMOrcDisposeThreadSafeModule(threadSafeModule) } }
+        try throwIfLLVMError(
+            LLVMOrcLLJITAddLLVMIRModule(
+                JITCompiler.shared.jit,
+                LLVMOrcLLJITGetMainJITDylib(JITCompiler.shared.jit),
+                threadSafeModule
+            ),
+            prefix: "Failed to add bulk IR module to JIT"
+        )
+        shouldDisposeThreadSafeModule = false
+        var address: LLVMOrcExecutorAddress = 0
+        try throwIfLLVMError(
+            LLVMOrcLLJITLookup(JITCompiler.shared.jit, &address, bulkName),
+            prefix: "Failed to resolve compiled bulk IR function"
+        )
+        let native = unsafeBitCast(address, to: NativeCompiledDensityFunctionIRBulk.self)
+        return { baseX, baseY, baseZ, output in native(baseX, baseY, baseZ, output) }
     }
 }
 
