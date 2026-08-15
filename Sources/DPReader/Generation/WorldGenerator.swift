@@ -2745,6 +2745,7 @@ public final class WorldGenerator {
             biomeSearchTree: searchTree,
             bufferContext: volume,
             strategy: strategy,
+            useAlternativeNode: self.useBiomeSearchAlternative,
             registry: self.registries.densityFunctionRegistry,
             runtime: self.wasmRuntime
         )

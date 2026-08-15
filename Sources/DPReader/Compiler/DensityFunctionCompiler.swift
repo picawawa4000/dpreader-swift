@@ -20,7 +20,7 @@ private typealias NativeCompiledBiomeSearch = @convention(c) (
     Double, Double, Double, Double, Double, Double, Int64, Int32
 ) -> Int32
 private typealias NativeCompiledDensityFunctionIRBulk = @convention(c) (
-    Int32, Int32, Int32, UnsafeMutablePointer<Int32>?
+    Int32, Int32, Int32, Int64, Int64, UnsafeMutablePointer<Int32>?
 ) -> Void
 public typealias CompiledDensityFunctionBuffer = @convention(c) (
     UnsafeRawPointer?,
@@ -243,8 +243,8 @@ public final class CompiledDensityFunctionBulkProgram: @unchecked Sendable {
         self.cellSize = cellSize
         self.cellVolume = cellVolume
         self.cacheCount = cacheCount
-        self.cacheElementsPerCell = cellSize.blockCount
-        self.cacheValueCount = cacheCount * cellSize.blockCount
+        self.cacheElementsPerCell = Int(cellSize.horizontalBlockCount * cellSize.horizontalBlockCount)
+        self.cacheValueCount = cacheCount * self.cacheElementsPerCell
         self.outputValueCount = cellVolume.cellCount * cellSize.blockCount
     }
 }
@@ -792,7 +792,6 @@ final class DensityFunctionCompilationContext {
     }
 
     struct BulkCoordinate2DCacheStorage {
-        let localValid: LLVMValueRef
         let localValues: LLVMValueRef
         let outside: Coordinate2DCacheStorage
     }
@@ -811,6 +810,36 @@ final class DensityFunctionCompilationContext {
         let verticalCount: Int32
     }
 
+    struct BiomeSearchTreeStorage {
+        let minimums: LLVMValueRef
+        let maximums: LLVMValueRef
+        let nodeCount: Int
+    }
+
+    struct EmbeddedPerlinStorage {
+        let permutation: LLVMValueRef
+        let originX: Double
+        let originY: Double
+        let originZ: Double
+    }
+
+    struct EmbeddedOctaveStorage {
+        let perlin: EmbeddedPerlinStorage
+        let amplitude: Double
+        let lacunarity: Double
+    }
+
+    struct EmbeddedNoiseStorage {
+        let firstOctaves: [EmbeddedOctaveStorage]
+        let secondOctaves: [EmbeddedOctaveStorage]
+        let amplitude: Double
+    }
+
+    struct EmbeddedPerlinFunction {
+        let function: LLVMValueRef
+        let type: LLVMTypeRef
+    }
+
     let llvmContext: LLVMContextRef
     let builder: LLVMBuilderRef
     let doubleType: LLVMTypeRef
@@ -821,6 +850,10 @@ final class DensityFunctionCompilationContext {
     let bulkBaseX: LLVMValueRef?
     let bulkBaseZ: LLVMValueRef?
     let bulkBufferContext: CompiledDensityFunctionBufferContext?
+    let biomeSearchTreeStorage: [BiomeSearchTreeStorage]
+    let biomeSearchAlternativeNode: LLVMValueRef?
+    let embeddedNoiseStorage: [ObjectIdentifier: EmbeddedNoiseStorage]
+    let embeddedPerlinFunction: EmbeddedPerlinFunction?
 
     private var referenceResolutionStack: [String] = []
     private var compiledValues: [CompiledValueKey: CachedCompiledValue] = [:]
@@ -841,7 +874,11 @@ final class DensityFunctionCompilationContext {
         bulkInitialY: LLVMValueRef? = nil,
         bulkBaseX: LLVMValueRef? = nil,
         bulkBaseZ: LLVMValueRef? = nil,
-        bulkBufferContext: CompiledDensityFunctionBufferContext? = nil
+        bulkBufferContext: CompiledDensityFunctionBufferContext? = nil,
+        biomeSearchTreeStorage: [BiomeSearchTreeStorage] = [],
+        biomeSearchAlternativeNode: LLVMValueRef? = nil,
+        embeddedNoiseStorage: [ObjectIdentifier: EmbeddedNoiseStorage] = [:],
+        embeddedPerlinFunction: EmbeddedPerlinFunction? = nil
     ) {
         self.llvmContext = llvmContext
         self.builder = builder
@@ -853,6 +890,10 @@ final class DensityFunctionCompilationContext {
         self.bulkBaseX = bulkBaseX
         self.bulkBaseZ = bulkBaseZ
         self.bulkBufferContext = bulkBufferContext
+        self.biomeSearchTreeStorage = biomeSearchTreeStorage
+        self.biomeSearchAlternativeNode = biomeSearchAlternativeNode
+        self.embeddedNoiseStorage = embeddedNoiseStorage
+        self.embeddedPerlinFunction = embeddedPerlinFunction
     }
 
     @inline(__always)
@@ -1027,6 +1068,66 @@ final class DensityFunctionCompilationContext {
         return arguments.withUnsafeMutableBufferPointer { buffer in
             LLVMBuildCall2(self.builder, functionType, functionPointer, buffer.baseAddress, UInt32(buffer.count), name)
         }
+    }
+
+    func buildEmbeddedNoiseSample(
+        _ noise: BakedNoise,
+        x: LLVMValueRef,
+        y: LLVMValueRef,
+        z: LLVMValueRef,
+        name: String
+    ) -> LLVMValueRef? {
+        guard let storage = self.embeddedNoiseStorage[ObjectIdentifier(noise.sampler)],
+              let perlinFunction = self.embeddedPerlinFunction
+        else { return nil }
+
+        func sampleOctaves(
+            _ octaves: [EmbeddedOctaveStorage],
+            coordinateMultiplier: Double,
+            prefix: String
+        ) -> LLVMValueRef {
+            var sum = self.constant(0)
+            for (index, octave) in octaves.enumerated() {
+                let coordinateScale = self.constant(octave.lacunarity * coordinateMultiplier)
+                var arguments: [LLVMValueRef?] = [
+                    octave.perlin.permutation,
+                    self.constant(octave.perlin.originX),
+                    self.constant(octave.perlin.originY),
+                    self.constant(octave.perlin.originZ),
+                    LLVMBuildFMul(self.builder, x, coordinateScale, "\(prefix).x.\(index)"),
+                    LLVMBuildFMul(self.builder, y, coordinateScale, "\(prefix).y.\(index)"),
+                    LLVMBuildFMul(self.builder, z, coordinateScale, "\(prefix).z.\(index)")
+                ]
+                let sampled = arguments.withUnsafeMutableBufferPointer {
+                    LLVMBuildCall2(
+                        self.builder,
+                        perlinFunction.type,
+                        perlinFunction.function,
+                        $0.baseAddress,
+                        UInt32($0.count),
+                        "\(prefix).perlin.\(index)"
+                    )
+                }!
+                let weighted = LLVMBuildFMul(
+                    self.builder, sampled, self.constant(octave.amplitude), "\(prefix).weighted.\(index)"
+                )!
+                sum = LLVMBuildFAdd(self.builder, sum, weighted, "\(prefix).sum.\(index)")!
+            }
+            return sum
+        }
+
+        let first = sampleOctaves(storage.firstOctaves, coordinateMultiplier: 1, prefix: "\(name).first")
+        let second = sampleOctaves(
+            storage.secondOctaves,
+            coordinateMultiplier: 337.0 / 331.0,
+            prefix: "\(name).second"
+        )
+        return LLVMBuildFMul(
+            self.builder,
+            LLVMBuildFAdd(self.builder, first, second, "\(name).combined")!,
+            self.constant(storage.amplitude),
+            name
+        )!
     }
 
     func buildFloorCall(_ value: LLVMValueRef, name: String) -> LLVMValueRef {
@@ -1332,21 +1433,9 @@ final class DensityFunctionCompilationContext {
             return storage
         }
 
-        guard let int1Type = LLVMInt1TypeInContext(self.llvmContext) else {
-            throw DensityFunctionCompilationError.llvmError("Failed to create LLVM i1 type.")
-        }
-        let localValid = try self.buildEntryAlloca(LLVMArrayType(int1Type, UInt32(localColumnCount))!, name: "\(prefix).local_valid")
         let localValues = try self.buildEntryAlloca(LLVMArrayType(self.doubleType, UInt32(localColumnCount))!, name: "\(prefix).local_values")
-        try self.initializeEntryArrayElements(
-            localValid,
-            elementType: int1Type,
-            count: localColumnCount,
-            initialValue: LLVMConstInt(int1Type, 0, 0),
-            namePrefix: "\(prefix).local_valid"
-        )
 
         let storage = BulkCoordinate2DCacheStorage(
-            localValid: localValid,
             localValues: localValues,
             outside: try self.buildCoordinate2DCacheStorage(prefix: "\(prefix).outside")
         )
@@ -1745,6 +1834,346 @@ private func buildGenerationCellBulkSamplingLoop(
     addIncoming(phi: localYOutputPointer, values: [localXOutputPointer, nextLocalYOutputPointer], blocks: [localXHeaderBlock, localYEndBlock])
 }
 
+private func addEmbeddedPerlinFunction(
+    to module: LLVMModuleRef,
+    llvmContext: LLVMContextRef,
+    suffix: String
+) throws -> DensityFunctionCompilationContext.EmbeddedPerlinFunction {
+    let doubleType = LLVMDoubleTypeInContext(llvmContext)!
+    let int8Type = LLVMInt8TypeInContext(llvmContext)!
+    let int32Type = LLVMInt32TypeInContext(llvmContext)!
+    let permutationType = LLVMPointerType(int8Type, 0)!
+    var parameterTypes: [LLVMTypeRef?] = [
+        permutationType, doubleType, doubleType, doubleType,
+        doubleType, doubleType, doubleType
+    ]
+    let functionType = parameterTypes.withUnsafeMutableBufferPointer {
+        LLVMFunctionType(doubleType, $0.baseAddress, UInt32($0.count), 0)
+    }!
+    let function = LLVMAddFunction(module, "embedded_perlin_\(suffix)", functionType)!
+    addEnumAttribute(
+        named: "noinline",
+        to: function,
+        index: LLVMAttributeIndex(bitPattern: Int32(LLVMAttributeFunctionIndex)),
+        in: llvmContext
+    )
+    let entry = LLVMAppendBasicBlockInContext(llvmContext, function, "entry")!
+    let builder = LLVMCreateBuilderInContext(llvmContext)!
+    defer { LLVMDisposeBuilder(builder) }
+    LLVMPositionBuilderAtEnd(builder, entry)
+
+    func doubleConstant(_ value: Double) -> LLVMValueRef { LLVMConstReal(doubleType, value) }
+    func intConstant(_ value: Int32) -> LLVMValueRef {
+        LLVMConstInt(int32Type, UInt64(UInt32(bitPattern: value)), 1)
+    }
+    func add(_ lhs: LLVMValueRef, _ rhs: LLVMValueRef, _ name: String) -> LLVMValueRef {
+        LLVMBuildFAdd(builder, lhs, rhs, name)!
+    }
+    func subtract(_ lhs: LLVMValueRef, _ rhs: LLVMValueRef, _ name: String) -> LLVMValueRef {
+        LLVMBuildFSub(builder, lhs, rhs, name)!
+    }
+    func multiply(_ lhs: LLVMValueRef, _ rhs: LLVMValueRef, _ name: String) -> LLVMValueRef {
+        LLVMBuildFMul(builder, lhs, rhs, name)!
+    }
+
+    var floorParameters: [LLVMTypeRef?] = [doubleType]
+    let floorType = floorParameters.withUnsafeMutableBufferPointer {
+        LLVMFunctionType(doubleType, $0.baseAddress, UInt32($0.count), 0)
+    }!
+    let floorFunction = LLVMGetNamedFunction(module, "llvm.floor.f64")
+        ?? LLVMAddFunction(module, "llvm.floor.f64", floorType)!
+    func floorValue(_ value: LLVMValueRef, name: String) -> LLVMValueRef {
+        var arguments: [LLVMValueRef?] = [value]
+        return arguments.withUnsafeMutableBufferPointer {
+            LLVMBuildCall2(builder, floorType, floorFunction, $0.baseAddress, 1, name)
+        }!
+    }
+
+    let permutation = LLVMGetParam(function, 0)!
+    let sampleX = add(LLVMGetParam(function, 4)!, LLVMGetParam(function, 1)!, "sample.x")
+    let sampleY = add(LLVMGetParam(function, 5)!, LLVMGetParam(function, 2)!, "sample.y")
+    let sampleZ = add(LLVMGetParam(function, 6)!, LLVMGetParam(function, 3)!, "sample.z")
+    let floorX = floorValue(sampleX, name: "floor.x")
+    let floorY = floorValue(sampleY, name: "floor.y")
+    let floorZ = floorValue(sampleZ, name: "floor.z")
+    let sectionX = LLVMBuildFPToSI(builder, floorX, int32Type, "section.x")!
+    let sectionY = LLVMBuildFPToSI(builder, floorY, int32Type, "section.y")!
+    let sectionZ = LLVMBuildFPToSI(builder, floorZ, int32Type, "section.z")!
+    let localX = subtract(sampleX, floorX, "local.x")
+    let localY = subtract(sampleY, floorY, "local.y")
+    let localZ = subtract(sampleZ, floorZ, "local.z")
+
+    func map(_ input: LLVMValueRef, name: String) -> LLVMValueRef {
+        let index = LLVMBuildAnd(builder, input, intConstant(255), "\(name).masked")!
+        var indices: [LLVMValueRef?] = [index]
+        let pointer = indices.withUnsafeMutableBufferPointer {
+            LLVMBuildInBoundsGEP2(builder, int8Type, permutation, $0.baseAddress, 1, "\(name).pointer")
+        }!
+        let byte = LLVMBuildLoad2(builder, int8Type, pointer, name)!
+        return LLVMBuildZExt(builder, byte, int32Type, "\(name).i32")!
+    }
+    let x0 = map(sectionX, name: "map.x0")
+    let x1 = map(LLVMBuildAdd(builder, sectionX, intConstant(1), "section.x1")!, name: "map.x1")
+    func mapXY(_ mappedX: LLVMValueRef, yOffset: Int32, name: String) -> LLVMValueRef {
+        var input = LLVMBuildAdd(builder, mappedX, sectionY, "\(name).input")!
+        if yOffset != 0 { input = LLVMBuildAdd(builder, input, intConstant(yOffset), "\(name).offset")! }
+        return map(input, name: name)
+    }
+    let x0y0 = mapXY(x0, yOffset: 0, name: "map.x0y0")
+    let x0y1 = mapXY(x0, yOffset: 1, name: "map.x0y1")
+    let x1y0 = mapXY(x1, yOffset: 0, name: "map.x1y0")
+    let x1y1 = mapXY(x1, yOffset: 1, name: "map.x1y1")
+
+    func gradient(
+        xy: LLVMValueRef,
+        zOffset: Int32,
+        xOffset: Double,
+        yOffset: Double,
+        zLocalOffset: Double,
+        name: String
+    ) -> LLVMValueRef {
+        var mapInput = LLVMBuildAdd(builder, xy, sectionZ, "\(name).map_input")!
+        if zOffset != 0 { mapInput = LLVMBuildAdd(builder, mapInput, intConstant(zOffset), "\(name).z_offset")! }
+        let hash = LLVMBuildAnd(builder, map(mapInput, name: "\(name).map"), intConstant(15), "\(name).hash")!
+        let x = xOffset == 0 ? localX : add(localX, doubleConstant(xOffset), "\(name).x")
+        let y = yOffset == 0 ? localY : add(localY, doubleConstant(yOffset), "\(name).y")
+        let z = zLocalOffset == 0 ? localZ : add(localZ, doubleConstant(zLocalOffset), "\(name).z")
+        let u = LLVMBuildSelect(
+            builder,
+            LLVMBuildICmp(builder, LLVMIntULT, hash, intConstant(8), "\(name).u_is_x")!,
+            x, y, "\(name).u"
+        )!
+        let vXZ = LLVMBuildSelect(
+            builder,
+            LLVMBuildOr(
+                builder,
+                LLVMBuildICmp(builder, LLVMIntEQ, hash, intConstant(12), "\(name).hash_12")!,
+                LLVMBuildICmp(builder, LLVMIntEQ, hash, intConstant(14), "\(name).hash_14")!,
+                "\(name).v_is_x"
+            )!,
+            x, z, "\(name).v_xz"
+        )!
+        let v = LLVMBuildSelect(
+            builder,
+            LLVMBuildICmp(builder, LLVMIntULT, hash, intConstant(4), "\(name).v_is_y")!,
+            y, vXZ, "\(name).v"
+        )!
+        let signedU = LLVMBuildSelect(
+            builder,
+            LLVMBuildICmp(
+                builder, LLVMIntEQ,
+                LLVMBuildAnd(builder, hash, intConstant(1), "\(name).u_sign_bit")!,
+                intConstant(0), "\(name).u_positive"
+            )!,
+            u, LLVMBuildFNeg(builder, u, "\(name).negative_u")!, "\(name).signed_u"
+        )!
+        let signedV = LLVMBuildSelect(
+            builder,
+            LLVMBuildICmp(
+                builder, LLVMIntEQ,
+                LLVMBuildAnd(builder, hash, intConstant(2), "\(name).v_sign_bit")!,
+                intConstant(0), "\(name).v_positive"
+            )!,
+            v, LLVMBuildFNeg(builder, v, "\(name).negative_v")!, "\(name).signed_v"
+        )!
+        return add(signedU, signedV, "\(name).result")
+    }
+
+    let gradients = [
+        gradient(xy: x0y0, zOffset: 0, xOffset: 0, yOffset: 0, zLocalOffset: 0, name: "gradient.000"),
+        gradient(xy: x1y0, zOffset: 0, xOffset: -1, yOffset: 0, zLocalOffset: 0, name: "gradient.100"),
+        gradient(xy: x0y1, zOffset: 0, xOffset: 0, yOffset: -1, zLocalOffset: 0, name: "gradient.010"),
+        gradient(xy: x1y1, zOffset: 0, xOffset: -1, yOffset: -1, zLocalOffset: 0, name: "gradient.110"),
+        gradient(xy: x0y0, zOffset: 1, xOffset: 0, yOffset: 0, zLocalOffset: -1, name: "gradient.001"),
+        gradient(xy: x1y0, zOffset: 1, xOffset: -1, yOffset: 0, zLocalOffset: -1, name: "gradient.101"),
+        gradient(xy: x0y1, zOffset: 1, xOffset: 0, yOffset: -1, zLocalOffset: -1, name: "gradient.011"),
+        gradient(xy: x1y1, zOffset: 1, xOffset: -1, yOffset: -1, zLocalOffset: -1, name: "gradient.111")
+    ]
+    func fade(_ value: LLVMValueRef, name: String) -> LLVMValueRef {
+        let squared = multiply(value, value, "\(name).squared")
+        let cubed = multiply(squared, value, "\(name).cubed")
+        let inner = add(
+            multiply(
+                value,
+                subtract(multiply(value, doubleConstant(6), "\(name).six_x"), doubleConstant(15), "\(name).minus_15"),
+                "\(name).inner_product"
+            ),
+            doubleConstant(10),
+            "\(name).inner"
+        )
+        return multiply(cubed, inner, name)
+    }
+    func lerp(_ delta: LLVMValueRef, _ start: LLVMValueRef, _ end: LLVMValueRef, name: String) -> LLVMValueRef {
+        add(start, multiply(delta, subtract(end, start, "\(name).difference"), "\(name).scaled"), name)
+    }
+    let dx = fade(localX, name: "fade.x")
+    let dy = fade(localY, name: "fade.y")
+    let dz = fade(localZ, name: "fade.z")
+    let z0 = lerp(
+        dy,
+        lerp(dx, gradients[0], gradients[1], name: "lerp.x00"),
+        lerp(dx, gradients[2], gradients[3], name: "lerp.x10"),
+        name: "lerp.y0"
+    )
+    let z1 = lerp(
+        dy,
+        lerp(dx, gradients[4], gradients[5], name: "lerp.x01"),
+        lerp(dx, gradients[6], gradients[7], name: "lerp.x11"),
+        name: "lerp.y1"
+    )
+    LLVMBuildRet(builder, lerp(dz, z0, z1, name: "perlin.result"))
+    return DensityFunctionCompilationContext.EmbeddedPerlinFunction(function: function, type: functionType)
+}
+
+private func addEmbeddedNoiseStorage(
+    for noises: [any DensityFunctionNoise],
+    to module: LLVMModuleRef,
+    llvmContext: LLVMContextRef,
+    suffix: String
+) throws -> (
+    [ObjectIdentifier: DensityFunctionCompilationContext.EmbeddedNoiseStorage],
+    DensityFunctionCompilationContext.EmbeddedPerlinFunction?
+) {
+    let bakedNoises = noises.compactMap { $0 as? BakedNoise }
+    guard !bakedNoises.isEmpty else { return ([:], nil) }
+    let int8Type = LLVMInt8TypeInContext(llvmContext)!
+    var noiseStorage: [ObjectIdentifier: DensityFunctionCompilationContext.EmbeddedNoiseStorage] = [:]
+    var permutationCount = 0
+
+    func storePerlin(_ snapshot: WASMPerlinNoiseSnapshot) -> DensityFunctionCompilationContext.EmbeddedPerlinStorage {
+        // A snapshot has value semantics, so the containing sampler's construction order supplies
+        // stable, unique names while the sampler-level dictionary handles actual deduplication.
+        var constants: [LLVMValueRef?] = snapshot.permutation.map { LLVMConstInt(int8Type, UInt64($0), 0) }
+        let initializer = constants.withUnsafeMutableBufferPointer {
+            LLVMConstArray(int8Type, $0.baseAddress, UInt32($0.count))
+        }!
+        let global = LLVMAddGlobal(module, LLVMTypeOf(initializer), "permutation_\(suffix)_\(permutationCount)")!
+        permutationCount += 1
+        LLVMSetInitializer(global, initializer)
+        LLVMSetGlobalConstant(global, 1)
+        LLVMSetLinkage(global, LLVMPrivateLinkage)
+        var indices: [LLVMValueRef?] = [
+            LLVMConstInt(LLVMInt32TypeInContext(llvmContext), 0, 0),
+            LLVMConstInt(LLVMInt32TypeInContext(llvmContext), 0, 0)
+        ]
+        let pointer = indices.withUnsafeMutableBufferPointer {
+            LLVMConstInBoundsGEP2(LLVMTypeOf(initializer), global, $0.baseAddress, UInt32($0.count))
+        }!
+        return .init(
+            permutation: pointer,
+            originX: snapshot.originX,
+            originY: snapshot.originY,
+            originZ: snapshot.originZ
+        )
+    }
+
+    for bakedNoise in bakedNoises {
+        let samplerIdentity = ObjectIdentifier(bakedNoise.sampler)
+        guard noiseStorage[samplerIdentity] == nil else { continue }
+        let snapshot = bakedNoise.sampler.wasmSnapshot
+        func storeOctaves(_ octaves: [WASMOctaveNoiseSnapshot]) -> [DensityFunctionCompilationContext.EmbeddedOctaveStorage] {
+            octaves.map {
+                .init(perlin: storePerlin($0.noise), amplitude: $0.amplitude, lacunarity: $0.lacunarity)
+            }
+        }
+        noiseStorage[samplerIdentity] = .init(
+            firstOctaves: storeOctaves(snapshot.firstOctaves),
+            secondOctaves: storeOctaves(snapshot.secondOctaves),
+            amplitude: snapshot.amplitude
+        )
+    }
+    return (noiseStorage, try addEmbeddedPerlinFunction(to: module, llvmContext: llvmContext, suffix: suffix))
+}
+
+private func addBiomeSearchTreeStorage(
+    _ tree: BiomeSearchIRTree,
+    to module: LLVMModuleRef,
+    int64Type: LLVMTypeRef,
+    suffix: String
+) -> DensityFunctionCompilationContext.BiomeSearchTreeStorage {
+    func addGlobal(_ values: [Int64], name: String) -> LLVMValueRef {
+        var constants: [LLVMValueRef?] = values.map {
+            LLVMConstInt(int64Type, UInt64(bitPattern: $0), 1)
+        }
+        let initializer = constants.withUnsafeMutableBufferPointer {
+            LLVMConstArray(int64Type, $0.baseAddress, UInt32($0.count))
+        }!
+        let global = LLVMAddGlobal(module, LLVMTypeOf(initializer), name)!
+        LLVMSetInitializer(global, initializer)
+        LLVMSetGlobalConstant(global, 1)
+        LLVMSetLinkage(global, LLVMPrivateLinkage)
+        return global
+    }
+
+    return DensityFunctionCompilationContext.BiomeSearchTreeStorage(
+        minimums: addGlobal(tree.nodes.flatMap(\.minimums), name: "biome_minimums_\(suffix)"),
+        maximums: addGlobal(tree.nodes.flatMap(\.maximums), name: "biome_maximums_\(suffix)"),
+        nodeCount: tree.nodes.count
+    )
+}
+
+private func buildDynamicBiomeSquaredDistance(
+    storage: DensityFunctionCompilationContext.BiomeSearchTreeStorage,
+    nodeIndex: LLVMValueRef,
+    point: [LLVMValueRef],
+    in context: DensityFunctionCompilationContext
+) -> LLVMValueRef {
+    let builder = context.builder
+    let isNonnegative = LLVMBuildICmp(
+        builder, LLVMIntSGE, nodeIndex, context.int32Constant(0), "biome.alternative.nonnegative"
+    )!
+    let isInBounds = LLVMBuildICmp(
+        builder, LLVMIntSLT, nodeIndex, context.int32Constant(Int32(storage.nodeCount)), "biome.alternative.in_bounds"
+    )!
+    let isValid = context.buildAnd(isNonnegative, isInBounds, name: "biome.alternative.valid")
+    let safeNodeIndex = LLVMBuildSelect(
+        builder, isValid, nodeIndex, context.int32Constant(0), "biome.alternative.safe_node"
+    )!
+    let arrayCount = storage.nodeCount * 7
+    let arrayType = LLVMArrayType(context.int64Type, UInt32(arrayCount))!
+
+    func load(_ global: LLVMValueRef, dimension: Int, name: String) -> LLVMValueRef {
+        let flatIndex = LLVMBuildAdd(
+            builder,
+            LLVMBuildMul(builder, safeNodeIndex, context.int32Constant(7), "\(name).node_offset")!,
+            context.int32Constant(Int32(dimension)),
+            "\(name).index"
+        )!
+        var indices: [LLVMValueRef?] = [context.int32Constant(0), flatIndex]
+        let pointer = indices.withUnsafeMutableBufferPointer {
+            LLVMBuildInBoundsGEP2(builder, arrayType, global, $0.baseAddress, UInt32($0.count), "\(name).pointer")
+        }!
+        return LLVMBuildLoad2(builder, context.int64Type, pointer, name)!
+    }
+
+    var sum = context.int64Constant(0)
+    for dimension in [2, 3, 5, 4, 0, 1, 6] {
+        let minimum = load(storage.minimums, dimension: dimension, name: "biome.alternative.minimum_\(dimension)")
+        let maximum = load(storage.maximums, dimension: dimension, name: "biome.alternative.maximum_\(dimension)")
+        let below = LLVMBuildICmp(builder, LLVMIntSLT, point[dimension], minimum, "biome.alternative.below")!
+        let above = LLVMBuildICmp(builder, LLVMIntSGT, point[dimension], maximum, "biome.alternative.above")!
+        let belowDistance = LLVMBuildSub(builder, minimum, point[dimension], "biome.alternative.below_distance")!
+        let aboveDistance = LLVMBuildSub(builder, point[dimension], maximum, "biome.alternative.above_distance")!
+        let upperOrZero = LLVMBuildSelect(
+            builder, above, aboveDistance, context.int64Constant(0), "biome.alternative.upper_or_zero"
+        )!
+        let distance = LLVMBuildSelect(builder, below, belowDistance, upperOrZero, "biome.alternative.distance")!
+        sum = LLVMBuildAdd(
+            builder,
+            sum,
+            LLVMBuildMul(builder, distance, distance, "biome.alternative.squared")!,
+            "biome.alternative.sum"
+        )!
+    }
+    return LLVMBuildSelect(
+        builder,
+        isValid,
+        sum,
+        context.int64Constant(UInt64(Int64.max)),
+        "biome.alternative.initial_distance"
+    )!
+}
+
 private func lowerDensityFunctionIR(
     _ program: DensityFunctionIRProgram,
     in context: DensityFunctionCompilationContext,
@@ -1762,6 +2191,20 @@ private func lowerDensityFunctionIR(
             result = context.int32Constant(value)
         case .constantInt64(let value):
             result = context.int64Constant(UInt64(bitPattern: value))
+        case .divideSignedInt32(let input, let divisor):
+            result = LLVMBuildSDiv(
+                context.builder,
+                values[input],
+                context.int32Constant(divisor),
+                "density_ir.divide_i32"
+            )!
+        case .multiplyInt32(let input, let multiplier):
+            result = LLVMBuildMul(
+                context.builder,
+                values[input],
+                context.int32Constant(multiplier),
+                "density_ir.multiply_i32"
+            )!
         case .convertSignedIntToDouble(let input):
             result = LLVMBuildSIToFP(context.builder, values[input], context.doubleType, "density_ir.sitofp")!
         case .convertDoubleToSignedInt64(let input):
@@ -1804,20 +2247,157 @@ private func lowerDensityFunctionIR(
                 name: "density_ir.sample_density"
             )
         case .sampleNoise(let index, let sampleX, let sampleY, let sampleZ):
-            result = context.buildRuntimeNoiseSampleCall(
-                program.noises[index],
+            if let bakedNoise = program.noises[index] as? BakedNoise,
+               let embedded = context.buildEmbeddedNoiseSample(
+                bakedNoise,
                 x: values[sampleX],
                 y: values[sampleY],
                 z: values[sampleZ],
-                name: "density_ir.sample_noise"
-            )
+                name: "density_ir.embedded_noise"
+               ) {
+                result = embedded
+            } else {
+                result = context.buildRuntimeNoiseSampleCall(
+                    program.noises[index],
+                    x: values[sampleX],
+                    y: values[sampleY],
+                    z: values[sampleZ],
+                    name: "density_ir.sample_noise"
+                )
+            }
+        case .spline(let coordinate, let locations, let pointValues, let derivatives):
+            let floatType = LLVMFloatTypeInContext(context.llvmContext)!
+            let point = LLVMBuildFPTrunc(context.builder, values[coordinate], floatType, "density_ir.spline.point")!
+            let splineValues = pointValues.map {
+                LLVMBuildFPTrunc(context.builder, values[$0], floatType, "density_ir.spline.value")!
+            }
+            func constant(_ value: Float) -> LLVMValueRef {
+                LLVMConstReal(floatType, Double(value))
+            }
+            func outside(index: Int, name: String) -> LLVMValueRef {
+                guard derivatives[index] != 0 else { return splineValues[index] }
+                return LLVMBuildFAdd(
+                    context.builder,
+                    splineValues[index],
+                    LLVMBuildFMul(
+                        context.builder,
+                        constant(derivatives[index]),
+                        LLVMBuildFSub(context.builder, point, constant(locations[index]), "\(name).delta")!,
+                        "\(name).scaled"
+                    )!,
+                    name
+                )!
+            }
+            func interval(_ index: Int) -> LLVMValueRef {
+                let width = locations[index + 1] - locations[index]
+                let delta = LLVMBuildFDiv(
+                    context.builder,
+                    LLVMBuildFSub(context.builder, point, constant(locations[index]), "spline.interval.delta")!,
+                    constant(width),
+                    "spline.interval.slope"
+                )!
+                let valueDelta = LLVMBuildFSub(
+                    context.builder, splineValues[index + 1], splineValues[index], "spline.interval.value_delta"
+                )!
+                let p = LLVMBuildFSub(
+                    context.builder,
+                    LLVMBuildFMul(
+                        context.builder, constant(derivatives[index]), constant(width), "spline.interval.p_derivative"
+                    )!,
+                    valueDelta,
+                    "spline.interval.p"
+                )!
+                let q = LLVMBuildFAdd(
+                    context.builder,
+                    LLVMBuildFNeg(
+                        context.builder,
+                        LLVMBuildFMul(
+                            context.builder,
+                            constant(derivatives[index + 1]),
+                            constant(width),
+                            "spline.interval.q_derivative"
+                        )!,
+                        "spline.interval.q_negative"
+                    )!,
+                    valueDelta,
+                    "spline.interval.q"
+                )!
+                let value = LLVMBuildFAdd(
+                    context.builder,
+                    splineValues[index],
+                    LLVMBuildFMul(context.builder, delta, valueDelta, "spline.interval.value_scaled")!,
+                    "spline.interval.value"
+                )!
+                let tangent = LLVMBuildFAdd(
+                    context.builder,
+                    p,
+                    LLVMBuildFMul(
+                        context.builder,
+                        delta,
+                        LLVMBuildFSub(context.builder, q, p, "spline.interval.tangent_delta")!,
+                        "spline.interval.tangent_scaled"
+                    )!,
+                    "spline.interval.tangent"
+                )!
+                let deltaProduct = LLVMBuildFMul(
+                    context.builder,
+                    delta,
+                    LLVMBuildFSub(context.builder, constant(1), delta, "spline.interval.one_minus_delta")!,
+                    "spline.interval.delta_product"
+                )!
+                return LLVMBuildFAdd(
+                    context.builder,
+                    value,
+                    LLVMBuildFMul(context.builder, deltaProduct, tangent, "spline.interval.tangent_term")!,
+                    "spline.interval.result"
+                )!
+            }
+            let last = locations.count - 1
+            var splineResult = outside(index: last, name: "spline.right")
+            if last > 0 {
+                for index in (0..<last).reversed() {
+                    splineResult = LLVMBuildSelect(
+                        context.builder,
+                        LLVMBuildFCmp(
+                            context.builder,
+                            LLVMRealOLT,
+                            point,
+                            constant(locations[index + 1]),
+                            "spline.before_interval_end"
+                        )!,
+                        interval(index),
+                        splineResult,
+                        "spline.interval.select"
+                    )!
+                }
+            }
+            splineResult = LLVMBuildSelect(
+                context.builder,
+                LLVMBuildFCmp(
+                    context.builder, LLVMRealOLT, point, constant(locations[0]), "spline.before_start"
+                )!,
+                outside(index: 0, name: "spline.left"),
+                splineResult,
+                "spline.result.float"
+            )!
+            result = LLVMBuildFPExt(context.builder, splineResult, context.doubleType, "spline.result")!
         case .searchBiome(let index, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
+            let pointValues = point.map { values[$0] }
+            let bulkAlternativeNode = initialBestNode == nil ? context.biomeSearchAlternativeNode : nil
+            let bulkAlternativeDistance = bulkAlternativeNode.map {
+                buildDynamicBiomeSquaredDistance(
+                    storage: context.biomeSearchTreeStorage[index],
+                    nodeIndex: $0,
+                    point: pointValues,
+                    in: context
+                )
+            }
             result = lowerBiomeSearchIR(
                 program.biomeSearchTrees[index],
-                point: point.map { values[$0] },
-                initialBestDistance: initialBestDistance.map { values[$0] },
-                initialBestNode: initialBestNode.map { values[$0] },
-                returnNodeIndex: returnNodeIndex,
+                point: pointValues,
+                initialBestDistance: initialBestDistance.map { values[$0] } ?? bulkAlternativeDistance,
+                initialBestNode: initialBestNode.map { values[$0] } ?? bulkAlternativeNode,
+                returnNodeIndex: returnNodeIndex || bulkAlternativeNode != nil,
                 in: context
             )
         }
@@ -1860,9 +2440,16 @@ private func lowerBiomeSearchIR(
         return LLVMAppendBasicBlockInContext(context.llvmContext, function, "\(name).\(blockNumber)")!
     }
 
-    func buildSquaredDistance(_ node: BiomeSearchIRNode, name: String) -> LLVMValueRef {
+    /// Emits the distance dimension-by-dimension and branches away as soon as the
+    /// monotonically increasing partial sum is already worse than the incumbent.
+    func buildBoundedSquaredDistance(
+        _ node: BiomeSearchIRNode,
+        bestDistance: LLVMValueRef,
+        skipBlock: LLVMBasicBlockRef,
+        name: String
+    ) -> LLVMValueRef {
         var sum = context.int64Constant(0)
-        for dimension in [2, 3, 5, 4, 0, 1, 6] {
+        for (orderIndex, dimension) in [2, 3, 5, 4, 0, 1, 6].enumerated() {
             let minimum = context.int64Constant(UInt64(bitPattern: node.minimums[dimension]))
             let maximum = context.int64Constant(UInt64(bitPattern: node.maximums[dimension]))
             let below = LLVMBuildICmp(builder, LLVMIntSLT, point[dimension], minimum, "\(name).below")!
@@ -1879,20 +2466,34 @@ private func lowerBiomeSearchIR(
             let distance = LLVMBuildSelect(builder, below, belowDistance, upperOrZero, "\(name).distance")!
             let squared = LLVMBuildMul(builder, distance, distance, "\(name).squared")!
             sum = LLVMBuildAdd(builder, sum, squared, "\(name).sum")!
+            let withinBoundBlock = makeBlock("\(name).dimension_\(orderIndex).within_bound")
+            let exceedsBound = LLVMBuildICmp(
+                builder,
+                LLVMIntSGT,
+                sum,
+                bestDistance,
+                "\(name).exceeds_bound"
+            )!
+            LLVMBuildCondBr(builder, exceedsBound, skipBlock, withinBoundBlock)
+            LLVMPositionBuilderAtEnd(builder, withinBoundBlock)
         }
         return sum
     }
 
-    func emitVisit(_ nodeIndex: Int, continuation: LLVMBasicBlockRef) {
+    func emitVisit(
+        _ nodeIndex: Int,
+        continuation: LLVMBasicBlockRef,
+        knownDistance: LLVMValueRef? = nil
+    ) {
         let node = tree.nodes[nodeIndex]
         if node.isLeaf {
-            let distance = buildSquaredDistance(node, name: "biome.leaf_\(nodeIndex)")
             let bestDistance = LLVMBuildLoad2(builder, context.int64Type, bestDistancePointer, "biome.best_distance.load")!
-            let isBetter = LLVMBuildICmp(builder, LLVMIntSLE, distance, bestDistance, "biome.leaf.is_better")!
-            let updateBlock = makeBlock("biome.leaf.update")
-            LLVMBuildCondBr(builder, isBetter, updateBlock, continuation)
-
-            LLVMPositionBuilderAtEnd(builder, updateBlock)
+            let distance = knownDistance ?? buildBoundedSquaredDistance(
+                node,
+                bestDistance: bestDistance,
+                skipBlock: continuation,
+                name: "biome.leaf_\(nodeIndex)"
+            )
             LLVMBuildStore(builder, distance, bestDistancePointer)
             let resultIndex = returnNodeIndex ? Int32(nodeIndex) : node.valueIndex
             LLVMBuildStore(builder, context.int32Constant(resultIndex), bestIndexPointer)
@@ -1904,15 +2505,19 @@ private func lowerBiomeSearchIR(
         let childEnd = node.childIndexStart + node.childCount
         for childIndex in node.childIndexStart..<childEnd {
             let child = tree.nodes[childIndex]
-            let distance = buildSquaredDistance(child, name: "biome.node_\(childIndex)")
             let bestDistance = LLVMBuildLoad2(builder, context.int64Type, bestDistancePointer, "biome.best_distance.load")!
-            let shouldVisit = LLVMBuildICmp(builder, LLVMIntSLE, distance, bestDistance, "biome.node.should_visit")!
             let visitBlock = makeBlock("biome.node.visit")
             let nextBlock = makeBlock("biome.node.next")
-            LLVMBuildCondBr(builder, shouldVisit, visitBlock, nextBlock)
+            let distance = buildBoundedSquaredDistance(
+                child,
+                bestDistance: bestDistance,
+                skipBlock: nextBlock,
+                name: "biome.node_\(childIndex)"
+            )
+            LLVMBuildBr(builder, visitBlock)
 
             LLVMPositionBuilderAtEnd(builder, visitBlock)
-            emitVisit(childIndex, continuation: nextBlock)
+            emitVisit(childIndex, continuation: nextBlock, knownDistance: distance)
             LLVMPositionBuilderAtEnd(builder, nextBlock)
         }
         LLVMBuildBr(builder, continuation)
@@ -2154,7 +2759,8 @@ func compileBiomeSearchIRWithLLVM(
 func compileDensityFunctionIRBulkWithLLVM(
     _ program: DensityFunctionIRProgram,
     bufferContext: CompiledDensityFunctionBufferContext,
-    registry: Registry<DensityFunction>
+    registry: Registry<DensityFunction>,
+    useAlternativeNode: Bool = false
 ) throws -> WASMBiomeIDBulkInvocation {
     let validated = try validateCompiledDensityFunctionBufferContext(bufferContext)
     guard program.inputTypes == [.i32, .i32, .i32], program.outputs.count == 1 else {
@@ -2201,7 +2807,38 @@ func compileDensityFunctionIRBulkWithLLVM(
             throw DensityFunctionCompilationError.llvmError("Failed to create LLVM primitive types.")
         }
 
+        let biomeTreeStorage = useAlternativeNode
+            ? program.biomeSearchTrees.enumerated().map {
+                addBiomeSearchTreeStorage($0.element, to: module, int64Type: int64Type, suffix: "\(suffix)_\($0.offset)")
+            }
+            : []
+        let biomeValueStorage: LLVMValueRef? = if useAlternativeNode {
+            {
+                let values = program.biomeSearchTrees[0].nodes.map(\.valueIndex)
+                var constants: [LLVMValueRef?] = values.map {
+                    LLVMConstInt(int32Type, UInt64(UInt32(bitPattern: $0)), 1)
+                }
+                let initializer = constants.withUnsafeMutableBufferPointer {
+                    LLVMConstArray(int32Type, $0.baseAddress, UInt32($0.count))
+                }!
+                let global = LLVMAddGlobal(module, LLVMTypeOf(initializer), "biome_values_\(suffix)")!
+                LLVMSetInitializer(global, initializer)
+                LLVMSetGlobalConstant(global, 1)
+                LLVMSetLinkage(global, LLVMPrivateLinkage)
+                return global
+            }()
+        } else {
+            nil
+        }
+        let (embeddedNoiseStorage, embeddedPerlinFunction) = try addEmbeddedNoiseStorage(
+            for: program.noises,
+            to: module,
+            llvmContext: llvmContext,
+            suffix: suffix
+        )
+
         var scalarParameterTypes: [LLVMTypeRef?] = [int32Type, int32Type, int32Type]
+        if useAlternativeNode { scalarParameterTypes.append(int32Type) }
         let scalarType = scalarParameterTypes.withUnsafeMutableBufferPointer {
             LLVMFunctionType(int32Type, $0.baseAddress, UInt32($0.count), 0)
         }
@@ -2216,7 +2853,11 @@ func compileDensityFunctionIRBulkWithLLVM(
             doubleType: doubleType,
             int32Type: int32Type,
             int64Type: int64Type,
-            densityFunctionRegistry: registry
+            densityFunctionRegistry: registry,
+            biomeSearchTreeStorage: biomeTreeStorage,
+            biomeSearchAlternativeNode: useAlternativeNode ? LLVMGetParam(scalarFunction, 3)! : nil,
+            embeddedNoiseStorage: embeddedNoiseStorage,
+            embeddedPerlinFunction: embeddedPerlinFunction
         )
         let scalarResult = lowerDensityFunctionIR(
             program,
@@ -2225,7 +2866,9 @@ func compileDensityFunctionIRBulkWithLLVM(
         )
         LLVMBuildRet(builder, scalarResult)
 
-        var bulkParameterTypes: [LLVMTypeRef?] = [int32Type, int32Type, int32Type, outputPointerType]
+        var bulkParameterTypes: [LLVMTypeRef?] = [
+            int32Type, int32Type, int32Type, int64Type, int64Type, outputPointerType
+        ]
         let bulkType = bulkParameterTypes.withUnsafeMutableBufferPointer {
             LLVMFunctionType(voidType, $0.baseAddress, UInt32($0.count), 0)
         }
@@ -2237,12 +2880,18 @@ func compileDensityFunctionIRBulkWithLLVM(
         let baseX = LLVMGetParam(bulkFunction, 0)!
         let baseY = LLVMGetParam(bulkFunction, 1)!
         let baseZ = LLVMGetParam(bulkFunction, 2)!
-        let outputBuffer = LLVMGetParam(bulkFunction, 3)!
+        let rangeStart = LLVMGetParam(bulkFunction, 3)!
+        let rangeEnd = LLVMGetParam(bulkFunction, 4)!
+        let outputBuffer = LLVMGetParam(bulkFunction, 5)!
         let outputIsNull = LLVMBuildIsNull(builder, outputBuffer, "output.is_null")!
-        LLVMBuildCondBr(builder, outputIsNull, done, loop)
+        let rangeIsEmpty = LLVMBuildICmp(builder, LLVMIntUGE, rangeStart, rangeEnd, "range.is_empty")!
+        LLVMBuildCondBr(builder, LLVMBuildOr(builder, outputIsNull, rangeIsEmpty, "skip")!, done, loop)
 
         LLVMPositionBuilderAtEnd(builder, loop)
         let index = LLVMBuildPhi(builder, int64Type, "index")!
+        let previousNode: LLVMValueRef? = useAlternativeNode
+            ? LLVMBuildPhi(builder, int32Type, "biome.previous_node")!
+            : nil
         let yCount = context.int64Constant(UInt64(bufferContext.yCount))
         let planeCount = context.int64Constant(UInt64(Int64(bufferContext.xCount) * Int64(bufferContext.yCount)))
         let yOffset64 = LLVMBuildSRem(builder, index, yCount, "y.offset")!
@@ -2262,9 +2911,24 @@ func compileDensityFunctionIRBulkWithLLVM(
         let y = coordinate(baseY, yOffset64, step: bufferContext.yStep, name: "y")
         let z = coordinate(baseZ, zOffset64, step: bufferContext.zStep, name: "z")
         var arguments: [LLVMValueRef?] = [x, y, z]
-        let value = arguments.withUnsafeMutableBufferPointer {
+        if let previousNode { arguments.append(previousNode) }
+        let scalarValue = arguments.withUnsafeMutableBufferPointer {
             LLVMBuildCall2(builder, scalarType, scalarFunction, $0.baseAddress, UInt32($0.count), "sample")
         }!
+        let value: LLVMValueRef
+        if let biomeValueStorage {
+            let nodeCount = program.biomeSearchTrees[0].nodes.count
+            let arrayType = LLVMArrayType(int32Type, UInt32(nodeCount))!
+            var valueIndices: [LLVMValueRef?] = [context.int32Constant(0), scalarValue]
+            let valuePointer = valueIndices.withUnsafeMutableBufferPointer {
+                LLVMBuildInBoundsGEP2(
+                    builder, arrayType, biomeValueStorage, $0.baseAddress, UInt32($0.count), "biome.value.pointer"
+                )
+            }!
+            value = LLVMBuildLoad2(builder, int32Type, valuePointer, "biome.value")!
+        } else {
+            value = scalarValue
+        }
         var indices: [LLVMValueRef?] = [index]
         let outputPointer = indices.withUnsafeMutableBufferPointer {
             LLVMBuildInBoundsGEP2(builder, int32Type, outputBuffer, $0.baseAddress, UInt32($0.count), "output.pointer")
@@ -2275,13 +2939,17 @@ func compileDensityFunctionIRBulkWithLLVM(
             builder,
             LLVMIntULT,
             nextIndex,
-            context.int64Constant(UInt64(validated.sampleCount)),
+            rangeEnd,
             "loop.continue"
         )!
         LLVMBuildCondBr(builder, shouldContinue, loop, done)
-        var incomingValues: [LLVMValueRef?] = [context.int64Constant(0), nextIndex]
+        var incomingValues: [LLVMValueRef?] = [rangeStart, nextIndex]
         var incomingBlocks: [LLVMBasicBlockRef?] = [bulkEntry, loop]
         LLVMAddIncoming(index, &incomingValues, &incomingBlocks, 2)
+        if let previousNode {
+            var nodeIncomingValues: [LLVMValueRef?] = [context.int32Constant(-1), scalarValue]
+            LLVMAddIncoming(previousNode, &nodeIncomingValues, &incomingBlocks, 2)
+        }
 
         LLVMPositionBuilderAtEnd(builder, done)
         LLVMBuildRetVoid(builder)
@@ -2312,7 +2980,30 @@ func compileDensityFunctionIRBulkWithLLVM(
             prefix: "Failed to resolve compiled bulk IR function"
         )
         let native = unsafeBitCast(address, to: NativeCompiledDensityFunctionIRBulk.self)
-        return { baseX, baseY, baseZ, output in native(baseX, baseY, baseZ, output) }
+        return { baseX, baseY, baseZ, output in
+            let sampleCount = Int(validated.sampleCount)
+            let minimumSamplesPerTask = 2_048
+            let availableTasks = max(1, ProcessInfo.processInfo.activeProcessorCount)
+            let taskCount = min(availableTasks, max(1, sampleCount / minimumSamplesPerTask))
+            guard taskCount > 1 else {
+                native(baseX, baseY, baseZ, 0, Int64(sampleCount), output)
+                return
+            }
+
+            let outputAddress = UInt(bitPattern: output)
+            DispatchQueue.concurrentPerform(iterations: taskCount) { taskIndex in
+                let start = sampleCount * taskIndex / taskCount
+                let end = sampleCount * (taskIndex + 1) / taskCount
+                native(
+                    baseX,
+                    baseY,
+                    baseZ,
+                    Int64(start),
+                    Int64(end),
+                    UnsafeMutablePointer<Int32>(bitPattern: outputAddress)!
+                )
+            }
+        }
     }
 }
 
@@ -3445,32 +4136,23 @@ private func compileWorldScaleCache2DValue(
        bulkBufferContext.xStep == 1,
        bulkBufferContext.zStep == 1,
        let bulkCell = context.bulkGenerationCellState {
-        let width = bulkBufferContext.xCount
-        let depth = bulkBufferContext.zCount
-        let localColumnCount = Int(width * depth)
+        // Cell Z/X/Y traversal completes every Y cell before advancing to the next
+        // horizontal cell. Only the current cell's X/Z columns remain live.
+        let localColumnCount = Int(bulkCell.horizontalCount * bulkCell.horizontalCount)
         let storage = try context.bulkCoordinate2DCacheStorage(
             for: cacheIdentity,
             localColumnCount: localColumnCount,
             prefix: prefix
         )
-        let localXBase = LLVMBuildMul(
-            context.builder,
-            bulkCell.cellXIndex,
-            context.int32Constant(bulkCell.horizontalCount),
-            "\(prefix).local_x_base"
-        )!
-        let localX = LLVMBuildAdd(context.builder, localXBase, bulkCell.localXIndex, "\(prefix).local_x")!
-        let localZBase = LLVMBuildMul(
-            context.builder,
-            bulkCell.cellZIndex,
-            context.int32Constant(bulkCell.horizontalCount),
-            "\(prefix).local_z_base"
-        )!
-        let localZ = LLVMBuildAdd(context.builder, localZBase, bulkCell.localZIndex, "\(prefix).local_z")!
         let localColumnIndex = LLVMBuildAdd(
             context.builder,
-            LLVMBuildMul(context.builder, localZ, context.int32Constant(width), "\(prefix).local_z_scaled")!,
-            localX,
+            LLVMBuildMul(
+                context.builder,
+                bulkCell.localZIndex,
+                context.int32Constant(bulkCell.horizontalCount),
+                "\(prefix).local_z_scaled"
+            )!,
+            bulkCell.localXIndex,
             "\(prefix).local_column_index"
         )!
         let localValuePointer = context.buildArrayElementPointer(
@@ -3564,25 +4246,19 @@ private func compileWorldScaleFlatCacheValue(
        bulkBufferContext.xStep == 1,
        bulkBufferContext.zStep == 1,
        let bulkCell = context.bulkGenerationCellState {
-        let width = bulkBufferContext.xCount / bulkCell.horizontalCount
-        let depth = bulkBufferContext.zCount / bulkCell.horizontalCount
-        let localColumnCount = Int(width * depth)
+        // The traversal exhausts a horizontal generation cell before moving on, so
+        // a flat cache has a single live quart-column value.
+        let localColumnCount = 1
         let storage = try context.bulkCoordinate2DCacheStorage(
             for: cacheIdentity,
             localColumnCount: localColumnCount,
             prefix: prefix
         )
-        let localColumnIndex = LLVMBuildAdd(
-            context.builder,
-            LLVMBuildMul(context.builder, bulkCell.cellZIndex, context.int32Constant(width), "\(prefix).local_column_z_scaled")!,
-            bulkCell.cellXIndex,
-            "\(prefix).local_column_index"
-        )!
         let localValuePointer = context.buildArrayElementPointer(
             storage.localValues,
             elementType: context.doubleType,
             count: localColumnCount,
-            index: localColumnIndex,
+            index: context.int32Constant(0),
             name: "\(prefix).local_value_pointer"
         )
         let hasCachedCellValueZY = LLVMBuildOr(

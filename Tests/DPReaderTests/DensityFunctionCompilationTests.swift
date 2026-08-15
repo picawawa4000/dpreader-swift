@@ -372,8 +372,8 @@ private func assertCompiledBufferMatches(
     let program = try compile(densityFunction: densityFunction, cellSize: cellSize, cellVolume: cellVolume)
 
     #expect(program.cacheCount == 2)
-    #expect(program.cacheElementsPerCell == 64)
-    #expect(program.cacheValueCount == 128)
+    #expect(program.cacheElementsPerCell == 16)
+    #expect(program.cacheValueCount == 32)
     #expect(program.outputValueCount == 256)
 
     var cache = [Double](repeating: .nan, count: program.cacheValueCount)

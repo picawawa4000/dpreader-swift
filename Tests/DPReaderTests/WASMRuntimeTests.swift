@@ -458,18 +458,13 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
         }
     }
     #expect(previousScalarNoiseCallbacks > 0)
-    #expect(frontend.densityFunctions.count == 1)
-    #expect(frontend.densityFunctions.first is SplineDensityFunction)
-    let fallbackPosition = PosInt3D(x: 17, y: -23, z: 41)
-    let sampledPoint = generator.sampleNoisePoint(at: fallbackPosition)
-    #expect(sampledPoint.depth == router.depth.sample(at: fallbackPosition))
+    #expect(frontend.densityFunctions.isEmpty)
     let captured = runtime.snapshot
     #expect(captured.densityCount == 0)
     #expect(captured.climateModules.count == 1)
     let moduleData = Data(try #require(captured.climateModules.first))
     #expect(moduleData.range(of: Data("sample_noise".utf8)) == nil)
-    // Vanilla depth contains one float-precision spline. The wrapper evaluates that complete root in
-    // Swift after the WASM return, avoiding a nested callback without changing spline precision.
+    // Vanilla depth contains a float-precision spline, which is now emitted directly into WASM.
     #expect(moduleData.range(of: Data("sample_density".utf8)) == nil)
     #expect(moduleData.count < 100_000)
 
@@ -763,6 +758,11 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
         usingSettings: settings,
         compilationBackend: .wasm
     )
+    let referenceGenerator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: settings
+    )
     let sampler = try generator.makeClimateBiomeBulkSampler(
         for: volume,
         in: dimension
@@ -832,9 +832,9 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
                         y: basePosition.y + yOffset * volume.yStep,
                         z: basePosition.z + zOffset * volume.zStep
                     )
-                    let biome = try generator.sampleBiome(at: position, in: dimension)
+                    let biome = try referenceGenerator.sampleBiome(at: position, in: dimension)
                     samples.append(ClimateBiomeSample(
-                        climate: generator.sampleNoisePoint(at: position),
+                        climate: referenceGenerator.sampleNoisePoint(at: position),
                         biome: try #require(biome)
                     ))
                 }
@@ -877,6 +877,7 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     #endif
 
     try generator.setWorldSeed(50_123_537_021)
+    try referenceGenerator.setWorldSeed(50_123_537_021)
     let reseededSamples = sampler(at: basePosition)
     let reseededExpected = try expectedSamples()
     let reseededBiomeIDs = biomeIDSampler(at: basePosition)

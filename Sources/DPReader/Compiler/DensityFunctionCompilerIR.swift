@@ -19,6 +19,8 @@ enum DensityFunctionIRInstruction {
     case constant(Double)
     case constantInt32(Int32)
     case constantInt64(Int64)
+    case divideSignedInt32(Int, Int32)
+    case multiplyInt32(Int, Int32)
     case convertSignedIntToDouble(Int)
     case convertDoubleToSignedInt64(Int)
     case add(Int, Int)
@@ -31,6 +33,7 @@ enum DensityFunctionIRInstruction {
     case select(condition: Int, whenTrue: Int, whenFalse: Int)
     case sampleDensity(index: Int, x: Int, y: Int, z: Int)
     case sampleNoise(index: Int, x: Int, y: Int, z: Int)
+    case spline(coordinate: Int, locations: [Float], values: [Int], derivatives: [Float])
     case searchBiome(
         index: Int,
         point: [Int],
@@ -43,12 +46,12 @@ enum DensityFunctionIRInstruction {
         switch self {
         case .compare, .and:
             return .condition
-        case .constantInt32, .searchBiome:
+        case .constantInt32, .divideSignedInt32, .multiplyInt32, .searchBiome:
             return .i32
         case .constantInt64, .convertDoubleToSignedInt64:
             return .i64
         case .convertSignedIntToDouble, .constant, .add, .subtract, .multiply, .divide,
-             .negate, .select, .sampleDensity, .sampleNoise:
+             .negate, .select, .sampleDensity, .sampleNoise, .spline:
             return .f64
         }
     }
@@ -102,12 +105,24 @@ final class DensityFunctionIRProgram: @unchecked Sendable {
 }
 
 private final class DensityFunctionIRBuilder {
+    private struct CompiledValueKey: Hashable {
+        let identity: ObjectIdentifier
+        let x: Int
+        let y: Int
+        let z: Int
+    }
+
     private let registry: Registry<DensityFunction>
     private var instructions: [DensityFunctionIRInstruction] = []
     private var densityFunctions: [any DensityFunction] = []
     private var noises: [any DensityFunctionNoise] = []
-    private var compiledValues: [ObjectIdentifier: Int] = [:]
+    private var compiledValues: [CompiledValueKey: Int] = [:]
     private var referenceStack: [String] = []
+    private var coordinates = (
+        x: DensityFunctionIRProgram.xInput,
+        y: DensityFunctionIRProgram.yInput,
+        z: DensityFunctionIRProgram.zInput
+    )
 
     init(registry: Registry<DensityFunction>) {
         self.registry = registry
@@ -154,13 +169,18 @@ private final class DensityFunctionIRBuilder {
             return try self.compile(target)
         }
 
-        let identity = ObjectIdentifier(function as AnyObject)
-        if let existing = self.compiledValues[identity] {
+        let key = CompiledValueKey(
+            identity: ObjectIdentifier(function as AnyObject),
+            x: self.coordinates.x,
+            y: self.coordinates.y,
+            z: self.coordinates.z
+        )
+        if let existing = self.compiledValues[key] {
             return existing
         }
 
         let value = try self.compileUncached(function)
-        self.compiledValues[identity] = value
+        self.compiledValues[key] = value
         return value
     }
 
@@ -234,7 +254,7 @@ private final class DensityFunctionIRBuilder {
         }
         if let gradient = function as? YClampedGradient {
             let attributes = gradient.testingAttributes
-            let y = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.yInput))
+            let y = self.append(.convertSignedIntToDouble(self.coordinates.y))
             let fromY = self.constant(Double(attributes.fromY))
             let toY = self.constant(Double(attributes.toY))
             let delta = self.append(.divide(
@@ -267,9 +287,9 @@ private final class DensityFunctionIRBuilder {
             return self.append(.select(condition: inRange, whenTrue: whenInRange, whenFalse: whenOutOfRange))
         }
         if let noise = function as? NoiseDensityFunction {
-            let x = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.xInput))
-            let y = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.yInput))
-            let z = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.zInput))
+            let x = self.append(.convertSignedIntToDouble(self.coordinates.x))
+            let y = self.append(.convertSignedIntToDouble(self.coordinates.y))
+            let z = self.append(.convertSignedIntToDouble(self.coordinates.z))
             let sampleX = self.append(.multiply(x, self.constant(noise.xzScaleValue)))
             let sampleY = self.append(.multiply(y, self.constant(noise.yScaleValue)))
             let sampleZ = self.append(.multiply(z, self.constant(noise.xzScaleValue)))
@@ -279,9 +299,9 @@ private final class DensityFunctionIRBuilder {
         }
         if let shift = function as? ShiftDensityFunction {
             let attributes = shift.testingAttributes
-            let x = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.xInput))
-            let y = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.yInput))
-            let z = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.zInput))
+            let x = self.append(.convertSignedIntToDouble(self.coordinates.x))
+            let y = self.append(.convertSignedIntToDouble(self.coordinates.y))
+            let z = self.append(.convertSignedIntToDouble(self.coordinates.z))
             let quarter = self.constant(0.25)
             let zero = self.constant(0.0)
             let sampleX: Int
@@ -315,9 +335,9 @@ private final class DensityFunctionIRBuilder {
             let shiftX = try self.compile(shifted.shiftXFunction)
             let shiftY = try self.compile(shifted.shiftYFunction)
             let shiftZ = try self.compile(shifted.shiftZFunction)
-            let x = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.xInput))
-            let y = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.yInput))
-            let z = self.append(.convertSignedIntToDouble(DensityFunctionIRProgram.zInput))
+            let x = self.append(.convertSignedIntToDouble(self.coordinates.x))
+            let y = self.append(.convertSignedIntToDouble(self.coordinates.y))
+            let z = self.append(.convertSignedIntToDouble(self.coordinates.z))
             let sampleX = self.append(.add(
                 self.append(.multiply(x, self.constant(shifted.xzScaleValue))),
                 shiftX
@@ -334,6 +354,9 @@ private final class DensityFunctionIRBuilder {
             self.noises.append(shifted.noiseSampler)
             return self.append(.sampleNoise(index: noiseIndex, x: sampleX, y: sampleY, z: sampleZ))
         }
+        if let spline = function as? SplineDensityFunction {
+            return try self.compileSpline(spline.splineSegment)
+        }
         if function is BlendAlpha {
             return self.constant(1.0)
         }
@@ -346,6 +369,18 @@ private final class DensityFunctionIRBuilder {
         if let marker = function as? CacheMarker {
             return try self.compile(marker.argument)
         }
+        if let wrapper = function as? WorldScaleFlatCache {
+            return try self.compileFlatCacheDelegate(wrapper.wrappedDensityFunction)
+        }
+        if let wrapper = function as? ChunkFlatCache {
+            return try self.compileFlatCacheDelegate(wrapper.wrappedDensityFunction)
+        }
+        if let wrapper = function as? WorldScaleCache2D {
+            return try self.compile(wrapper.wrappedDensityFunction)
+        }
+        if let wrapper = function as? ChunkCache2D {
+            return try self.compile(wrapper.wrappedDensityFunction)
+        }
         if let wrapper = function as? ChunkPositionCache {
             return try self.compile(wrapper.wrappedDensityFunction)
         }
@@ -354,10 +389,47 @@ private final class DensityFunctionIRBuilder {
         self.densityFunctions.append(function)
         return self.append(.sampleDensity(
             index: functionIndex,
-            x: DensityFunctionIRProgram.xInput,
-            y: DensityFunctionIRProgram.yInput,
-            z: DensityFunctionIRProgram.zInput
+            x: self.coordinates.x,
+            y: self.coordinates.y,
+            z: self.coordinates.z
         ))
+    }
+
+    private func compileFlatCacheDelegate(_ delegate: any DensityFunction) throws -> Int {
+        let previous = self.coordinates
+        let columnX = self.append(.divideSignedInt32(previous.x, 4))
+        let columnZ = self.append(.divideSignedInt32(previous.z, 4))
+        self.coordinates = (
+            x: self.append(.multiplyInt32(columnX, 4)),
+            y: self.append(.constantInt32(0)),
+            z: self.append(.multiplyInt32(columnZ, 4))
+        )
+        defer { self.coordinates = previous }
+        return try self.compile(delegate)
+    }
+
+    private func compileSpline(_ segment: SplineSegment) throws -> Int {
+        switch segment {
+        case .number(let value):
+            return self.constant(Double(value))
+        case .object(let object):
+            let locations = object.pointLocations
+            let derivatives = object.pointDerivatives
+            guard !locations.isEmpty,
+                  locations.count == object.pointValues.count,
+                  locations.count == derivatives.count
+            else {
+                throw DensityFunctionCompilationError.badDensityFunction("Spline point arrays are empty or mismatched.")
+            }
+            let coordinate = try self.compile(object.inputFunction)
+            let values = try object.pointValues.map { try self.compileSpline($0) }
+            return self.append(.spline(
+                coordinate: coordinate,
+                locations: locations,
+                values: values,
+                derivatives: derivatives
+            ))
+        }
     }
 }
 
@@ -413,6 +485,8 @@ private func evaluateDensityFunctionIR(
         case .constant(let value): result = .f64(value)
         case .constantInt32(let value): result = .i32(value)
         case .constantInt64(let value): result = .i64(value)
+        case .divideSignedInt32(let input, let divisor): result = .i32(int(input) / divisor)
+        case .multiplyInt32(let input, let multiplier): result = .i32(int(input) &* multiplier)
         case .convertSignedIntToDouble(let input): result = .f64(Double(int(input)))
         case .convertDoubleToSignedInt64(let input): result = .i64(Int64(double(input)))
         case .add(let lhs, let rhs): result = .f64(double(lhs) + double(rhs))
@@ -446,6 +520,35 @@ private func evaluateDensityFunctionIR(
                 y: double(sampleY),
                 z: double(sampleZ)
             ))
+        case .spline(let coordinate, let locations, let pointValues, let derivatives):
+            let point = Float(double(coordinate))
+            let values = pointValues.map { Float(double($0)) }
+            let last = locations.count - 1
+            var low = 0
+            var high = locations.count
+            while low < high {
+                let middle = (low + high) / 2
+                if locations[middle] < point { low = middle + 1 } else { high = middle }
+            }
+            let lowerBound = low - 1
+            let splineValue: Float
+            if lowerBound < 0 || lowerBound == last {
+                let index = lowerBound < 0 ? 0 : last
+                let derivative = derivatives[index]
+                splineValue = derivative == 0
+                    ? values[index]
+                    : values[index] + derivative * (point - locations[index])
+            } else {
+                let width = locations[lowerBound + 1] - locations[lowerBound]
+                let delta = (point - locations[lowerBound]) / width
+                let valueDelta = values[lowerBound + 1] - values[lowerBound]
+                let p = derivatives[lowerBound] * width - valueDelta
+                let q = -derivatives[lowerBound + 1] * width + valueDelta
+                let value = values[lowerBound] + delta * valueDelta
+                let tangent = p + delta * (q - p)
+                splineValue = value + delta * (1 - delta) * tangent
+            }
+            result = .f64(Double(splineValue))
         case .searchBiome(let index, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
             precondition(point.count == 7, "Biome search IR requires seven parameters.")
             result = .i32(program.biomeSearchTrees[index].search(

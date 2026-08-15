@@ -79,7 +79,8 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
         precondition(floorMod(baseX, horizontal) == 0 && floorMod(baseY, vertical) == 0 && floorMod(baseZ, horizontal) == 0,
             "Bulk density evaluation base position must be aligned to the compiled cell size.")
 
-        let requiredCacheValues = self.caches.count * self.cellSize.blockCount
+        let cacheElementsPerCell = Int(horizontal * horizontal)
+        let requiredCacheValues = self.caches.count * cacheElementsPerCell
         let externalContext: CompiledDensityFunctionBulkEvaluationContext? = if self.useExternalCacheStorage {
             runtimeContextPointer?.assumingMemoryBound(to: CompiledDensityFunctionBulkEvaluationContext.self).pointee
         } else {
@@ -125,7 +126,7 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                         registry: self.registry,
                         cacheIDs: self.cacheIDs,
                         cachePointer: cachePointer,
-                        cacheElementsPerCell: self.cellSize.blockCount,
+                        cacheElementsPerCell: cacheElementsPerCell,
                         cellSize: self.cellSize,
                         columnBaseX: columnBaseX,
                         columnBaseZ: columnBaseZ,
@@ -195,12 +196,11 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
             return
         }
         let horizontal = Int(self.cellSize.horizontalBlockCount)
-        let vertical = Int(self.cellSize.verticalBlockCount)
         var evaluator = BulkDensityBufferEvaluator(
             registry: self.registry,
             cacheIDs: self.cacheIDs,
             cachePointer: cachePointer,
-            cacheElementsPerCell: self.cellSize.blockCount,
+            cacheElementsPerCell: horizontal * horizontal,
             cellSize: self.cellSize,
             columnBaseX: columnBaseX,
             columnBaseZ: columnBaseZ,
@@ -230,12 +230,11 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                 }
             }
             let values = evaluator.evaluate(cache.delegate, at: positions)
-            let cacheBase = cache.id * self.cellSize.blockCount
+            let cacheBase = cache.id * horizontal * horizontal
             for localZ in 0..<horizontal {
                 for localX in 0..<horizontal {
                     let value = values[localZ * horizontal + localX]
-                    let blockBase = cacheBase + (localZ * horizontal + localX) * vertical
-                    cachePointer.advanced(by: blockBase).update(repeating: value, count: vertical)
+                    cachePointer[cacheBase + localZ * horizontal + localX] = value
                 }
             }
         }
@@ -299,7 +298,7 @@ private final class CellBufferedDensityFunctionPlan: BufferedDensityFunctionRunt
                         registry: self.registry,
                         cacheIDs: [:],
                         cachePointer: nil,
-                        cacheElementsPerCell: self.cellSize.blockCount,
+                        cacheElementsPerCell: Int(horizontal * horizontal),
                         cellSize: self.cellSize,
                         columnBaseX: baseX,
                         columnBaseZ: baseZ,
@@ -653,9 +652,8 @@ private struct BulkDensityBufferEvaluator {
                 }
                 return positions.map { position in
                     let localX = Int(floorMod(position.x - self.columnBaseX, self.cellSize.horizontalBlockCount))
-                    let localY = Int(floorMod(position.y - self.volumeBaseY, self.cellSize.verticalBlockCount))
                     let localZ = Int(floorMod(position.z - self.columnBaseZ, self.cellSize.horizontalBlockCount))
-                    return cachePointer[id * self.cacheElementsPerCell + (localZ * Int(self.cellSize.horizontalBlockCount) + localX) * Int(self.cellSize.verticalBlockCount) + localY]
+                    return cachePointer[id * self.cacheElementsPerCell + localZ * Int(self.cellSize.horizontalBlockCount) + localX]
                 }
             case .interpolatorCorners(let baseY):
                 let adjusted = positions.map { position in
@@ -886,7 +884,7 @@ private struct BulkDensityBufferEvaluator {
     private func isCanonicalColumn(_ positions: [PosInt3D]) -> Bool {
         let horizontal = self.cellSize.horizontalBlockCount
         let vertical = self.cellSize.verticalBlockCount
-        let expectedCount = Int(self.cellVolume.yCount) * self.cacheElementsPerCell
+        let expectedCount = Int(self.cellVolume.yCount) * self.cellSize.blockCount
         guard positions.count == expectedCount, let first = positions.first, let last = positions.last else {
             return false
         }
@@ -909,14 +907,22 @@ private struct BulkDensityBufferEvaluator {
         id: Int,
         cachePointer: UnsafeMutablePointer<Double>
     ) -> [Double] {
-        let cellValueCount = self.cacheElementsPerCell
-        let cacheBase = id * cellValueCount
-        let outputCount = Int(self.cellVolume.yCount) * cellValueCount
+        let horizontal = Int(self.cellSize.horizontalBlockCount)
+        let vertical = Int(self.cellSize.verticalBlockCount)
+        let outputCellValueCount = self.cellSize.blockCount
+        let cacheBase = id * self.cacheElementsPerCell
+        let outputCount = Int(self.cellVolume.yCount) * outputCellValueCount
         return Array(unsafeUninitializedCapacity: outputCount) { output, initializedCount in
-            let source = UnsafePointer(cachePointer.advanced(by: cacheBase))
             for cellY in 0..<Int(self.cellVolume.yCount) {
-                output.baseAddress!.advanced(by: cellY * cellValueCount).initialize(from: source, count: cellValueCount)
-                initializedCount += cellValueCount
+                let cellBase = cellY * outputCellValueCount
+                for localZ in 0..<horizontal {
+                    for localX in 0..<horizontal {
+                        let value = cachePointer[cacheBase + localZ * horizontal + localX]
+                        let valueBase = cellBase + (localZ * horizontal + localX) * vertical
+                        output.baseAddress!.advanced(by: valueBase).initialize(repeating: value, count: vertical)
+                    }
+                }
+                initializedCount += outputCellValueCount
             }
             if outputCount == 0 {
                 initializedCount = 0
@@ -932,7 +938,7 @@ private struct BulkDensityBufferEvaluator {
         let yCornerCount = yCellCount + 1
         let cellX = Int((self.columnBaseX - self.volumeBaseX) / self.cellSize.horizontalBlockCount)
         let cellZ = Int((self.columnBaseZ - self.volumeBaseZ) / self.cellSize.horizontalBlockCount)
-        let cellValueCount = self.cacheElementsPerCell
+        let cellValueCount = self.cellSize.blockCount
         let horizontalDeltaScale = 1.0 / Double(horizontal)
         let verticalDeltaScale = 1.0 / Double(vertical)
         let outputCount = yCellCount * cellValueCount

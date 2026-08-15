@@ -438,6 +438,7 @@ public func compile(
     biomeSearchTree: BiomeSearchTree,
     bufferContext: CompiledDensityFunctionBufferContext,
     strategy: CompilationBackend = .llvm,
+    useAlternativeNode: Bool = false,
     registry: Registry<DensityFunction> = Registry(),
     runtime: (any WASMRuntime)? = nil
 ) throws -> CompiledNoiseRouterBiomeBulkSampler {
@@ -464,7 +465,8 @@ public func compile(
         let implementation = try compileDensityFunctionIRBulkWithLLVM(
             program,
             bufferContext: bufferContext,
-            registry: registry
+            registry: registry,
+            useAlternativeNode: useAlternativeNode
         )
         return CompiledNoiseRouterBiomeBulkSampler(
             strategy: .llvm,
@@ -476,7 +478,11 @@ public func compile(
         throw DensityFunctionCompilationError.unsupportedCompilationStrategy(.llvm)
         #endif
     case .wasm:
-        let module = try buildDensityFunctionWASMModule(program, bulkContext: bufferContext)
+        let module = try buildDensityFunctionWASMModule(
+            program,
+            bulkContext: bufferContext,
+            useBiomeSearchAlternative: useAlternativeNode
+        )
         let implementation: WASMBiomeIDBulkInvocation
         if let runtime {
             let imports = WASMDensityFunctionImports(

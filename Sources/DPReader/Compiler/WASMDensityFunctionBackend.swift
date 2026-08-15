@@ -118,6 +118,12 @@ private func appendDoubleConstant(_ value: Double, to encoder: inout WASMEncoder
     withUnsafeBytes(of: &bits) { encoder.append(contentsOf: Array($0)) }
 }
 
+private func appendFloatConstant(_ value: Float, to encoder: inout WASMEncoder) {
+    encoder.append(0x43)
+    var bits = value.bitPattern.littleEndian
+    withUnsafeBytes(of: &bits) { encoder.append(contentsOf: Array($0)) }
+}
+
 private func appendIntConstant(_ value: Int32, to encoder: inout WASMEncoder) {
     encoder.append(0x41)
     encoder.appendSigned(value)
@@ -137,6 +143,9 @@ private struct WASMBiomeTreeLayout {
 
 private struct WASMEmbeddedOctaveLayout {
     let permutationOffset: Int
+    let originX: Double
+    let originY: Double
+    let originZ: Double
     let amplitude: Double
     let lacunarity: Double
 }
@@ -151,11 +160,7 @@ private func appendEmbeddedPerlin(
     _ snapshot: WASMPerlinNoiseSnapshot,
     to data: inout WASMEncoder
 ) -> Int {
-    while data.bytes.count % 8 != 0 { data.append(0) }
     let offset = data.bytes.count
-    data.appendFixed(snapshot.originX)
-    data.appendFixed(snapshot.originY)
-    data.appendFixed(snapshot.originZ)
     data.append(contentsOf: snapshot.permutation)
     return offset
 }
@@ -171,6 +176,9 @@ private func appendEmbeddedNoise(
         snapshots.map {
             WASMEmbeddedOctaveLayout(
                 permutationOffset: appendEmbeddedPerlin($0.noise, to: &data),
+                originX: $0.noise.originX,
+                originY: $0.noise.originY,
+                originZ: $0.noise.originZ,
                 amplitude: $0.amplitude,
                 lacunarity: $0.lacunarity
             )
@@ -181,6 +189,20 @@ private func appendEmbeddedNoise(
         secondOctaves: appendOctaves(snapshot.secondOctaves, to: &data),
         amplitude: snapshot.amplitude
     )
+}
+
+private func appendPerlinGradientTable(to data: inout WASMEncoder) -> Int {
+    while data.bytes.count % MemoryLayout<Double>.alignment != 0 { data.append(0) }
+    let offset = data.bytes.count
+    for hash in 0..<16 {
+        var coefficients = [Double](repeating: 0, count: 3)
+        let uAxis = hash < 8 ? 0 : 1
+        let vAxis = hash < 4 ? 1 : ((hash == 12 || hash == 14) ? 0 : 2)
+        coefficients[uAxis] += hash & 1 == 0 ? 1 : -1
+        coefficients[vAxis] += hash & 2 == 0 ? 1 : -1
+        for coefficient in coefficients { data.appendFixed(coefficient) }
+    }
+    return offset
 }
 
 private func appendDoubleLoad(offset: Int, to body: inout WASMEncoder) {
@@ -232,7 +254,8 @@ private func supportsWASMPairedSIMD(_ program: DensityFunctionIRProgram) -> Bool
             continue
         case .sampleDensity(_, let x, let y, let z):
             guard x < 3, y < 3, z < 3 else { return false }
-        case .constantInt32, .constantInt64, .convertDoubleToSignedInt64, .searchBiome:
+        case .constantInt32, .constantInt64, .divideSignedInt32, .multiplyInt32,
+             .convertDoubleToSignedInt64, .spline, .searchBiome:
             return false
         }
     }
@@ -373,6 +396,7 @@ private func appendBiomeSearchFromMemory(
     point: [Int],
     initialBestDistance: Int?,
     initialBestNode: Int?,
+    alternativeNodeOffset: Int?,
     returnNodeIndex: Bool,
     resultLocal: Int,
     bestDistanceLocal: Int,
@@ -392,16 +416,62 @@ private func appendBiomeSearchFromMemory(
         return
     }
 
-    if let initialBestDistance, let initialBestNode {
+    if let alternativeNodeOffset, initialBestDistance == nil, initialBestNode == nil {
+        appendIntConstant(Int32(alternativeNodeOffset), to: &body)
+        appendInt32Load(offset: 0, to: &body)
+        body.append(0x22) // local.tee
+        body.appendUnsigned(nodeIndexLocal)
+        appendIntConstant(0, to: &body)
+        body.append(0x4e) // i32.ge_s
+        body.append(0x04) // if cached leaf
+        body.append(0x40)
+
+        appendLocalGet(nodeIndexLocal, to: &body)
+        appendIntConstant(7, to: &body)
+        body.append(0x74) // i32.shl (128-byte node stride)
+        appendIntConstant(Int32(layout.nodeBaseOffset), to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalSet(nodeAddressLocal, to: &body)
+        appendInt64Constant(0, to: &body)
+        appendLocalSet(candidateDistanceLocal, to: &body)
+        for dimension in [2, 3, 5, 4, 0, 1, 6] {
+            appendBiomeSquaredDistanceDimensionFromMemory(
+                dimension: dimension,
+                point: point,
+                nodeAddressLocal: nodeAddressLocal,
+                accumulatorLocal: candidateDistanceLocal,
+                deltaLocal: deltaLocal,
+                minimumLocal: minimumLocal,
+                maximumLocal: maximumLocal,
+                to: &body
+            )
+        }
+        appendLocalGet(candidateDistanceLocal, to: &body)
+        appendLocalSet(bestDistanceLocal, to: &body)
+        if returnNodeIndex {
+            appendLocalGet(nodeIndexLocal, to: &body)
+        } else {
+            appendLocalGet(nodeAddressLocal, to: &body)
+            appendInt32Load(offset: 0, to: &body)
+        }
+        appendLocalSet(resultLocal, to: &body)
+        body.append(0x05) // else no cached leaf
+        appendInt64Constant(Int64.max, to: &body)
+        appendLocalSet(bestDistanceLocal, to: &body)
+        appendIntConstant(-1, to: &body)
+        appendLocalSet(resultLocal, to: &body)
+        body.append(0x0b)
+    } else if let initialBestDistance, let initialBestNode {
         appendLocalGet(initialBestDistance, to: &body)
+        appendLocalSet(bestDistanceLocal, to: &body)
         appendLocalGet(initialBestNode, to: &body)
         appendLocalSet(resultLocal, to: &body)
     } else {
         appendInt64Constant(Int64.max, to: &body)
+        appendLocalSet(bestDistanceLocal, to: &body)
         appendIntConstant(-1, to: &body)
         appendLocalSet(resultLocal, to: &body)
     }
-    appendLocalSet(bestDistanceLocal, to: &body)
     appendIntConstant(0, to: &body)
     appendLocalSet(stackCountLocal, to: &body)
 
@@ -474,6 +544,11 @@ private func appendBiomeSearchFromMemory(
     appendLocalSet(bestDistanceLocal, to: &body)
     appendLocalGet(returnNodeIndex ? nodeIndexLocal : childIndexLocal, to: &body)
     appendLocalSet(resultLocal, to: &body)
+    if let alternativeNodeOffset {
+        appendIntConstant(Int32(alternativeNodeOffset), to: &body)
+        appendLocalGet(nodeIndexLocal, to: &body)
+        appendInt32Store(to: &body)
+    }
     appendLocalGet(candidateDistanceLocal, to: &body)
     body.append(0x50) // i64.eqz
     body.append(0x04) // if exact match
@@ -534,126 +609,8 @@ private func appendCall(_ functionIndex: Int, to body: inout WASMEncoder) {
     body.appendUnsigned(functionIndex)
 }
 
-private func makeWASMMapFunctionBody() -> [UInt8] {
-    var body = WASMEncoder()
-    body.appendUnsigned(0)
-    appendLocalGet(0, to: &body)
-    appendIntConstant(24, to: &body)
-    body.append(0x6a) // i32.add
-    appendLocalGet(1, to: &body)
-    appendIntConstant(255, to: &body)
-    body.append(0x71) // i32.and
-    body.append(0x6a) // i32.add
-    body.append(0x2d) // i32.load8_u
-    body.appendUnsigned(0)
-    body.appendUnsigned(0)
-    body.append(0x0b)
-    return body.bytes
-}
-
-private func makeWASMGradientFunctionBody() -> [UInt8] {
-    // (hash: i32, x: f64, y: f64, z: f64) -> f64
-    var body = WASMEncoder()
-    body.appendUnsigned(2)
-    body.appendUnsigned(1)
-    body.append(WASMValueType.i32.rawValue)
-    body.appendUnsigned(2)
-    body.append(WASMValueType.f64.rawValue)
-
-    appendLocalGet(0, to: &body)
-    appendIntConstant(15, to: &body)
-    body.append(0x71) // i32.and
-    appendLocalSet(4, to: &body)
-
-    appendLocalGet(1, to: &body)
-    appendLocalGet(2, to: &body)
-    appendLocalGet(4, to: &body)
-    appendIntConstant(8, to: &body)
-    body.append(0x49) // i32.lt_u
-    body.append(0x1b) // select
-    appendLocalSet(5, to: &body)
-
-    appendLocalGet(2, to: &body)
-    appendLocalGet(1, to: &body)
-    appendLocalGet(3, to: &body)
-    appendLocalGet(4, to: &body)
-    appendIntConstant(12, to: &body)
-    body.append(0x46) // i32.eq
-    appendLocalGet(4, to: &body)
-    appendIntConstant(14, to: &body)
-    body.append(0x46) // i32.eq
-    body.append(0x72) // i32.or
-    body.append(0x1b) // select x/z
-    appendLocalGet(4, to: &body)
-    appendIntConstant(4, to: &body)
-    body.append(0x49) // i32.lt_u
-    body.append(0x1b) // select y/(x or z)
-    appendLocalSet(6, to: &body)
-
-    appendLocalGet(5, to: &body)
-    appendLocalGet(5, to: &body)
-    body.append(0x9a) // f64.neg
-    appendLocalGet(4, to: &body)
-    appendIntConstant(1, to: &body)
-    body.append(0x71) // i32.and
-    body.append(0x45) // i32.eqz
-    body.append(0x1b) // select
-    appendLocalGet(6, to: &body)
-    appendLocalGet(6, to: &body)
-    body.append(0x9a) // f64.neg
-    appendLocalGet(4, to: &body)
-    appendIntConstant(2, to: &body)
-    body.append(0x71) // i32.and
-    body.append(0x45) // i32.eqz
-    body.append(0x1b) // select
-    body.append(0xa0) // f64.add
-    body.append(0x0b)
-    return body.bytes
-}
-
-private func makeWASMFadeFunctionBody() -> [UInt8] {
-    var body = WASMEncoder()
-    body.appendUnsigned(0)
-    appendLocalGet(0, to: &body)
-    appendLocalGet(0, to: &body)
-    body.append(0xa2) // f64.mul
-    appendLocalGet(0, to: &body)
-    body.append(0xa2) // f64.mul
-    appendLocalGet(0, to: &body)
-    appendLocalGet(0, to: &body)
-    appendDoubleConstant(6.0, to: &body)
-    body.append(0xa2) // f64.mul
-    appendDoubleConstant(15.0, to: &body)
-    body.append(0xa1) // f64.sub
-    body.append(0xa2) // f64.mul
-    appendDoubleConstant(10.0, to: &body)
-    body.append(0xa0) // f64.add
-    body.append(0xa2) // f64.mul
-    body.append(0x0b)
-    return body.bytes
-}
-
-private func makeWASMLerpFunctionBody() -> [UInt8] {
-    var body = WASMEncoder()
-    body.appendUnsigned(0)
-    appendLocalGet(1, to: &body)
-    appendLocalGet(0, to: &body)
-    appendLocalGet(2, to: &body)
-    appendLocalGet(1, to: &body)
-    body.append(0xa1) // f64.sub
-    body.append(0xa2) // f64.mul
-    body.append(0xa0) // f64.add
-    body.append(0x0b)
-    return body.bytes
-}
-
-private func makeWASMPerlinFunctionBody(
-    mapFunctionIndex: Int,
-    gradientFunctionIndex: Int,
-    fadeFunctionIndex: Int,
-    lerpFunctionIndex: Int
-) -> [UInt8] {
-    // Parameters: data base, x, y, z. The data starts with three f64 origins followed by 256 bytes.
+private func makeWASMPerlinFunctionBody(gradientTableOffset: Int) -> [UInt8] {
+    // Parameters: permutation-table base, x, y, z.
     var body = WASMEncoder()
     body.appendUnsigned(5)
     body.appendUnsigned(3)
@@ -667,11 +624,8 @@ private func makeWASMPerlinFunctionBody(
     body.appendUnsigned(11)
     body.append(WASMValueType.f64.rawValue) // gradients/fades: 19...29
 
-    for (input, originOffset, destination) in [(1, 0, 4), (2, 8, 5), (3, 16, 6)] {
+    for (input, destination) in [(1, 4), (2, 5), (3, 6)] {
         appendLocalGet(input, to: &body)
-        appendLocalGet(0, to: &body)
-        appendDoubleLoad(offset: originOffset, to: &body)
-        body.append(0xa0) // f64.add
         appendLocalSet(destination, to: &body)
     }
     for (sample, section, local) in [(4, 7, 10), (5, 8, 11), (6, 9, 12)] {
@@ -680,54 +634,112 @@ private func makeWASMPerlinFunctionBody(
         body.append(0xaa) // i32.trunc_f64_s
         appendLocalSet(section, to: &body)
         appendLocalGet(sample, to: &body)
-        appendLocalGet(sample, to: &body)
-        body.append(0x9c) // f64.floor
+        appendLocalGet(section, to: &body)
+        body.append(0xb7) // f64.convert_i32_s; section is the exact floored value
         body.append(0xa1) // f64.sub
         appendLocalSet(local, to: &body)
     }
-
-    func appendMap(_ input: () -> Void, destination: Int) {
+    func appendMap(_ input: () -> Void) {
         appendLocalGet(0, to: &body)
         input()
-        appendCall(mapFunctionIndex, to: &body)
+        appendIntConstant(255, to: &body)
+        body.append(0x71) // i32.and
+        body.append(0x6a) // i32.add
+        body.append(0x2d) // i32.load8_u
+        body.appendUnsigned(0)
+        body.appendUnsigned(0)
+    }
+    func appendMapped(_ input: () -> Void, destination: Int) {
+        appendMap(input)
         appendLocalSet(destination, to: &body)
     }
-    appendMap({ appendLocalGet(7, to: &body) }, destination: 13)
-    appendMap({ appendLocalGet(7, to: &body); appendIntConstant(1, to: &body); body.append(0x6a) }, destination: 14)
-    appendMap({ appendLocalGet(13, to: &body); appendLocalGet(8, to: &body); body.append(0x6a) }, destination: 15)
-    appendMap({ appendLocalGet(13, to: &body); appendLocalGet(8, to: &body); body.append(0x6a); appendIntConstant(1, to: &body); body.append(0x6a) }, destination: 16)
-    appendMap({ appendLocalGet(14, to: &body); appendLocalGet(8, to: &body); body.append(0x6a) }, destination: 17)
-    appendMap({ appendLocalGet(14, to: &body); appendLocalGet(8, to: &body); body.append(0x6a); appendIntConstant(1, to: &body); body.append(0x6a) }, destination: 18)
+    appendMapped({ appendLocalGet(7, to: &body) }, destination: 13)
+    appendMapped({ appendLocalGet(7, to: &body); appendIntConstant(1, to: &body); body.append(0x6a) }, destination: 14)
+    appendMapped({ appendLocalGet(13, to: &body); appendLocalGet(8, to: &body); body.append(0x6a) }, destination: 15)
+    appendMapped({ appendLocalGet(13, to: &body); appendLocalGet(8, to: &body); body.append(0x6a); appendIntConstant(1, to: &body); body.append(0x6a) }, destination: 16)
+    appendMapped({ appendLocalGet(14, to: &body); appendLocalGet(8, to: &body); body.append(0x6a) }, destination: 17)
+    appendMapped({ appendLocalGet(14, to: &body); appendLocalGet(8, to: &body); body.append(0x6a); appendIntConstant(1, to: &body); body.append(0x6a) }, destination: 18)
+
+    func appendGradient(xOffset: Double, yOffset: Double, zOffset: Double) {
+        func appendCoordinate(_ local: Int, offset: Double) {
+            appendLocalGet(local, to: &body)
+            if offset != 0 {
+                appendDoubleConstant(offset, to: &body)
+                body.append(0xa0) // f64.add
+            }
+        }
+        // Reuse permutation locals after all XY intermediates have been materialised.
+        appendLocalSet(13, to: &body)
+        appendLocalGet(13, to: &body)
+        appendIntConstant(15, to: &body)
+        body.append(0x71) // i32.and
+        appendIntConstant(24, to: &body)
+        body.append(0x6c) // i32.mul; three f64 coefficients per hash
+        appendIntConstant(Int32(gradientTableOffset), to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalSet(14, to: &body)
+
+        appendLocalGet(14, to: &body)
+        appendDoubleLoad(offset: 0, to: &body)
+        appendCoordinate(10, offset: xOffset)
+        body.append(0xa2) // f64.mul
+        appendLocalGet(14, to: &body)
+        appendDoubleLoad(offset: 8, to: &body)
+        appendCoordinate(11, offset: yOffset)
+        body.append(0xa2) // f64.mul
+        body.append(0xa0) // f64.add
+        appendLocalGet(14, to: &body)
+        appendDoubleLoad(offset: 16, to: &body)
+        appendCoordinate(12, offset: zOffset)
+        body.append(0xa2) // f64.mul
+        body.append(0xa0) // f64.add
+    }
 
     let corners: [(xy: Int, zOffset: Int, xOffset: Double, yOffset: Double, zDelta: Double)] = [
         (15, 0, 0, 0, 0), (17, 0, -1, 0, 0), (16, 0, 0, -1, 0), (18, 0, -1, -1, 0),
         (15, 1, 0, 0, -1), (17, 1, -1, 0, -1), (16, 1, 0, -1, -1), (18, 1, -1, -1, -1)
     ]
     for (cornerIndex, corner) in corners.enumerated() {
-        appendLocalGet(0, to: &body)
-        appendLocalGet(corner.xy, to: &body)
-        appendLocalGet(9, to: &body)
-        body.append(0x6a) // i32.add
-        if corner.zOffset != 0 { appendIntConstant(Int32(corner.zOffset), to: &body); body.append(0x6a) }
-        appendCall(mapFunctionIndex, to: &body)
-        for (coordinate, offset) in [(10, corner.xOffset), (11, corner.yOffset), (12, corner.zDelta)] {
-            appendLocalGet(coordinate, to: &body)
-            if offset != 0 { appendDoubleConstant(offset, to: &body); body.append(0xa0) }
+        appendMap {
+            appendLocalGet(corner.xy, to: &body)
+            appendLocalGet(9, to: &body)
+            body.append(0x6a) // i32.add
+            if corner.zOffset != 0 { appendIntConstant(Int32(corner.zOffset), to: &body); body.append(0x6a) }
         }
-        appendCall(gradientFunctionIndex, to: &body)
+        appendGradient(
+            xOffset: corner.xOffset,
+            yOffset: corner.yOffset,
+            zOffset: corner.zDelta
+        )
         appendLocalSet(19 + cornerIndex, to: &body)
     }
     for (coordinate, destination) in [(10, 27), (11, 28), (12, 29)] {
         appendLocalGet(coordinate, to: &body)
-        appendCall(fadeFunctionIndex, to: &body)
+        appendLocalGet(coordinate, to: &body)
+        body.append(0xa2) // f64.mul
+        appendLocalGet(coordinate, to: &body)
+        body.append(0xa2) // f64.mul
+        appendLocalGet(coordinate, to: &body)
+        appendLocalGet(coordinate, to: &body)
+        appendDoubleConstant(6.0, to: &body)
+        body.append(0xa2) // f64.mul
+        appendDoubleConstant(15.0, to: &body)
+        body.append(0xa1) // f64.sub
+        body.append(0xa2) // f64.mul
+        appendDoubleConstant(10.0, to: &body)
+        body.append(0xa0) // f64.add
+        body.append(0xa2) // f64.mul
         appendLocalSet(destination, to: &body)
     }
 
     func appendLerp(_ delta: Int, _ start: Int, _ end: Int, destination: Int) {
-        appendLocalGet(delta, to: &body)
         appendLocalGet(start, to: &body)
+        appendLocalGet(delta, to: &body)
         appendLocalGet(end, to: &body)
-        appendCall(lerpFunctionIndex, to: &body)
+        appendLocalGet(start, to: &body)
+        body.append(0xa1) // f64.sub
+        body.append(0xa2) // f64.mul
+        body.append(0xa0) // f64.add
         appendLocalSet(destination, to: &body)
     }
     appendLerp(27, 19, 20, destination: 19)
@@ -736,10 +748,13 @@ private func makeWASMPerlinFunctionBody(
     appendLerp(27, 23, 24, destination: 20)
     appendLerp(27, 25, 26, destination: 21)
     appendLerp(28, 20, 21, destination: 20)
-    appendLocalGet(29, to: &body)
     appendLocalGet(19, to: &body)
+    appendLocalGet(29, to: &body)
     appendLocalGet(20, to: &body)
-    appendCall(lerpFunctionIndex, to: &body)
+    appendLocalGet(19, to: &body)
+    body.append(0xa1) // f64.sub
+    body.append(0xa2) // f64.mul
+    body.append(0xa0) // f64.add
     body.append(0x0b)
     return body.bytes
 }
@@ -757,10 +772,15 @@ private func appendEmbeddedNoiseSample(
         for octave in octaves {
             appendDoubleConstant(octave.amplitude, to: &body)
             appendIntConstant(Int32(octave.permutationOffset), to: &body)
-            for coordinate in [x, y, z] {
+            for (coordinate, origin) in zip(
+                [x, y, z],
+                [octave.originX, octave.originY, octave.originZ]
+            ) {
                 appendLocalGet(coordinate, to: &body)
                 appendDoubleConstant(octave.lacunarity * coordinateMultiplier, to: &body)
                 body.append(0xa2) // f64.mul
+                appendDoubleConstant(origin, to: &body)
+                body.append(0xa0) // f64.add
             }
             appendCall(perlinFunctionIndex, to: &body)
             body.append(0xa2) // f64.mul amplitude
@@ -899,7 +919,8 @@ private func makeWASMPairedSIMDFunctionBody(
                 appendCall(noiseSamplerFunctionIndex!, to: &body)
             }
             appendDoubleReplaceLane(1, to: &body)
-        case .constantInt32, .constantInt64, .convertDoubleToSignedInt64, .searchBiome:
+        case .constantInt32, .constantInt64, .divideSignedInt32, .multiplyInt32,
+             .convertDoubleToSignedInt64, .spline, .searchBiome:
             preconditionFailure("Unsupported instruction reached paired SIMD lowering.")
         }
         appendLocalSet(vectorLocal(program.inputTypes.count + instructionIndex), to: &body)
@@ -915,7 +936,8 @@ private func makeWASMBulkFunctionBody(
     scalarFunctionIndex: Int,
     outputValueCount: Int,
     outputType: DensityFunctionIRValueType,
-    pairedSIMDFunctionIndex: Int?
+    pairedSIMDFunctionIndex: Int?,
+    alternativeNodeOffset: Int?
 ) -> [UInt8] {
     // Parameters are base x/y/z. Carrying coordinates between iterations avoids three
     // multiply/add pairs in the innermost loop. Supported single-output programs evaluate
@@ -937,6 +959,12 @@ private func makeWASMBulkFunctionBody(
     if usesSIMDStores {
         body.appendUnsigned(1)
         body.append(WASMValueType.v128.rawValue)
+    }
+
+    if let alternativeNodeOffset {
+        appendIntConstant(Int32(alternativeNodeOffset), to: &body)
+        appendIntConstant(-1, to: &body)
+        appendInt32Store(to: &body)
     }
 
     appendIntConstant(0, to: &body)
@@ -1011,42 +1039,49 @@ private func makeWASMBulkFunctionBody(
             appendLocalSet(6, to: &body)
         }
     } else {
-        body.append(0x03) // loop y
-        body.append(0x40)
-        appendLocalGet(7, to: &body)
-        appendLocalGet(8, to: &body)
-        appendLocalGet(9, to: &body)
-        appendCall(scalarFunctionIndex, to: &body)
-        for outputIndex in (0..<outputValueCount).reversed() {
-            appendLocalSet(firstOutputLocal + outputIndex, to: &body)
-        }
-        for outputIndex in 0..<outputValueCount {
-            appendLocalGet(6, to: &body)
-            appendLocalGet(firstOutputLocal + outputIndex, to: &body)
-            if outputType == .i32 {
-                appendInt32Store(to: &body)
-            } else {
-                appendDoubleStore(to: &body)
+        func appendScalarSampleAndStore() {
+            appendLocalGet(7, to: &body)
+            appendLocalGet(8, to: &body)
+            appendLocalGet(9, to: &body)
+            appendCall(scalarFunctionIndex, to: &body)
+            for outputIndex in (0..<outputValueCount).reversed() {
+                appendLocalSet(firstOutputLocal + outputIndex, to: &body)
             }
-            appendLocalGet(6, to: &body)
-            appendIntConstant(Int32(outputStride), to: &body)
-            body.append(0x6a) // i32.add
-            appendLocalSet(6, to: &body)
+            for outputIndex in 0..<outputValueCount {
+                appendLocalGet(6, to: &body)
+                appendLocalGet(firstOutputLocal + outputIndex, to: &body)
+                if outputType == .i32 {
+                    appendInt32Store(to: &body)
+                } else {
+                    appendDoubleStore(to: &body)
+                }
+                appendLocalGet(6, to: &body)
+                appendIntConstant(Int32(outputStride), to: &body)
+                body.append(0x6a) // i32.add
+                appendLocalSet(6, to: &body)
+            }
         }
-        appendLocalGet(8, to: &body)
-        appendIntConstant(bufferContext.yStep, to: &body)
-        body.append(0x6a) // i32.add
-        appendLocalSet(8, to: &body)
-        appendLocalGet(5, to: &body)
-        appendIntConstant(1, to: &body)
-        body.append(0x6a) // i32.add
-        body.append(0x22) // local.tee
-        body.appendUnsigned(5)
-        appendIntConstant(bufferContext.yCount, to: &body)
-        body.append(0x49) // i32.lt_u
-        body.append(0x0d) // br_if y
-        body.appendUnsigned(0)
-        body.append(0x0b) // end y
+        if bufferContext.yCount == 1 {
+            appendScalarSampleAndStore()
+        } else {
+            body.append(0x03) // loop y
+            body.append(0x40)
+            appendScalarSampleAndStore()
+            appendLocalGet(8, to: &body)
+            appendIntConstant(bufferContext.yStep, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(8, to: &body)
+            appendLocalGet(5, to: &body)
+            appendIntConstant(1, to: &body)
+            body.append(0x6a) // i32.add
+            body.append(0x22) // local.tee
+            body.appendUnsigned(5)
+            appendIntConstant(bufferContext.yCount, to: &body)
+            body.append(0x49) // i32.lt_u
+            body.append(0x0d) // br_if y
+            body.appendUnsigned(0)
+            body.append(0x0b) // end y
+        }
     }
 
     appendLocalGet(7, to: &body)
@@ -1089,7 +1124,8 @@ func buildDensityFunctionWASMModule(
     exportName: String = "sample",
     bulkContext: CompiledDensityFunctionBufferContext? = nil,
     bulkExportName: String = "sample_bulk",
-    useBulkSIMD: Bool = true
+    useBulkSIMD: Bool = true,
+    useBiomeSearchAlternative: Bool = false
 ) throws -> [UInt8] {
     let outputTypes: [DensityFunctionIRValueType] = program.outputs.map { output in
         if output < program.inputTypes.count {
@@ -1144,12 +1180,28 @@ func buildDensityFunctionWASMModule(
             embeddedNoiseLayouts[index] = layout
         }
     }
+    let perlinGradientTableOffset = embeddedNoiseLayouts.isEmpty
+        ? nil
+        : appendPerlinGradientTable(to: &staticData)
 
     let biomeStackOffset = staticData.bytes.count
     biomeTreeLayouts = biomeTreeLayouts.map {
         WASMBiomeTreeLayout(nodeBaseOffset: $0.nodeBaseOffset, stackOffset: biomeStackOffset)
     }
-    let biomeScratchEnd = biomeStackOffset + maximumBiomeTreeNodeCount * MemoryLayout<Int32>.size
+    let biomeStackEnd = biomeStackOffset + maximumBiomeTreeNodeCount * MemoryLayout<Int32>.size
+    let alternativeNodeOffset = useBiomeSearchAlternative && !program.biomeSearchTrees.isEmpty
+        ? alignWASMOffset(biomeStackEnd, to: MemoryLayout<Int32>.alignment)
+        : nil
+    let biomeScratchEnd = alternativeNodeOffset.map { $0 + MemoryLayout<Int32>.size } ?? biomeStackEnd
+    if let alternativeNodeOffset {
+        if staticData.bytes.count < alternativeNodeOffset {
+            staticData.append(contentsOf: [UInt8](
+                repeating: 0,
+                count: alternativeNodeOffset - staticData.bytes.count
+            ))
+        }
+        staticData.appendFixed(Int32(-1))
+    }
     let bulkOutputOffset = bulkContext.map { _ in alignWASMOffset(biomeScratchEnd, to: 16) }
     let bulkOutputEnd: Int
     if let bulkContext, let bulkOutputOffset {
@@ -1188,17 +1240,12 @@ func buildDensityFunctionWASMModule(
         && bulkContext.map { $0.yCount >= 2 } == true
         && supportsWASMPairedSIMD(program)
 
-    let baseTypeCount = embedsNoiseSampler ? 6 : 3
+    let baseTypeCount = 3
     var types = WASMEncoder()
     types.appendUnsigned(baseTypeCount + (bulkContext == nil ? 0 : 1) + (usesPairedSIMD ? 1 : 0))
     appendFunctionType(parameters: [.i32, .i32, .i32, .i32], results: [.f64], to: &types)
     appendFunctionType(parameters: [.i32, .f64, .f64, .f64], results: [.f64], to: &types)
-    if embedsNoiseSampler {
-        appendFunctionType(parameters: [.i32, .i32], results: [.i32], to: &types)
-        appendFunctionType(parameters: [.f64], results: [.f64], to: &types)
-        appendFunctionType(parameters: [.f64, .f64, .f64], results: [.f64], to: &types)
-    }
-    let mainFunctionTypeIndex = embedsNoiseSampler ? 5 : 2
+    let mainFunctionTypeIndex = 2
     appendFunctionType(
         parameters: program.inputTypes.map(wasmValueType),
         results: outputTypes.map(wasmValueType),
@@ -1234,12 +1281,8 @@ func buildDensityFunctionWASMModule(
     }
     module.appendSection(id: 2, contents: imports.bytes)
 
-    let helperFunctionCount = embedsNoiseSampler ? 5 : 0
-    let mapFunctionIndex = importCount
-    let gradientFunctionIndex = importCount + 1
-    let fadeFunctionIndex = importCount + 2
-    let lerpFunctionIndex = importCount + 3
-    let perlinFunctionIndex = importCount + 4
+    let helperFunctionCount = embedsNoiseSampler ? 1 : 0
+    let perlinFunctionIndex = importCount
     let mainFunctionIndex = importCount + helperFunctionCount
     let pairedSIMDFunctionIndex = usesPairedSIMD ? mainFunctionIndex + 1 : nil
     let bulkFunctionIndex = bulkContext.map { _ in mainFunctionIndex + 1 + (usesPairedSIMD ? 1 : 0) }
@@ -1247,10 +1290,6 @@ func buildDensityFunctionWASMModule(
     var functions = WASMEncoder()
     functions.appendUnsigned(helperFunctionCount + 1 + (usesPairedSIMD ? 1 : 0) + (bulkContext == nil ? 0 : 1))
     if embedsNoiseSampler {
-        functions.appendUnsigned(2) // map
-        functions.appendUnsigned(1) // gradient
-        functions.appendUnsigned(3) // fade
-        functions.appendUnsigned(4) // lerp
         functions.appendUnsigned(1) // perlin
     }
     functions.appendUnsigned(mainFunctionTypeIndex)
@@ -1323,6 +1362,14 @@ func buildDensityFunctionWASMModule(
             appendIntConstant(value, to: &body)
         case .constantInt64(let value):
             appendInt64Constant(value, to: &body)
+        case .divideSignedInt32(let input, let divisor):
+            appendLocalGet(input, to: &body)
+            appendIntConstant(divisor, to: &body)
+            body.append(0x6d) // i32.div_s
+        case .multiplyInt32(let input, let multiplier):
+            appendLocalGet(input, to: &body)
+            appendIntConstant(multiplier, to: &body)
+            body.append(0x6c) // i32.mul
         case .convertSignedIntToDouble(let input):
             appendLocalGet(input, to: &body)
             body.append(0xb7)
@@ -1392,6 +1439,110 @@ func buildDensityFunctionWASMModule(
                 appendLocalGet(z, to: &body)
                 appendCall(noiseSamplerFunctionIndex!, to: &body)
             }
+        case .spline(let coordinate, let locations, let pointValues, let derivatives):
+            func appendPoint() {
+                appendLocalGet(coordinate, to: &body)
+                body.append(0xb6) // f32.demote_f64
+            }
+            func appendValue(_ index: Int) {
+                appendLocalGet(pointValues[index], to: &body)
+                body.append(0xb6) // f32.demote_f64
+            }
+            func appendOutside(_ index: Int) {
+                appendValue(index)
+                guard derivatives[index] != 0 else { return }
+                appendFloatConstant(derivatives[index], to: &body)
+                appendPoint()
+                appendFloatConstant(locations[index], to: &body)
+                body.append(0x93) // f32.sub
+                body.append(0x94) // f32.mul
+                body.append(0x92) // f32.add
+            }
+            func appendInterval(_ index: Int) {
+                let width = locations[index + 1] - locations[index]
+                // value = lower + delta * (upper - lower)
+                appendValue(index)
+                appendPoint()
+                appendFloatConstant(locations[index], to: &body)
+                body.append(0x93)
+                appendFloatConstant(width, to: &body)
+                body.append(0x95)
+                appendValue(index + 1)
+                appendValue(index)
+                body.append(0x93)
+                body.append(0x94)
+                body.append(0x92)
+
+                // delta * (1 - delta)
+                appendPoint()
+                appendFloatConstant(locations[index], to: &body)
+                body.append(0x93)
+                appendFloatConstant(width, to: &body)
+                body.append(0x95)
+                appendFloatConstant(1, to: &body)
+                appendPoint()
+                appendFloatConstant(locations[index], to: &body)
+                body.append(0x93)
+                appendFloatConstant(width, to: &body)
+                body.append(0x95)
+                body.append(0x93)
+                body.append(0x94)
+
+                // tangent = p + delta * (q - p); repeat p/q rather than reserving scratch locals.
+                func appendP() {
+                    appendFloatConstant(derivatives[index] * width, to: &body)
+                    appendValue(index + 1)
+                    appendValue(index)
+                    body.append(0x93)
+                    body.append(0x93)
+                }
+                func appendQ() {
+                    appendFloatConstant(-derivatives[index + 1] * width, to: &body)
+                    appendValue(index + 1)
+                    appendValue(index)
+                    body.append(0x93)
+                    body.append(0x92)
+                }
+                appendP()
+                appendPoint()
+                appendFloatConstant(locations[index], to: &body)
+                body.append(0x93)
+                appendFloatConstant(width, to: &body)
+                body.append(0x95)
+                appendQ()
+                appendP()
+                body.append(0x93)
+                body.append(0x94)
+                body.append(0x92)
+                body.append(0x94) // delta product * tangent
+                body.append(0x92) // value + tangent term
+            }
+            func appendIntervals(from index: Int) {
+                let last = locations.count - 1
+                guard index < last else {
+                    appendOutside(last)
+                    return
+                }
+                appendPoint()
+                appendFloatConstant(locations[index + 1], to: &body)
+                body.append(0x5d) // f32.lt
+                body.append(0x04) // if (result f32)
+                body.append(0x7d) // f32
+                appendInterval(index)
+                body.append(0x05) // else
+                appendIntervals(from: index + 1)
+                body.append(0x0b)
+            }
+            appendPoint()
+            appendFloatConstant(locations[0], to: &body)
+            body.append(0x5d) // f32.lt
+            body.append(0x04) // if (result f32)
+            body.append(0x7d) // f32
+            appendOutside(0)
+            body.append(0x05) // else
+            appendIntervals(from: 0)
+            body.append(0x0b)
+            body.append(0xbb) // f64.promote_f32
         case .searchBiome(let index, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
             let resultLocal = program.inputTypes.count + instructionIndex
             let bestDistanceLocal = scratchLocalStart
@@ -1410,6 +1561,7 @@ func buildDensityFunctionWASMModule(
                 point: point,
                 initialBestDistance: initialBestDistance,
                 initialBestNode: initialBestNode,
+                alternativeNodeOffset: alternativeNodeOffset,
                 returnNodeIndex: returnNodeIndex,
                 resultLocal: resultLocal,
                 bestDistanceLocal: bestDistanceLocal,
@@ -1434,21 +1586,11 @@ func buildDensityFunctionWASMModule(
     var code = WASMEncoder()
     code.appendUnsigned(helperFunctionCount + 1 + (usesPairedSIMD ? 1 : 0) + (bulkContext == nil ? 0 : 1))
     if embedsNoiseSampler {
-        for helperBody in [
-            makeWASMMapFunctionBody(),
-            makeWASMGradientFunctionBody(),
-            makeWASMFadeFunctionBody(),
-            makeWASMLerpFunctionBody(),
-            makeWASMPerlinFunctionBody(
-                mapFunctionIndex: mapFunctionIndex,
-                gradientFunctionIndex: gradientFunctionIndex,
-                fadeFunctionIndex: fadeFunctionIndex,
-                lerpFunctionIndex: lerpFunctionIndex
-            )
-        ] {
-            code.appendUnsigned(helperBody.count)
-            code.append(contentsOf: helperBody)
-        }
+        let perlinBody = makeWASMPerlinFunctionBody(
+            gradientTableOffset: perlinGradientTableOffset!
+        )
+        code.appendUnsigned(perlinBody.count)
+        code.append(contentsOf: perlinBody)
     }
     code.appendUnsigned(body.bytes.count)
     code.append(contentsOf: body.bytes)
@@ -1470,7 +1612,8 @@ func buildDensityFunctionWASMModule(
             scalarFunctionIndex: mainFunctionIndex,
             outputValueCount: program.outputs.count,
             outputType: bulkOutputType!,
-            pairedSIMDFunctionIndex: pairedSIMDFunctionIndex
+            pairedSIMDFunctionIndex: pairedSIMDFunctionIndex,
+            alternativeNodeOffset: alternativeNodeOffset
         )
         code.appendUnsigned(bulkBody.count)
         code.append(contentsOf: bulkBody)
