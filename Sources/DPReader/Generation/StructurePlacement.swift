@@ -119,6 +119,102 @@ public final class StructurePlacementSampler {
         return self.selectStructure(from: matchingStructures, atChunk: sample.chunkPos)
     }
 
+    /// Resolves a candidate using each structure's actual generation point and terrain checks.
+    public func resolveStructureSet(
+        inRegion regionPos: PosInt2D,
+        validatingWith context: StructureStartValidationContext,
+        for structureSetKey: RegistryKey<StructureSet>
+    ) throws -> ResolvedStructurePlacementSample? {
+        guard let sample = try self.sampleStructureSet(inRegion: regionPos, for: structureSetKey) else {
+            return nil
+        }
+        guard let structureKey = try self.resolveStructure(for: sample, validatingWith: context) else {
+            return nil
+        }
+        return ResolvedStructurePlacementSample(
+            structureSetKey: sample.structureSetKey,
+            structureKey: structureKey,
+            regionPos: sample.regionPos,
+            chunkPos: sample.chunkPos,
+            blockPos: sample.blockPos
+        )
+    }
+
+    /// Resolves one sampled placement after validating terrain and the biome at each possible
+    /// structure's generation point.
+    public func resolveStructure(
+        for sample: StructurePlacementSample,
+        validatingWith context: StructureStartValidationContext
+    ) throws -> RegistryKey<Structure>? {
+        var matchingStructures: [WeightedStructure] = []
+        for weightedStructure in sample.structures {
+            let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
+            if try self.validateStructureStart(
+                for: structureKey,
+                atChunk: sample.chunkPos,
+                using: context
+            ) != nil {
+                matchingStructures.append(weightedStructure)
+            }
+        }
+        guard !matchingStructures.isEmpty else { return nil }
+        return self.selectStructure(from: matchingStructures, atChunk: sample.chunkPos)
+    }
+
+    /// Returns details for a valid structure start, or `nil` if terrain or biome checks fail.
+    public func validateStructureStart(
+        for structureKey: RegistryKey<Structure>,
+        atChunk startChunk: PosInt2D,
+        using context: StructureStartValidationContext
+    ) throws -> ValidatedStructureStart? {
+        guard let structure = self.structureRegistry.get(structureKey) else {
+            throw Errors.structureNotFound(structureKey.name)
+        }
+        guard let generationPosition = try structure.generationPosition(
+            structureKey: structureKey,
+            worldSeed: self.worldSeed,
+            startChunk: startChunk,
+            context: context
+        ) else {
+            return nil
+        }
+
+        if structure.type == "minecraft:ocean_monument" {
+            let surroundingTag = Identifiers.tagID("minecraft:required_ocean_monument_surrounding")
+            let checkX = startChunk.x &* 16 &+ 9
+            let checkZ = startChunk.z &* 16 &+ 9
+            let radius: Int32 = 29
+            let minQuartX = floorDiv(checkX &- radius, by: 4)
+            let maxQuartX = floorDiv(checkX &+ radius, by: 4)
+            let minQuartY = floorDiv(context.seaLevel &- radius, by: 4)
+            let maxQuartY = floorDiv(context.seaLevel &+ radius, by: 4)
+            let minQuartZ = floorDiv(checkZ &- radius, by: 4)
+            let maxQuartZ = floorDiv(checkZ &+ radius, by: 4)
+            for quartY in minQuartY...maxQuartY {
+                for quartZ in minQuartZ...maxQuartZ {
+                    for quartX in minQuartX...maxQuartX {
+                        let position = PosInt3D(x: quartX &* 4, y: quartY &* 4, z: quartZ &* 4)
+                        guard let biome = try context.biome(at: position),
+                              try self.registryEntry(biome.name, matches: surroundingTag, in: "worldgen/biome") else {
+                            return nil
+                        }
+                    }
+                }
+            }
+        }
+
+        guard let biome = try context.biome(at: generationPosition),
+              try self.registryEntry(biome.name, matches: structure.biomes, in: "worldgen/biome") else {
+            return nil
+        }
+        return ValidatedStructureStart(
+            structureKey: structureKey,
+            chunkPos: startChunk,
+            generationPosition: generationPosition,
+            biome: biome
+        )
+    }
+
     private func sampleStructureSet(inRegion regionPos: PosInt2D, for structureSetKey: RegistryKey<StructureSet>, visitedKeys: Set<String>) throws -> StructurePlacementSample? {
         guard let structureSet = self.structureSetRegistry.get(structureSetKey) else {
             throw Errors.structureSetNotFound(structureSetKey.name)

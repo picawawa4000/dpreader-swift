@@ -239,6 +239,136 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     #expect(resolved!.structureKey == RegistryKey(referencing: "test:second"))
 }
 
+@Test func testStructureStartValidationChecksTempleCornersAndSurfaceBiomeY() async throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack])
+    let desertPyramid = RegistryKey<Structure>(referencing: "minecraft:desert_pyramid")
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+
+    let lowCornerContext = StructureStartValidationContext(
+        dimension: dimension,
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, x, z in
+            x == 21 && z == 21 ? 62 : 70
+        },
+        biomeSampler: { _ in RegistryKey(referencing: "minecraft:desert") }
+    )
+    #expect(
+        try sampler.validateStructureStart(
+            for: desertPyramid,
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: lowCornerContext
+        ) == nil
+    )
+
+    let validContext = StructureStartValidationContext(
+        dimension: dimension,
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, _, _ in 70 },
+        biomeSampler: { position in
+            position.y == 68 ? RegistryKey(referencing: "minecraft:desert") : RegistryKey(referencing: "minecraft:plains")
+        }
+    )
+    let validated = try #require(
+        try sampler.validateStructureStart(
+            for: desertPyramid,
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: validContext
+        )
+    )
+    #expect(validated.generationPosition == PosInt3D(x: 8, y: 70, z: 8))
+    #expect(validated.biome == RegistryKey<Biome>(referencing: "minecraft:desert"))
+}
+
+@Test func testStructureStartValidationProjectsJigsawBiomeCheckToSurface() async throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack])
+    let context = StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:overworld"),
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { heightmap, x, z in
+            #expect(heightmap == .worldSurfaceWG)
+            #expect(x == 0)
+            #expect(z == 0)
+            return 84
+        },
+        biomeSampler: { position in
+            position.y == 84 ? RegistryKey(referencing: "minecraft:plains") : RegistryKey(referencing: "minecraft:deep_dark")
+        }
+    )
+
+    let validated = try #require(
+        try sampler.validateStructureStart(
+            for: RegistryKey(referencing: "minecraft:village_plains"),
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: context
+        )
+    )
+    #expect(validated.generationPosition.y == 84)
+}
+
+@Test func testStructureStartValidationChecksMonumentSurroundingBiomes() async throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack])
+    let monument = RegistryKey<Structure>(referencing: "minecraft:monument")
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    let deepOcean = RegistryKey<Biome>(referencing: "minecraft:deep_ocean")
+
+    let validContext = StructureStartValidationContext(
+        dimension: dimension,
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { heightmap, _, _ in
+            #expect(heightmap == .oceanFloorWG)
+            return 35
+        },
+        biomeSampler: { _ in deepOcean }
+    )
+    #expect(
+        try sampler.validateStructureStart(
+            for: monument,
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: validContext
+        ) != nil
+    )
+
+    let invalidContext = StructureStartValidationContext(
+        dimension: dimension,
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, _, _ in 35 },
+        biomeSampler: { position in
+            position == PosInt3D(x: -20, y: 32, z: -20)
+                ? RegistryKey(referencing: "minecraft:plains")
+                : deepOcean
+        }
+    )
+    #expect(
+        try sampler.validateStructureStart(
+            for: monument,
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: invalidContext
+        ) == nil
+    )
+}
+
 private enum Errors: Error {
     case noVanillaDataFound
 }
