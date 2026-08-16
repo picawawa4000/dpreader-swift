@@ -508,6 +508,15 @@ public final class PerlinNoise {
     private let permutationInts: [Int]
     private let originX, originY, originZ: Double
 
+    var wasmSnapshot: WASMPerlinNoiseSnapshot {
+        WASMPerlinNoiseSnapshot(
+            permutation: self.permutation,
+            originX: self.originX,
+            originY: self.originY,
+            originZ: self.originZ
+        )
+    }
+
     public init<R: Random>(random rng: inout R, withScale scale: Double = 256.0) {
         self.originX = rng.nextDouble() * scale
         self.originY = rng.nextDouble() * scale
@@ -667,6 +676,12 @@ public final class OctavePerlinNoise {
         return out
     }
 
+    var wasmSnapshots: [WASMOctaveNoiseSnapshot] {
+        self.octaves.map {
+            WASMOctaveNoiseSnapshot(noise: $0.noise.wasmSnapshot, amplitude: $0.amplitude, lacunarity: $0.lacunarity)
+        }
+    }
+
     private struct Octave {
         let noise: PerlinNoise
         let amplitude: Double
@@ -683,6 +698,14 @@ public final class DoublePerlinNoise {
     internal let secondSampler: OctavePerlinNoise
     private let amplitude: Double
     private static let multiplier = 337.0 / 331.0
+
+    var wasmSnapshot: WASMDoublePerlinNoiseSnapshot {
+        WASMDoublePerlinNoiseSnapshot(
+            firstOctaves: self.firstSampler.wasmSnapshots,
+            secondOctaves: self.secondSampler.wasmSnapshots,
+            amplitude: self.amplitude
+        )
+    }
 
     public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
         self.firstSampler = OctavePerlinNoise(random: &rng, firstOctave: firstOctave, amplitudes: amplitudes, useModernInitialization: useModernInitialization)
@@ -712,6 +735,25 @@ public final class DoublePerlinNoise {
         )
         return self.amplitude * (firstOutput + secondOutput)
     }
+}
+
+struct WASMPerlinNoiseSnapshot {
+    let permutation: [UInt8]
+    let originX: Double
+    let originY: Double
+    let originZ: Double
+}
+
+struct WASMOctaveNoiseSnapshot {
+    let noise: WASMPerlinNoiseSnapshot
+    let amplitude: Double
+    let lacunarity: Double
+}
+
+struct WASMDoublePerlinNoiseSnapshot {
+    let firstOctaves: [WASMOctaveNoiseSnapshot]
+    let secondOctaves: [WASMOctaveNoiseSnapshot]
+    let amplitude: Double
 }
 
 public final class InterpolatedNoise: DensityFunction {
@@ -892,84 +934,71 @@ public final class InterpolatedNoise: DensityFunction {
 
 /// ----- Noise (post 113.0) -----
 
-public enum ModernNoiseNormalization {
+public enum ModernNoiseNormalization: Codable {
     case enabled, disabled, legacy
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let bool = try? container.decode(Bool.self) {
+            self = bool ? .enabled : .disabled
+            return
+        }
+        if let string = try? container.decode(String.self) {
+            if string == "legacy" {
+                self = .legacy
+                return
+            }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid noise normalization method: expected true, false, or \"legacy\", but got \"\(string)\"!")
+        }
+        throw DecodingError.typeMismatch(ModernNoiseNormalization.self, DecodingError.Context(codingPath: container.codingPath, debugDescription: "Invalid noise normalization method: expected true, false, or \"legacy\", but got something else!"))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+
+    }
 }
 
 public final class ModernDoublePerlinNoise {
     private let octaves: [Octave]
-    private let normalizationFactor: Double
-    private let min, max: Double
 
-    init(fromRandom random: inout any Random, isLegacy: Bool, baseOctave: Int, baseAmplitude: Double = 1.0, octaveCount: Int = 1, normalization: ModernNoiseNormalization = .enabled, amplitudeModifiers: [Double] = []) {
-        var frequency = pow(2.0, Double(baseOctave))
-        var amplitude = baseAmplitude
-        if (normalization != .disabled) {
-            amplitude = baseAmplitude * pow(0.5, Double(1 - octaveCount)) / pow(0.5, Double(-octaveCount) - 1.0)
-        }
-        var octaves = [OctaveInfo](repeating: OctaveInfo(index: Int.min, frequency: Double.nan, amplitude: Double.nan), count: octaveCount)
-        var amplitudeSum = 0.0
-        var variance = 0.0
-        for i in 0..<octaveCount {
-            let amplitudeModifier = amplitudeModifiers.isEmpty ? 1.0 : amplitudeModifiers[i]
-            if amplitudeModifier != 0.0 {
-                let realAmplitude = amplitudeModifier * amplitude
-                octaves[i] = OctaveInfo(index: baseOctave + i, frequency: frequency, amplitude: realAmplitude)
-                let absAmplitude = abs(realAmplitude)
-                amplitudeSum += absAmplitude
-                variance += absAmplitude * absAmplitude * 0.27022478 * 0.27022478
-            }
-            frequency *= 2.0
-            amplitude *= 0.5
-        }
-        variance = sqrt(variance) * sqrt(2.0)
-        var normalizationFactor = amplitudeSum * 0.33333334 / variance
-        if normalization == .legacy {
-            var minOctave = Int.max
-            var maxOctave = Int.min
-            for i in 0..<octaveCount {
-                if amplitudeModifiers[i] != 0.0 {
-                    minOctave = minOctave > i ? i : minOctave
-                    maxOctave = maxOctave < i ? i : maxOctave
-                }
-            }
-            let baseFactor = baseAmplitude * 0.5 * 0.33333334
-            let octaveGap = maxOctave - minOctave
-            let factor = baseFactor / (0.1 * (1.0 + 1.0 / Double(octaveGap)))
-            amplitudeSum *= factor / normalizationFactor
-            normalizationFactor = factor
-        }
-        self.normalizationFactor = normalizationFactor
-        self.min = -amplitudeSum * 0.33333334 * 6.0
-        self.max = amplitudeSum * 0.33333334 * 6.0
-
+    init(fromRandom random: inout any Random, withOctaves octaves: [OctaveInfo], normalizationFactor: Double) {
         var builtOctaves: [Octave] = []
-        if isLegacy {
-            let amplitudes = amplitudeModifiers.isEmpty ? [Double](repeating: 1.0, count: octaveCount) : amplitudeModifiers
-            let firstNoises = createLegacyOctaves(fromRandom: &random, firstOctave: baseOctave, amplitudes: amplitudes)
-            let secondNoises = createLegacyOctaves(fromRandom: &random, firstOctave: baseOctave, amplitudes: amplitudes)
-            let valueFactor = self.normalizationFactor * baseAmplitude
-            for octave in firstNoises {
-                builtOctaves.append(Octave(noise: octave.noise, frequency: octave.frequency, amplitude: octave.amplitude * valueFactor))
-            }
-            for octave in secondNoises {
-                builtOctaves.append(Octave(noise: octave.noise, frequency: octave.frequency * 1.0181268, amplitude: octave.amplitude * valueFactor))
-            }
-        } else {
-            let firstSplitter = random.nextSplitter()
-            let secondSplitter = random.nextSplitter()
-            for octave in octaves {
-                let octaveSeed = String(format: "octave_%i", octave.index)
-                let firstNoise = PerlinNoise(immutableRandom: firstSplitter.split(usingString: octaveSeed))
-                let secondNoise = PerlinNoise(immutableRandom: secondSplitter.split(usingString: octaveSeed))
-                builtOctaves.append(Octave(noise: firstNoise, frequency: octave.frequency, amplitude: octave.amplitude * self.normalizationFactor))
-                builtOctaves.append(Octave(noise: secondNoise, frequency: octave.frequency * 1.0181268, amplitude: octave.amplitude * self.normalizationFactor))
-            }
+        let firstSplitter = random.nextSplitter()
+        let secondSplitter = random.nextSplitter()
+        for octave in octaves {
+            let octaveSeed = String(format: "octave_%i", octave.index)
+            let firstNoise = PerlinNoise(immutableRandom: firstSplitter.split(usingString: octaveSeed))
+            let secondNoise = PerlinNoise(immutableRandom: secondSplitter.split(usingString: octaveSeed))
+            builtOctaves.append(Octave(noise: firstNoise, frequency: octave.frequency, amplitude: octave.amplitude * normalizationFactor))
+            builtOctaves.append(Octave(noise: secondNoise, frequency: octave.frequency * 1.0181268, amplitude: octave.amplitude * normalizationFactor))
         }
         self.octaves = builtOctaves
     }
 
-    private struct OctaveInfo {
+    init(fromRandom random: inout any Random, withLegacyAmplitudes amplitudes: [Double], octaveCount: Int, firstOctave: Int, baseAmplitude: Double, normalizationFactor: Double) {
+        var builtOctaves: [Octave] = []
+        let amplitudes = amplitudes.isEmpty ? [Double](repeating: 1.0, count: octaveCount) : amplitudes
+        let firstNoises = createLegacyOctaves(fromRandom: &random, firstOctave: firstOctave, amplitudes: amplitudes)
+        let secondNoises = createLegacyOctaves(fromRandom: &random, firstOctave: firstOctave, amplitudes: amplitudes)
+        let valueFactor = normalizationFactor * baseAmplitude
+        for octave in firstNoises {
+            builtOctaves.append(Octave(noise: octave.noise, frequency: octave.frequency, amplitude: octave.amplitude * valueFactor))
+        }
+        for octave in secondNoises {
+            builtOctaves.append(Octave(noise: octave.noise, frequency: octave.frequency * 1.0181268, amplitude: octave.amplitude * valueFactor))
+        }
+        self.octaves = builtOctaves
+    }
+
+    public func sample(_ x: Double, _ y: Double, _ z: Double) -> Double {
+        var out = 0.0
+        for octave in self.octaves {
+            out += octave.sample(x, y, z)
+        }
+        return out
+    }
+
+    public struct OctaveInfo {
         let index: Int
         let frequency: Double
         let amplitude: Double
@@ -986,6 +1015,8 @@ public final class ModernDoublePerlinNoise {
     }
 }
 
+/// In vanilla, this function is called `createForLegacyNetherBiome`, meaning that it only operates
+/// when `legacy_random_source` in the noise settings is set to `true`.
 fileprivate func createLegacyOctaves(fromRandom random: inout any Random, firstOctave: Int, amplitudes: [Double]) -> [ModernDoublePerlinNoise.Octave] {
     let octaveCount = amplitudes.count
     let zeroOctaveIndex = -firstOctave

@@ -2,6 +2,290 @@ import Foundation
 import Testing
 @testable import DPReader
 
+private func makeBiomeIDCompilationNoiseRouter(temperature: any DensityFunction) -> NoiseRouter {
+    let zero = ConstantDensityFunction(value: 0)
+    return NoiseRouter(
+        finalDensity: zero,
+        barrier: zero,
+        fluidLevelFloodedness: zero,
+        fluidLevelSpread: zero,
+        lava: zero,
+        veinToggle: zero,
+        veinRidged: zero,
+        veinGap: zero,
+        temperature: temperature,
+        humidity: zero,
+        continents: zero,
+        erosion: zero,
+        depth: zero,
+        weirdness: zero
+    )
+}
+
+private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
+    let zero = ParameterRange(min: 0, max: 0)
+    return try BiomeSearchTree(entries: [
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: -10_000, max: -1), humidity: zero,
+                continentalness: zero, erosion: zero, depth: zero, weirdness: zero, offset: zero
+            ),
+            RegistryKey(referencing: "test:cold")
+        ),
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: 0, max: 10_000), humidity: zero,
+                continentalness: zero, erosion: zero, depth: zero, weirdness: zero, offset: zero
+            ),
+            RegistryKey(referencing: "test:warm")
+        )
+    ])
+}
+
+@Test func testCompiledNoiseRouterBiomeBulkReturnsPaletteIDs() throws {
+    let router = makeBiomeIDCompilationNoiseRouter(
+        temperature: YClampedGradient(fromY: 0, toY: 3, fromValue: -1, toValue: 1)
+    )
+    let tree = try makeBiomeIDCompilationSearchTree()
+    let volume = CompiledDensityFunctionBufferContext(xCount: 2, yCount: 4, zCount: 2)
+    let wasm = try compile(
+        noiseRouter: router,
+        biomeSearchTree: tree,
+        bufferContext: volume,
+        strategy: .wasm,
+        useAlternativeNode: true
+    )
+
+    func verify(_ result: CompiledBiomeIDVolume) {
+        #expect(result.biomeIDs.count == volume.sampleCount)
+        #expect(result.palette.count == 2)
+        let names = result.biomeIDs.map { result.palette[Int($0)].name }
+        let expectedColumn = ["test:cold", "test:cold", "test:warm", "test:warm"]
+        #expect(names == Array(repeating: expectedColumn, count: 4).flatMap { $0 })
+    }
+
+    verify(wasm(at: PosInt3D(x: 10, y: 0, z: 20)))
+    #expect(wasm.wasmModule != nil)
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    if let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)),
+       let wasmModule = wasm.wasmModule
+    {
+        let moduleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dpreader-biome-id-bulk-\(UUID().uuidString).wasm")
+        try Data(wasmModule).write(to: moduleURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: moduleURL) }
+        let script = """
+        const fs = require('fs');
+        const instance = new WebAssembly.Instance(
+          new WebAssembly.Module(fs.readFileSync(process.argv[1])), {}
+        );
+        const pointer = instance.exports.sample_bulk(10, 0, 20);
+        const ids = new Int32Array(instance.exports.memory.buffer, pointer, \(volume.sampleCount));
+        for (let index = 0; index < ids.length; index++) {
+          const y = index % \(volume.yCount);
+          const expected = instance.exports.sample(10, y, 20);
+          if (ids[index] !== expected) throw new Error(`mismatch at ${index}`);
+        }
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = ["-e", script, moduleURL.path]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        let errorOutput = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(process.terminationStatus == 0, "Node WASM biome ID bulk comparison failed: \(errorOutput)")
+    }
+    #if canImport(CLLVM)
+    let llvm = try compile(
+        noiseRouter: router,
+        biomeSearchTree: tree,
+        bufferContext: volume,
+        strategy: .llvm,
+        useAlternativeNode: true
+    )
+    verify(llvm(at: PosInt3D(x: 10, y: 0, z: 20)))
+    #endif
+}
+
+#if canImport(CLLVM) && !(os(WASI) || arch(wasm32))
+@Test func benchmarkCompiledVanillaNoiseRouterBiomeBulkAgainstSquareGeneration() throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/1.21.11")
+    guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else { return }
+
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [try DataPack(fromRootPath: vanillaDataPath)],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld"),
+        useBiomeSearchAlternative: true
+    )
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    let side: Int32 = 128
+    let scale: Int32 = 4
+    let volume = CompiledDensityFunctionBufferContext(
+        xCount: side,
+        yCount: 1,
+        zCount: side,
+        xStep: scale,
+        yStep: 1,
+        zStep: scale
+    )
+    let fused = try generator.makeBiomeIDBulkSampler(for: volume, in: dimension, strategy: .llvm)
+    let split = try generator.makeClimateBiomeBulkSampler(for: volume, in: dimension, strategy: .llvm)
+    let broadRange = ParameterRange(min: -100_000, max: 100_000)
+    let oneBiomeTree = try BiomeSearchTree(entries: [(
+        NoiseHypercube(
+            temperature: broadRange,
+            humidity: broadRange,
+            continentalness: broadRange,
+            erosion: broadRange,
+            depth: broadRange,
+            weirdness: broadRange,
+            offset: broadRange
+        ),
+        RegistryKey(referencing: "test:all")
+    )])
+    let noiseRouter = try generator.terrainSettingsForTesting().noiseRouter
+    let climateOnly = try compile(
+        noiseRouter: noiseRouter,
+        biomeSearchTree: oneBiomeTree,
+        bufferContext: volume,
+        strategy: .llvm,
+        registry: generator.densityFunctionRegistryForTesting()
+    )
+    let wasmClimateOnly = try compile(
+        noiseRouter: noiseRouter,
+        biomeSearchTree: oneBiomeTree,
+        bufferContext: volume,
+        strategy: .wasm,
+        registry: generator.densityFunctionRegistryForTesting()
+    )
+    let wasm = try generator.makeBiomeIDBulkSampler(for: volume, in: dimension, strategy: .wasm)
+    let base = PosInt3D(x: 0, y: 256, z: 0)
+    let from = PosInt2D(x: 0, z: 0)
+    let to = PosInt2D(x: side * scale, z: side * scale)
+
+    _ = fused(at: base)
+    _ = split(at: base)
+    _ = climateOnly(at: base)
+    _ = try generator.generateBiomesInSquare(
+        from: from,
+        to: to,
+        atY: base.y,
+        in: dimension,
+        scale: scale,
+        forceBaking: true
+    )
+
+    let iterations = 3
+    var fusedNanos: UInt64 = 0
+    var squareNanos: UInt64 = 0
+    var splitNanos: UInt64 = 0
+    var climateOnlyNanos: UInt64 = 0
+    var fusedResult: CompiledBiomeIDVolume?
+    var squareResult: [RegistryKey<Biome>]?
+    for _ in 0..<iterations {
+        var start = DispatchTime.now().uptimeNanoseconds
+        fusedResult = fused(at: base)
+        fusedNanos &+= DispatchTime.now().uptimeNanoseconds - start
+
+        start = DispatchTime.now().uptimeNanoseconds
+        _ = split(at: base)
+        splitNanos &+= DispatchTime.now().uptimeNanoseconds - start
+
+        start = DispatchTime.now().uptimeNanoseconds
+        _ = climateOnly(at: base)
+        climateOnlyNanos &+= DispatchTime.now().uptimeNanoseconds - start
+
+        start = DispatchTime.now().uptimeNanoseconds
+        squareResult = try generator.generateBiomesInSquare(
+            from: from,
+            to: to,
+            atY: base.y,
+            in: dimension,
+            scale: scale,
+            forceBaking: true
+        )
+        squareNanos &+= DispatchTime.now().uptimeNanoseconds - start
+    }
+
+    let compiledBiomes = fusedResult!.biomeIDs.map { fusedResult!.palette[Int($0)] }
+    #expect(compiledBiomes == squareResult)
+    var expectedWASMHash: UInt32 = 2_166_136_261
+    for biomeID in fusedResult!.biomeIDs {
+        expectedWASMHash ^= UInt32(bitPattern: biomeID)
+        expectedWASMHash &*= 16_777_619
+    }
+    var wasmNanos: UInt64?
+    var wasmClimateOnlyNanos: UInt64?
+    let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+    if let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)),
+       let wasmModule = wasm.wasmModule,
+       let wasmClimateOnlyModule = wasmClimateOnly.wasmModule {
+        let moduleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dpreader-biome-benchmark-\(UUID().uuidString).wasm")
+        let climateModuleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dpreader-climate-benchmark-\(UUID().uuidString).wasm")
+        try Data(wasmModule).write(to: moduleURL, options: .atomic)
+        try Data(wasmClimateOnlyModule).write(to: climateModuleURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: moduleURL) }
+        defer { try? FileManager.default.removeItem(at: climateModuleURL) }
+        let script = """
+        const fs = require('fs');
+        const iterations = \(iterations);
+        function benchmark(path) {
+          const module = new WebAssembly.Module(fs.readFileSync(path));
+          if (WebAssembly.Module.imports(module).length !== 0) throw new Error('unexpected imports');
+          const instance = new WebAssembly.Instance(module, {});
+          instance.exports.sample_bulk(0, 256, 0);
+          const start = process.hrtime.bigint();
+          for (let i = 0; i < iterations; i++) instance.exports.sample_bulk(0, 256, 0);
+          return { instance, nanos: (process.hrtime.bigint() - start) / BigInt(iterations) };
+        }
+        const fused = benchmark(process.argv[1]);
+        const climate = benchmark(process.argv[2]);
+        const instance = fused.instance;
+        const pointer = instance.exports.sample_bulk(0, 256, 0);
+        const ids = new Int32Array(instance.exports.memory.buffer, pointer, \(volume.sampleCount));
+        let hash = 2166136261;
+        for (const id of ids) hash = Math.imul((hash ^ id) >>> 0, 16777619) >>> 0;
+        process.stdout.write(`${fused.nanos} ${climate.nanos} ${hash}`);
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = ["-e", script, moduleURL.path, climateModuleURL.path]
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus == 0 {
+            let fields = String(
+                decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            ).split(separator: " ")
+            wasmNanos = fields.first.flatMap { UInt64($0) }
+            wasmClimateOnlyNanos = fields.dropFirst().first.flatMap { UInt64($0) }
+            let wasmHash = fields.dropFirst(2).first.flatMap { UInt32($0) }
+            #expect(wasmHash == expectedWASMHash)
+        }
+    }
+    print(
+        "benchmarkCompiledVanillaNoiseRouterBiomeBulkAgainstSquareGeneration:",
+        volume.sampleCount, "samples; fused", fusedNanos / UInt64(iterations), "ns;",
+        "split", splitNanos / UInt64(iterations), "ns;",
+        "climate-only", climateOnlyNanos / UInt64(iterations), "ns;",
+        "generateBiomesInSquare", squareNanos / UInt64(iterations), "ns; speedup",
+        String(format: "%.2f", Double(squareNanos) / Double(max(fusedNanos, 1))), "x;",
+        "WASM", wasmNanos.map(String.init) ?? "unavailable", "ns;",
+        "WASM climate-only", wasmClimateOnlyNanos.map(String.init) ?? "unavailable", "ns"
+    )
+}
+#endif
+
 @Test func testBiomeSearchTreeFindsNearestBiome() async throws {
     let registry = Registry<Biome>()
     let biomeA = Biome(
@@ -92,6 +376,165 @@ import Testing
         #expect(Bool(false))
     }
 }
+
+@Test func testCompiledBiomeSearchTreeUsesSharedIRAndMatchesLookup() throws {
+    let keyA = RegistryKey<Biome>(referencing: "test:a")
+    let keyB = RegistryKey<Biome>(referencing: "test:b")
+    let zero = ParameterRange(min: 0, max: 0)
+    let entries: [(NoiseHypercube, RegistryKey<Biome>)] = [
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: -10_000, max: -2_000),
+                humidity: ParameterRange(min: -10_000, max: 0),
+                continentalness: zero,
+                erosion: zero,
+                depth: zero,
+                weirdness: zero,
+                offset: zero
+            ),
+            keyA
+        ),
+        (
+            NoiseHypercube(
+                temperature: ParameterRange(min: 2_000, max: 10_000),
+                humidity: ParameterRange(min: 0, max: 10_000),
+                continentalness: zero,
+                erosion: zero,
+                depth: zero,
+                weirdness: zero,
+                offset: zero
+            ),
+            keyB
+        )
+    ]
+    let tree = try BiomeSearchTree(entries: entries)
+    let snapshot = tree.makeCompilerSnapshot()
+    let ir = buildBiomeSearchIR(tree: snapshot.tree)
+    let wasm = try tree.compile(strategy: .wasm)
+
+    #expect(ir.inputTypes == [.f64, .f64, .f64, .f64, .f64, .f64, .i64, .i32])
+    #expect(ir.biomeSearchTrees.count == 1)
+    #expect(wasm.strategy == .wasm)
+    #expect(wasm.wasmModule?.prefix(8) == [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+
+    #if canImport(CLLVM)
+    let llvm = try tree.compile(strategy: .llvm)
+    #endif
+    for point in [
+        NoisePoint(temperature: -0.9, humidity: -0.4, continentalness: 0, erosion: 0, weirdness: 0, depth: 0),
+        NoisePoint(temperature: 0.9, humidity: 0.4, continentalness: 0, erosion: 0, weirdness: 0, depth: 0),
+        NoisePoint(temperature: -0.15, humidity: 0.9, continentalness: 0, erosion: 0, weirdness: 0, depth: 0),
+        NoisePoint(temperature: 0.15, humidity: -0.9, continentalness: 0, erosion: 0, weirdness: 0, depth: 0)
+    ] {
+        tree.resetAlternative()
+        let expected = try tree.get(point)
+        #expect(wasm(point) == expected)
+        #if canImport(CLLVM)
+        #expect(llvm(point) == expected)
+        #endif
+    }
+
+    let singleTree = try BiomeSearchTree(entries: [entries[0]])
+    let singleCompiled = try singleTree.compile(strategy: .wasm)
+    let arbitraryPoint = NoisePoint(
+        temperature: 0.7,
+        humidity: -0.6,
+        continentalness: 0.5,
+        erosion: -0.4,
+        weirdness: 0.3,
+        depth: -0.2
+    )
+    #expect(try singleTree.get(arbitraryPoint) == keyA)
+    #expect(singleCompiled(arbitraryPoint) == keyA)
+}
+
+#if canImport(CLLVM)
+@Test func testCompiledVanillaBiomeSearchTreeMatchesInterpretedTree() throws {
+    let entries = getPredefinedBiomeSearchTreeData(for: "overworld")!.map { entry in
+        (NoiseHypercube(from: entry.parameters), RegistryKey<Biome>(referencing: entry.biome))
+    }
+    let tree = try BiomeSearchTree(entries: entries)
+    let wasm = try tree.compile(strategy: .wasm)
+    let compiled = try tree.compile(strategy: .llvm)
+    let wasmWithAlternative = try tree.compile(strategy: .wasm, useAlternativeNode: true)
+    let llvmWithAlternative = try tree.compile(strategy: .llvm, useAlternativeNode: true)
+    let wasmModule = try #require(wasm.wasmModule)
+    #expect(wasmModule.count < 1_500_000)
+    if let outputPath = ProcessInfo.processInfo.environment["DPREADER_BIOME_WASM_OUTPUT_PATH"] {
+        try Data(wasmModule).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("biome search WASM module:", wasmModule.count, "bytes at", outputPath)
+    }
+    var randomState: UInt64 = 0x4d595df4d0f33173
+
+    func nextParameter() -> Double {
+        randomState = randomState &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Double(Int(randomState % 20_001) - 10_000) / 10_000.0
+    }
+
+    let points = (0..<256).map { _ in
+        NoisePoint(
+            temperature: nextParameter(),
+            humidity: nextParameter(),
+            continentalness: nextParameter(),
+            erosion: nextParameter(),
+            weirdness: nextParameter(),
+            depth: nextParameter()
+        )
+    }
+    for point in points {
+        tree.resetAlternative()
+        let expected = tree.getUnchecked(point)
+        #expect(wasm(point) == expected)
+        #expect(compiled(point) == expected)
+    }
+
+    tree.resetAlternative()
+    wasmWithAlternative.resetAlternative()
+    llvmWithAlternative.resetAlternative()
+    for point in points {
+        let expected = tree.getUnchecked(point)
+        #expect(wasmWithAlternative(point) == expected)
+        #expect(llvmWithAlternative(point) == expected)
+    }
+
+    if ProcessInfo.processInfo.environment["DPREADER_BIOME_COMPILER_BENCHMARK"] == "1" {
+        let iterations = 1_000
+        let lookupState = tree.makeReusableLookupState()
+        var interpretedChecksum = 0
+        var start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<iterations {
+            for point in points {
+                interpretedChecksum &+= tree.getUnchecked(
+                    temperature: point.temperature,
+                    humidity: point.humidity,
+                    continentalness: point.continentalness,
+                    erosion: point.erosion,
+                    weirdness: point.weirdness,
+                    depth: point.depth,
+                    using: lookupState
+                ).name.count
+            }
+        }
+        let interpretedNanos = DispatchTime.now().uptimeNanoseconds - start
+
+        var compiledChecksum = 0
+        start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<iterations {
+            for point in points {
+                compiledChecksum &+= compiled(point).name.count
+            }
+        }
+        let compiledNanos = DispatchTime.now().uptimeNanoseconds - start
+        #expect(compiledChecksum == interpretedChecksum)
+        print(
+            "biome search benchmark:",
+            "interpreted", interpretedNanos, "ns;",
+            "compiled", compiledNanos, "ns;",
+            "speedup", Double(interpretedNanos) / Double(compiledNanos)
+        )
+    }
+}
+#endif
 
 // Tests whether the vanilla biome search tree matches the stupid one implemented here.
 // While these tests are somewhat comprehensive, they don't cover the entire biome space.

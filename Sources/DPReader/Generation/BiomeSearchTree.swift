@@ -175,6 +175,33 @@ public final class BiomeSearchTree {
         return self.root.nodes(with: biome)
     }
 
+    func makeCompilerSnapshot() -> (tree: BiomeSearchIRTree, biomes: [RegistryKey<Biome>]) {
+        var biomes: [RegistryKey<Biome>] = []
+        var biomeIndices: [RegistryKey<Biome>: Int32] = [:]
+        let nodes = self.flatNodes.map { node -> BiomeSearchIRNode in
+            let valueIndex: Int32
+            if let value = node.value {
+                if let existing = biomeIndices[value] {
+                    valueIndex = existing
+                } else {
+                    valueIndex = Int32(biomes.count)
+                    biomeIndices[value] = valueIndex
+                    biomes.append(value)
+                }
+            } else {
+                valueIndex = -1
+            }
+            return BiomeSearchIRNode(
+                valueIndex: valueIndex,
+                childIndexStart: node.childIndexStart,
+                childCount: node.childCount,
+                minimums: [node.min0, node.min1, node.min2, node.min3, node.min4, node.min5, node.min6],
+                maximums: [node.max0, node.max1, node.max2, node.max3, node.max4, node.max5, node.max6]
+            )
+        }
+        return (BiomeSearchIRTree(nodes: nodes, rootIndex: self.rootIndex), biomes)
+    }
+
     private var lookupStateThreadDictionaryKey: String {
         #if os(WASI) || arch(wasm32)
         preconditionFailure("lookupStateThreadDictionaryKey is unavailable in WASM/WASI builds")
@@ -189,6 +216,9 @@ public final class BiomeSearchTree {
         return self.flatNodes.withUnsafeBufferPointer { nodes in
             guard let nodesBase = nodes.baseAddress else {
                 return alternativeIndex
+            }
+            if nodesBase.advanced(by: self.rootIndex).pointee.isLeaf {
+                return self.rootIndex
             }
             var bestNodeIndex = alternativeIndex
             var bestDistance = alternativeIndex >= 0

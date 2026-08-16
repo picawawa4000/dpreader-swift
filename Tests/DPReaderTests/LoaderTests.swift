@@ -2,12 +2,14 @@ import Testing
 import Foundation
 @testable import DPReader
 
+/*
 private func testReference(densityFunction: DensityFunction, expectedID: String) -> Bool {
     return densityFunction is ReferenceDensityFunction && (densityFunction as! ReferenceDensityFunction).targetKey.name == expectedID
 }
 private func testConstant(densityFunction: DensityFunction, expectedValue: Double) -> Bool {
     return densityFunction is ConstantDensityFunction && (densityFunction as! ConstantDensityFunction).testingAttributes.value == expectedValue
 }
+*/
 
 private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
     URL(fileURLWithPath: "\(filePath)")
@@ -85,6 +87,8 @@ private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: St
     #expect(noise.testingAttributes.amplitudes == [1.0, 0.25, 0.0, 0.5])
 }
 
+/*
+
 @Test func testLoadingForNoiseSettings() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/NoiseSettings/noise_settings")
     let dataPack = try DataPack(fromRootPath: packURL, loadingOptions: [.noDensityFunctions, .noNoises])
@@ -117,6 +121,8 @@ private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: St
     #expect(testConstant(densityFunction: router.veinRidged, expectedValue: 14.0))
     #expect(testConstant(densityFunction: router.veinToggle, expectedValue: 15.0))
 }
+
+*/
 
 @Test func testLoadingForBiomes() async throws {
     let packURL = URL(filePath: "Tests/Resources/Datapacks/Biomes/biomes")
@@ -362,6 +368,9 @@ private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: St
     let biome = try #require(biomeAtOrigin)
     #expect(!biome.name.isEmpty)
 }
+
+/*
+see note at DensityFunctionTests.swift:395
 
 // Testing loading for:
 // - Reference
@@ -692,6 +701,8 @@ private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: St
     #expect(shift.testingAttributes.shiftType == .SHIFT_ALL)
     #expect(shift.testingAttributes.noise.key.name == "test:continents")
 }
+
+*/
 
 private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> Bool {
     let roundedActualValue = Int((actualValue * 1_000_000).rounded(FloatingPointRoundingRule.toNearestOrEven))

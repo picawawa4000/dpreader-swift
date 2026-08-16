@@ -3,6 +3,8 @@ public final class Registry<T> {
     private var registry: [RegistryKey<T>: T] = [:]
     private var order: [RegistryKey<T>] = []
 
+    public init() {}
+
     /// Registers a value at a given key. Overwrites any previous value stored at that key.
     /// - Parameters:
     ///   - value: The value to register.

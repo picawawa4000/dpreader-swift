@@ -13,6 +13,12 @@ These may not be possible, but if they are, they should be done because they wou
 
 - Loading & output tests for anything & everything related to loot.
 
+## Optimisations
+
+- World generators should only have to compile their functions once, not after every reseed.
+
 ## Cleanup
 
 - De-vibecode-ify `VanillaChunkTerrainSampler.swift`, and merge it into `WorldGenerator.swift`.
+- Do the same for the compiler (which is really quite a mess).
+  - Specifically, the WASM runtime implementation is... not great.
