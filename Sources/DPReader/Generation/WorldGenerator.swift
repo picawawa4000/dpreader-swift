@@ -2234,7 +2234,8 @@ public final class WorldGenerator {
     /// - Parameters:
     ///   - seed: The seed of the world to generate.
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
-    ///   - config: A registry key pointing to the noise settings to use for generation. While this can be omitted, it should not be except for debugging purposes.
+    ///   - configKey: A registry key pointing to the noise settings to use for generation. While this can be omitted, it should not be except for debugging purposes.
+    ///   - buildSearchTrees: Whether to build biome search trees.
     ///   - compilationBackend: Optionally compiles biome climate functions and search trees with this backend.
     ///   - useBiomeSearchAlternative: Reuses the previous winning leaf when searching each compiled biome tree.
     ///   - wasmRuntime: The host WebAssembly engine bridge used when `compilationBackend` is `.wasm`.
@@ -3467,6 +3468,7 @@ public final class WorldGenerator {
     ///   - scale: Subsampling factor (e.g. stride; 4 means 1:4 scale). Must be > 0.
     ///   - forceNoBaking: Whether to force the function to not bake the caches, irrespective of generation size.
     ///     For debugging only (will usually lead to poorly-optimised results).
+    ///   - forceBaking: Whether to force the function to bake the caches, irrespective of generation size.
     /// - Throws: Any errors thrown by biome sampling or cache generation (if applied), or if `to` is less than `from`.
     /// - Returns: An X-major array of biomes (indexed by [Z*(to.x-from.x)+X]).
     public func generateBiomesInSquare(

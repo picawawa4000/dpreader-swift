@@ -233,7 +233,7 @@ import TestVisible
 
     /// Instantiate a new `ModernDoublePerlinNoise` set up for Nether generation
     /// (or for any dimension where `legacy_noise_settings` is set to `true`).
-    /// - Parameter fromRandom: The RNG to use for generation.
+    /// - Parameter random: The RNG to use for generation.
     public func instantiateLegacy(fromRandom random: inout any Random) -> ModernDoublePerlinNoise {
         return ModernDoublePerlinNoise(fromRandom: &random, withLegacyAmplitudes: self.amplitudes, octaveCount: self.octaveCount, firstOctave: self.firstOctave, baseAmplitude: self.baseAmplitude, normalizationFactor: self.normalizationFactor)
     }
