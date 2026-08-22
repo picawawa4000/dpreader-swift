@@ -337,6 +337,59 @@ private func expectedRealDesertPyramidArchaeology() -> [ExpectedDesertPyramidLoo
     }
 }
 
+private func expectedSeed123458DesertPyramidChests() -> [ExpectedDesertPyramidLootMarker] {
+    [
+        ExpectedDesertPyramidLootMarker(
+            pos: PosInt3D(x: 1_580, y: 57, z: 1_114),
+            seed: 4_085_699_148_088_970_364,
+            items: [
+                DesertPyramidNormalizedLootItem(name: "minecraft:sand", count: 9, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:gunpowder", count: 6, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:string", count: 6, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:bone", count: 8, enchantments: [])
+            ]
+        ),
+        ExpectedDesertPyramidLootMarker(
+            pos: PosInt3D(x: 1_576, y: 57, z: 1_114),
+            seed: 4_703_264_922_906_693,
+            items: [
+                DesertPyramidNormalizedLootItem(name: "minecraft:sand", count: 5, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:rotten_flesh", count: 7, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:gunpowder", count: 8, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:leather", count: 2, enchantments: [])
+            ]
+        ),
+        ExpectedDesertPyramidLootMarker(
+            pos: PosInt3D(x: 1_578, y: 57, z: 1_116),
+            seed: -4_783_632_972_057_813_741,
+            items: [
+                DesertPyramidNormalizedLootItem(name: "minecraft:sand", count: 7, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:bone", count: 3, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:string", count: 8, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:emerald", count: 3, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:rotten_flesh", count: 4, enchantments: [])
+            ]
+        ),
+        ExpectedDesertPyramidLootMarker(
+            pos: PosInt3D(x: 1_578, y: 57, z: 1_112),
+            // The reference value supplied with this fixture differs by 1,100,000,
+            // but this is the generated container seed that produces the recorded loot.
+            seed: -6_820_933_345_735_560_639,
+            items: [
+                DesertPyramidNormalizedLootItem(name: "minecraft:sand", count: 8, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:bone", count: 10, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:rotten_flesh", count: 4, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:iron_horse_armor", count: 1, enchantments: []),
+                DesertPyramidNormalizedLootItem(name: "minecraft:copper_horse_armor", count: 1, enchantments: [])
+            ]
+        )
+    ].sorted { left, right in
+        if left.pos.z != right.pos.z { return left.pos.z < right.pos.z }
+        if left.pos.x != right.pos.x { return left.pos.x < right.pos.x }
+        return left.pos.y < right.pos.y
+    }
+}
+
 @Test func testDesertPyramidPieceGraphIsDeterministic() async throws {
     let graphA = DesertPyramid.generatePieceGraph(
         worldSeed: 503815372,
@@ -539,4 +592,56 @@ private func expectedRealDesertPyramidArchaeology() -> [ExpectedDesertPyramidLoo
             "Archaeology loot mismatch at \(expected.pos) for seed \(expected.seed)"
         )
     }
+}
+
+@Test func testSeed123458DesertPyramidLootAndArchaeology() async throws {
+    let worldSeed: WorldSeed = 123_458
+    let startChunk = PosInt2D(x: 98, z: 69)
+    let context = try makeRealTempleContext(worldSeed: worldSeed, startChunk: startChunk)
+    let enchantmentResources = try loadVanilla12111EnchantmentResources()
+    let chestTable = try decodeLootTable("minecraft:chests/desert_pyramid")
+    let archaeologyTable = try decodeLootTable("minecraft:archaeology/desert_pyramid")
+    let containers = try #require(
+        DesertPyramid.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+    )
+
+    let expectedChests = expectedSeed123458DesertPyramidChests()
+    let actualChests = containers
+        .filter { $0.block == "minecraft:chest" }
+        .sorted { left, right in
+            if left.pos.z != right.pos.z { return left.pos.z < right.pos.z }
+            if left.pos.x != right.pos.x { return left.pos.x < right.pos.x }
+            return left.pos.y < right.pos.y
+        }
+
+    #expect(actualChests.map(\.pos) == expectedChests.map(\.pos))
+    for (actual, expected) in zip(actualChests, expectedChests) {
+        #expect(actual.lootSeed == expected.seed, "Chest seed mismatch at \(expected.pos)")
+        let generated = try chestTable.generateLoot(
+            withContext: makeCheckedContext(seed: actual.lootSeed, enchantmentResources: enchantmentResources)
+        )
+        #expect(
+            normalizedDesertPyramidLoot(generated) == normalizedExpectedDesertPyramidLoot(expected.items),
+            "Chest loot mismatch at \(expected.pos); generated seed \(actual.lootSeed)"
+        )
+    }
+
+    let archaeologyPos = PosInt3D(x: 1_573, y: 68, z: 1_118)
+    let generatedArchaeologyPositions = containers
+        .filter { $0.block == "minecraft:suspicious_sand" }
+        .map(\.pos)
+    let archaeology = try #require(
+        containers.first { $0.pos == archaeologyPos },
+        "Generated archaeology positions: \(generatedArchaeologyPositions)"
+    )
+    #expect(archaeology.block == "minecraft:suspicious_sand")
+    #expect(archaeology.lootTable == "minecraft:archaeology/desert_pyramid")
+    let archaeologyLoot = try archaeologyTable.generateLoot(
+        withContext: makeCheckedContext(seed: archaeology.lootSeed, enchantmentResources: enchantmentResources)
+    )
+    #expect(
+        normalizedDesertPyramidLoot(archaeologyLoot) == [
+            DesertPyramidNormalizedLootItem(name: "minecraft:miner_pottery_sherd", count: 1, enchantments: [])
+        ]
+    )
 }
