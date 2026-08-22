@@ -291,6 +291,7 @@ public final class ItemEntry: SingletonLootEntry {
 
 /// A loot entry that evaluates another loot table.
 public final class LootTableEntry: SingletonLootEntry {
+    /// An inline loot table or a namespaced reference to another table.
     public enum Value {
         case name(String)
         case table(LootTable)
@@ -342,6 +343,7 @@ public final class LootTableEntry: SingletonLootEntry {
 public final class DynamicEntry: SingletonLootEntry {
     let type: DynamicType
 
+    /// The supported dynamic-drop source requested by the entry.
     public enum DynamicType: String, Codable {
         case shulkerBoxContents = "contents"
         case decoratedPotSherds = "sherds"
@@ -1024,6 +1026,7 @@ func encodeLootCondition(_ condition: LootCondition, to encoder: Encoder) throws
     }
 }
 
+/// A condition that succeeds when its child condition fails.
 public final class InvertedLootCondition: LootCondition {
     let term: LootCondition
 
@@ -1047,6 +1050,7 @@ public final class InvertedLootCondition: LootCondition {
     }
 }
 
+/// Base class for conditions that combine a list of child conditions.
 public class AlternativeLootCondition: LootCondition {
     let terms: [LootCondition]
 
@@ -1070,6 +1074,7 @@ public class AlternativeLootCondition: LootCondition {
     }
 }
 
+/// A condition that succeeds when any child condition succeeds.
 public final class AnyOfLootCondition: AlternativeLootCondition {
     public override func encode(to encoder: Encoder) throws {
         try super.encode(to: encoder, type: "minecraft:any_of")
@@ -1085,6 +1090,7 @@ public final class AnyOfLootCondition: AlternativeLootCondition {
     }
 }
 
+/// A condition that succeeds only when every child condition succeeds.
 public final class AllOfLootCondition: AlternativeLootCondition {
     public override func encode(to encoder: Encoder) throws {
         try super.encode(to: encoder, type: "minecraft:all_of")
@@ -1100,6 +1106,7 @@ public final class AllOfLootCondition: AlternativeLootCondition {
     }
 }
 
+/// A condition that succeeds with a fixed probability.
 public final class RandomChanceLootCondition: LootCondition {
     let chance: LootNumberProvider
 
@@ -1123,6 +1130,7 @@ public final class RandomChanceLootCondition: LootCondition {
     }
 }
 
+/// A random-chance condition whose probability increases with an enchantment level.
 public final class RandomChanceWithEnchantedBonusLootCondition: LootCondition {
     let unenchantedChance: Float
     let enchantedChance: JSONValue
@@ -1154,6 +1162,7 @@ public final class RandomChanceWithEnchantedBonusLootCondition: LootCondition {
     }
 }
 
+/// A decoded entity-properties condition retained for compatible table evaluation.
 public final class EntityPropertiesLootCondition: LootCondition {
     let predicate: JSONValue?
     let entity: String
@@ -1177,6 +1186,7 @@ public final class EntityPropertiesLootCondition: LootCondition {
     }
 }
 
+/// A condition that requires the relevant entity to have been killed by a player.
 public final class KilledByPlayerLootCondition: LootCondition {
     public init() {}
 
@@ -1192,6 +1202,7 @@ public final class KilledByPlayerLootCondition: LootCondition {
     }
 }
 
+/// A condition that compares entity scoreboard values with configured ranges.
 public final class EntityScoresLootCondition: LootCondition {
     let scores: [String: JSONValue]
     let entity: String
@@ -1219,6 +1230,7 @@ public final class EntityScoresLootCondition: LootCondition {
     }
 }
 
+/// A condition that matches a block ID and optional state properties.
 public final class BlockStatePropertyLootCondition: LootCondition {
     let block: String
     let properties: JSONValue?
@@ -1246,6 +1258,7 @@ public final class BlockStatePropertyLootCondition: LootCondition {
     }
 }
 
+/// A condition that matches properties of the tool in the loot context.
 public final class MatchToolLootCondition: LootCondition {
     let predicate: JSONValue?
 
@@ -1269,6 +1282,7 @@ public final class MatchToolLootCondition: LootCondition {
     }
 }
 
+/// A condition whose chance is selected by an enchantment level.
 public final class TableBonusLootCondition: LootCondition {
     let enchantment: String
     let chances: [Float]
@@ -1296,6 +1310,7 @@ public final class TableBonusLootCondition: LootCondition {
     }
 }
 
+/// A condition that applies the explosion-survival probability from the loot context.
 public final class SurvivesExplosionLootCondition: LootCondition {
     public init() {}
 
@@ -1311,6 +1326,7 @@ public final class SurvivesExplosionLootCondition: LootCondition {
     }
 }
 
+/// A decoded damage-source predicate retained for compatible table evaluation.
 public final class DamageSourcePropertiesLootCondition: LootCondition {
     let predicate: JSONValue?
 
@@ -1330,6 +1346,7 @@ public final class DamageSourcePropertiesLootCondition: LootCondition {
     }
 }
 
+/// A decoded location predicate with optional coordinate offsets.
 public final class LocationCheckLootCondition: LootCondition {
     let predicate: JSONValue?
     let offsetX: Int
@@ -1365,6 +1382,7 @@ public final class LocationCheckLootCondition: LootCondition {
     }
 }
 
+/// A condition that requires configured rain or thunder state.
 public final class WeatherCheckLootCondition: LootCondition {
     let raining: Bool?
     let thundering: Bool?
@@ -1392,6 +1410,7 @@ public final class WeatherCheckLootCondition: LootCondition {
     }
 }
 
+/// A condition that delegates evaluation to a named predicate.
 public final class ReferenceLootCondition: LootCondition {
     let name: String
 
@@ -1415,6 +1434,7 @@ public final class ReferenceLootCondition: LootCondition {
     }
 }
 
+/// A condition that compares world time, optionally modulo a period.
 public final class TimeCheckLootCondition: LootCondition {
     let period: Int64?
     let value: JSONValue
@@ -1442,6 +1462,7 @@ public final class TimeCheckLootCondition: LootCondition {
     }
 }
 
+/// A condition that checks a number provider against an integer range.
 public final class ValueCheckLootCondition: LootCondition {
     let value: LootNumberProvider
     let range: JSONValue
@@ -1469,6 +1490,7 @@ public final class ValueCheckLootCondition: LootCondition {
     }
 }
 
+/// A condition that checks whether enchantment processing is active in the context.
 public final class EnchantmentActiveCheckLootCondition: LootCondition {
     let active: Bool
 
@@ -1781,6 +1803,7 @@ public enum ApplyBonusFormula: Codable, Equatable {
     }
 }
 
+/// An item modifier that increases stack count using an enchantment-dependent formula.
 public final class ApplyBonusItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let enchantment: String
@@ -1812,6 +1835,7 @@ public final class ApplyBonusItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that copies selected data components from a context source.
 public final class CopyComponentsItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let source: String
@@ -1847,12 +1871,14 @@ public final class CopyComponentsItemModifier: ConditionalItemModifier {
     }
 }
 
+/// One source path, target path, and merge operation for copying custom data.
 public struct CopyCustomDataOperation: Codable, Equatable {
     let source: String
     let target: String
     let op: String
 }
 
+/// An item modifier that copies NBT-like custom data using configured operations.
 public final class CopyCustomDataItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let source: JSONValue
@@ -1880,6 +1906,7 @@ public final class CopyCustomDataItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that copies a display name from a loot-context source.
 public final class CopyNameItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let source: String
@@ -1907,6 +1934,7 @@ public final class CopyNameItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that copies selected block-state properties to an item.
 public final class CopyStateItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let block: String
@@ -1938,6 +1966,7 @@ public final class CopyStateItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that removes the current stack when its conditions pass.
 public final class DiscardItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
 
@@ -2149,6 +2178,7 @@ public final class EnchantWithLevelsItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that increases count based on a looting enchantment level.
 public final class EnchantedCountIncreaseItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let enchantment: String
@@ -2182,6 +2212,7 @@ public final class EnchantedCountIncreaseItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that configures an exploration map target and decoration.
 public final class ExplorationMapItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let destination: String?
@@ -2228,6 +2259,7 @@ public final class ExplorationMapItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that randomly reduces stack count after an explosion.
 public final class ExplosionDecayItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
 
@@ -2251,6 +2283,7 @@ public final class ExplosionDecayItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that fills a player head's profile from a context entity.
 public final class FillPlayerHeadItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let entity: String
@@ -2274,6 +2307,7 @@ public final class FillPlayerHeadItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that applies a nested modifier only to matching items.
 public final class FilteredItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let itemFilter: JSONValue
@@ -2309,6 +2343,7 @@ public final class FilteredItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that replaces an item with its furnace-smelting result.
 public final class FurnaceSmeltItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
 
@@ -2332,6 +2367,7 @@ public final class FurnaceSmeltItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that clamps stack count to a configured range.
 public final class LimitCountItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let limit: JSONValue
@@ -2360,6 +2396,7 @@ public final class LimitCountItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that adds, updates, or removes item data components.
 public final class ModifyComponentsItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let component: JSONValue
@@ -2387,6 +2424,7 @@ public final class ModifyComponentsItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that delegates to a named item-modifier definition.
 public final class ReferenceItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let name: String
@@ -2414,6 +2452,7 @@ public final class ReferenceItemModifier: ConditionalItemModifier {
     }
 }
 
+/// One attribute-modifier record applied by ``SetAttributesItemModifier``.
 public struct SetAttributeModifier: Codable {
     let id: String
     let attribute: String
@@ -2430,6 +2469,7 @@ public struct SetAttributeModifier: Codable {
     }
 }
 
+/// An item modifier that attaches one or more attribute modifiers.
 public final class SetAttributesItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let modifiers: [SetAttributeModifier]
@@ -2478,6 +2518,7 @@ public final class SetAttributesItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that assigns banner patterns to the current item.
 public final class SetBannerPatternItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let patterns: JSONValue
@@ -2512,6 +2553,7 @@ public final class SetBannerPatternItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that assigns written-book cover metadata.
 public final class SetBookCoverItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let title: JSONValue?
@@ -2557,6 +2599,7 @@ public final class SetBookCoverItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that replaces or adds item data components.
 public final class SetComponentsItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let components: JSONValue
@@ -2587,6 +2630,7 @@ public final class SetComponentsItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that fills a container component from nested loot entries.
 public final class SetContentsItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let component: JSONValue
@@ -2614,6 +2658,7 @@ public final class SetContentsItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that sets or adds a generated stack count.
 public final class SetCountItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let count: LootNumberProvider
@@ -2647,6 +2692,7 @@ public final class SetCountItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that merges custom data into the current item.
 public final class SetCustomDataItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let tag: JSONValue
@@ -2674,6 +2720,7 @@ public final class SetCustomDataItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that assigns custom-model-data fields.
 public final class SetCustomModelDataItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let floats: JSONValue?
@@ -2724,6 +2771,7 @@ public final class SetCustomModelDataItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that sets or adds an item's remaining durability fraction.
 public final class SetDamageItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let damage: LootNumberProvider
@@ -2764,6 +2812,7 @@ public final class SetDamageItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that sets or adds explicitly configured enchantment levels.
 public final class SetEnchantmentsItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let enchantments: [String: LootNumberProvider]
@@ -2806,6 +2855,7 @@ public final class SetEnchantmentsItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that configures a firework rocket's flight and explosions.
 public final class SetFireworksItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let explosions: JSONValue?
@@ -2844,6 +2894,7 @@ public final class SetFireworksItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that configures a firework-star explosion.
 public final class SetFireworkExplosionItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let shape: String?
@@ -2900,6 +2951,7 @@ public final class SetFireworkExplosionItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that selects an instrument from an ID or tag.
 public final class SetInstrumentItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let options: String
@@ -2932,6 +2984,7 @@ public final class SetInstrumentItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that replaces the current item ID.
 public final class SetItemItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let item: String
@@ -2959,6 +3012,7 @@ public final class SetItemItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that assigns a container loot table and optional seed.
 public final class SetLootTableItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let name: String
@@ -3003,6 +3057,7 @@ public final class SetLootTableItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that replaces or appends lore lines.
 public final class SetLoreItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let lore: [JSONValue]
@@ -3049,6 +3104,7 @@ public final class SetLoreItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that assigns a display or custom name.
 public final class SetNameItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let name: JSONValue?
@@ -3094,6 +3150,7 @@ public final class SetNameItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that sets an ominous bottle's amplifier.
 public final class SetOminousBottleAmplifierItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let amplifier: LootNumberProvider
@@ -3121,6 +3178,7 @@ public final class SetOminousBottleAmplifierItemModifier: ConditionalItemModifie
     }
 }
 
+/// An item modifier that assigns a potion ID.
 public final class SetPotionItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let id: String
@@ -3148,6 +3206,7 @@ public final class SetPotionItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that selects one or more random dye colors.
 public final class SetRandomDyesItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
 
@@ -3177,6 +3236,7 @@ public final class SetRandomDyesItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that selects a random potion from configured options.
 public final class SetRandomPotionItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
 
@@ -3206,6 +3266,7 @@ public final class SetRandomPotionItemModifier: ConditionalItemModifier {
     }
 }
 
+/// A possible status effect and duration for suspicious stew.
 public struct StewEffect: Codable {
     let type: String
     let duration: LootNumberProviderInitializer
@@ -3216,6 +3277,7 @@ public struct StewEffect: Codable {
     }
 }
 
+/// An item modifier that selects and applies a suspicious-stew effect.
 public final class SetStewEffectItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let effects: [StewEffect]
@@ -3257,6 +3319,7 @@ public final class SetStewEffectItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that replaces or appends writable-book pages.
 public final class SetWritableBookPagesItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let pages: [JSONValue]
@@ -3288,6 +3351,7 @@ public final class SetWritableBookPagesItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that replaces or appends written-book pages.
 public final class SetWrittenBookPagesItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let pages: [JSONValue]
@@ -3319,6 +3383,7 @@ public final class SetWrittenBookPagesItemModifier: ConditionalItemModifier {
     }
 }
 
+/// An item modifier that enables or disables selected item-component tooltips.
 public final class ToggleTooltipsItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
     let toggles: [String: Bool]

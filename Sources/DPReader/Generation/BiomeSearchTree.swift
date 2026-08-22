@@ -1,10 +1,12 @@
 import Foundation
 
+/// Errors encountered while building or querying a biome parameter tree.
 public enum BiomeSearchTreeError: Error {
     case emptyEntries
     case missingBiome(String)
 }
 
+/// A nearest-neighbor search tree over Minecraft's six climate parameters.
 public final class BiomeSearchTree {
     private let root: BiomeTreeNode
     private let flatNodes: [FlatBiomeTreeNode]
@@ -468,6 +470,7 @@ private func populateFlatBiomeTree(
     }
 }
 
+/// Builds a nearest-neighbor biome tree after resolving every entry against a biome registry.
 public func buildBiomeSearchTree(from biomeRegistry: Registry<Biome>, entries: [MultiNoiseBiomeSourceBiome]) throws -> BiomeSearchTree {
     var mapped: [(NoiseHypercube, RegistryKey<Biome>)] = []
     mapped.reserveCapacity(entries.count)
@@ -481,6 +484,7 @@ public func buildBiomeSearchTree(from biomeRegistry: Registry<Biome>, entries: [
     return try BiomeSearchTree(entries: mapped)
 }
 
+/// A biome entry's ranges across the six climate axes plus its distance offset.
 public struct NoiseHypercube {
     let temperature: ParameterRange
     let humidity: ParameterRange
@@ -523,6 +527,7 @@ public struct NoiseHypercube {
     }
 }
 
+/// An inclusive range on one climate axis, stored in Minecraft's quantized integer form.
 public struct ParameterRange: Equatable {
     let min: Int64
     let max: Int64
@@ -739,6 +744,7 @@ private extension NoisePoint {
     }
 }
 
+/// Returns vanilla climate-to-biome entries for a supported dimension preset.
 public func getPredefinedBiomeSearchTreeData(for preset: String) -> [MultiNoiseBiomeSourceBiome]? {
     switch preset {
     case "overworld", "minecraft:overworld":

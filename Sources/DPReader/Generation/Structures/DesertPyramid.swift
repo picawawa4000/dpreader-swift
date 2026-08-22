@@ -1,13 +1,16 @@
 import Foundation
 
+/// The positioned piece graph for a generated desert pyramid.
 public typealias DesertPyramidPieceGraph = PieceGraph
 
+/// A legacy marker describing one desert-pyramid loot-bearing block.
 public struct DesertPyramidLootMarker {
     public let pos: PosInt3D
     public let lootTable: String
     public let lootSeed: Int64
 }
 
+/// The complete block, piece, and loot output of desert-pyramid generation.
 public struct DesertPyramidGenerationResult {
     public let graph: DesertPyramidPieceGraph
     public let blocks: StructureBlockVolume
@@ -17,7 +20,37 @@ public struct DesertPyramidGenerationResult {
     public let basementMarkerPos: PosInt3D?
 }
 
+/// Entry points for deterministic vanilla desert-pyramid generation.
 public enum DesertPyramid {
+    /// Generates the pyramid's chests and suspicious-sand loot without rendering its blocks.
+    public static func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext
+    ) -> [StructureLootContainer]? {
+        guard minimumCornerHeight(startChunk: startChunk, context: context) >= context.seaLevel else {
+            return nil
+        }
+        var constructorRandom = getRandomWithCarverSeed(
+            worldSeed: worldSeed,
+            chunkX: startChunk.x,
+            chunkZ: startChunk.z
+        )
+        let piece = DesertPyramidPiece(worldSeed: worldSeed, startChunk: startChunk, random: &constructorRandom)
+        var random = getStructureGenerationRandom(
+            worldSeed: worldSeed,
+            chunkX: startChunk.x,
+            chunkZ: startChunk.z,
+            decoratorIndex: DesertPyramidPiece.decoratorIndex,
+            decoratorStep: DesertPyramidPiece.decoratorStep
+        )
+        guard piece.adjustToMinHeight(context: context, random: &random) else {
+            return nil
+        }
+        return piece.generateLoot(random: &random)
+    }
+
+    /// Selects the pyramid orientation and terrain-adjusted bounds without placing blocks.
     public static func generatePieceGraph(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -50,6 +83,7 @@ public enum DesertPyramid {
         )
     }
 
+    /// Generates the pyramid blocks, chest markers, and archaeology markers.
     public static func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -196,6 +230,28 @@ private final class DesertPyramidPiece: StructurePiece {
         )
         self.generateTemple(in: world, chunkBox: chunkBox, random: &random, worldRandom: &worldRandom)
         self.applyArchaeologyPostProcessing(in: world, chunkBox: chunkBox)
+    }
+
+    func generateLoot<R: Random>(random: inout R) -> [StructureLootContainer] {
+        let chestPositions = [
+            self.getWorldPos(10, -11, 8),
+            self.getWorldPos(12, -11, 10),
+            self.getWorldPos(10, -11, 12),
+            self.getWorldPos(8, -11, 10)
+        ]
+        var containers = chestPositions.map { pos in
+            StructureLootContainer(
+                block: Self.chest.type.id,
+                pos: pos,
+                lootTable: Self.chestLootTable,
+                lootSeed: Int64(bitPattern: random.nextLong())
+            )
+        }
+
+        self.addSuspiciousSandCandidates(originX: 16, originY: -4, originZ: 13)
+        self.setBasementMarkerPosition(startX: 14, y: 0, startZ: 11, endX: 18, endZ: 15)
+        containers.append(contentsOf: self.archaeologyLootContainers())
+        return containers
     }
 
     private func generateTemple<R: Random, W: Random>(
@@ -452,7 +508,7 @@ private final class DesertPyramidPiece: StructurePiece {
         self.generateBoxPreservingAir(world, chunkBox, x + 3, -1, z - 3, x + 3, -1, z + 2, Self.cutSandstone, Self.cutSandstone)
         self.generateBoxPreservingAir(world, chunkBox, x - 3, -1, z - 3, x + 3, -1, z - 2, Self.cutSandstone, Self.cutSandstone)
         self.generateBoxPreservingAir(world, chunkBox, x - 3, -1, z + 3, x + 3, -1, z + 3, Self.cutSandstone, Self.cutSandstone)
-        self.addPotentialSuspiciousSandArea(startX: x - 2, startY: y + 1, startZ: z - 2, endX: x + 2, endY: y + 3, endZ: z + 2)
+        self.addSuspiciousSandCandidates(originX: originX, originY: originY, originZ: originZ)
         self.generateBasementRoof(world, chunkBox, startX: x - 2, y: y + 4, startZ: z - 2, endX: x + 2, endZ: z + 2, random: &random)
         self.placeBlock(world, Self.blueTerracotta, x, y, z, chunkBox)
         self.placeBlock(world, Self.orangeTerracotta, x + 1, y, z - 1, chunkBox)
@@ -464,21 +520,13 @@ private final class DesertPyramidPiece: StructurePiece {
         self.placeBlock(world, Self.orangeTerracotta, x, y, z + 2, chunkBox)
         self.placeBlock(world, Self.orangeTerracotta, x, y, z - 2, chunkBox)
         self.placeBlock(world, Self.orangeTerracotta, x + 3, y, z, chunkBox)
-        self.addPotentialSuspiciousSandPosition(x: x + 3, y: y + 1, z: z)
-        self.addPotentialSuspiciousSandPosition(x: x + 3, y: y + 2, z: z)
         self.placeBlock(world, Self.cutSandstone, x + 4, y + 1, z, chunkBox)
         self.placeBlock(world, Self.chiseledSandstone, x + 4, y + 2, z, chunkBox)
         self.placeBlock(world, Self.orangeTerracotta, x - 3, y, z, chunkBox)
-        self.addPotentialSuspiciousSandPosition(x: x - 3, y: y + 1, z: z)
-        self.addPotentialSuspiciousSandPosition(x: x - 3, y: y + 2, z: z)
         self.placeBlock(world, Self.cutSandstone, x - 4, y + 1, z, chunkBox)
         self.placeBlock(world, Self.chiseledSandstone, x - 4, y + 2, z, chunkBox)
         self.placeBlock(world, Self.orangeTerracotta, x, y, z + 3, chunkBox)
-        self.addPotentialSuspiciousSandPosition(x: x, y: y + 1, z: z + 3)
-        self.addPotentialSuspiciousSandPosition(x: x, y: y + 2, z: z + 3)
         self.placeBlock(world, Self.orangeTerracotta, x, y, z - 3, chunkBox)
-        self.addPotentialSuspiciousSandPosition(x: x, y: y + 1, z: z - 3)
-        self.addPotentialSuspiciousSandPosition(x: x, y: y + 2, z: z - 3)
         self.placeBlock(world, Self.cutSandstone, x, y + 1, z - 4, chunkBox)
         self.placeBlock(world, Self.chiseledSandstone, x, -2, z - 4, chunkBox)
     }
@@ -495,12 +543,7 @@ private final class DesertPyramidPiece: StructurePiece {
             )
         }
 
-        var candidates = self.sortedUniquePositions(self.potentialSuspiciousSandPositions)
-        var splitRandom = CheckedRandom(seed: self.worldSeed)
-        let splitter = splitRandom.nextSplitter()
-        var shuffleRandom = splitter.split(usingPos: self.boundingBoxCenter())
-        self.shuffle(&candidates, random: &shuffleRandom)
-        let suspiciousCount = min(candidates.count, Int(shuffleRandom.next(bound: 2)) + 6)
+        let (candidates, suspiciousCount) = self.suspiciousSandSelection()
 
         for (index, pos) in candidates.enumerated() where chunkBox.contains(pos) {
             if index < suspiciousCount {
@@ -540,6 +583,25 @@ private final class DesertPyramidPiece: StructurePiece {
         self.potentialSuspiciousSandPositions.append(self.getWorldPos(x, y, z))
     }
 
+    private func addSuspiciousSandCandidates(originX x: Int32, originY y: Int32, originZ z: Int32) {
+        self.addPotentialSuspiciousSandArea(
+            startX: x - 2,
+            startY: y + 1,
+            startZ: z - 2,
+            endX: x + 2,
+            endY: y + 3,
+            endZ: z + 2
+        )
+        self.addPotentialSuspiciousSandPosition(x: x + 3, y: y + 1, z: z)
+        self.addPotentialSuspiciousSandPosition(x: x + 3, y: y + 2, z: z)
+        self.addPotentialSuspiciousSandPosition(x: x - 3, y: y + 1, z: z)
+        self.addPotentialSuspiciousSandPosition(x: x - 3, y: y + 2, z: z)
+        self.addPotentialSuspiciousSandPosition(x: x, y: y + 1, z: z + 3)
+        self.addPotentialSuspiciousSandPosition(x: x, y: y + 2, z: z + 3)
+        self.addPotentialSuspiciousSandPosition(x: x, y: y + 1, z: z - 3)
+        self.addPotentialSuspiciousSandPosition(x: x, y: y + 2, z: z - 3)
+    }
+
     private func addPotentialSuspiciousSandArea(
         startX: Int32,
         startY: Int32,
@@ -573,6 +635,10 @@ private final class DesertPyramidPiece: StructurePiece {
             }
         }
 
+        self.setBasementMarkerPosition(startX: startX, y: y, startZ: startZ, endX: endX, endZ: endZ)
+    }
+
+    private func setBasementMarkerPosition(startX: Int32, y: Int32, startZ: Int32, endX: Int32, endZ: Int32) {
         var worldSeedRandom = CheckedRandom(seed: self.worldSeed)
         let splitter = worldSeedRandom.nextSplitter()
         var markerRandom = splitter.split(usingPos: self.getWorldPos(startX, y, startZ))
@@ -637,6 +703,39 @@ private final class DesertPyramidPiece: StructurePiece {
             if left.z != right.z { return left.z < right.z }
             return left.x < right.x
         }
+    }
+
+    private func suspiciousSandSelection() -> (candidates: [PosInt3D], count: Int) {
+        var candidates = self.sortedUniquePositions(self.potentialSuspiciousSandPositions)
+        var splitRandom = CheckedRandom(seed: self.worldSeed)
+        let splitter = splitRandom.nextSplitter()
+        var shuffleRandom = splitter.split(usingPos: self.boundingBoxCenter())
+        self.shuffle(&candidates, random: &shuffleRandom)
+        return (candidates, min(candidates.count, Int(shuffleRandom.next(bound: 2)) + 6))
+    }
+
+    private func archaeologyLootContainers() -> [StructureLootContainer] {
+        var containers: [StructureLootContainer] = []
+        if let basementMarkerPos = self.basementMarkerPos {
+            containers.append(
+                StructureLootContainer(
+                    block: Self.suspiciousSand.type.id,
+                    pos: basementMarkerPos,
+                    lootTable: Self.archaeologyLootTable,
+                    lootSeed: Self.blockPosAsLong(basementMarkerPos)
+                )
+            )
+        }
+        let (candidates, suspiciousCount) = self.suspiciousSandSelection()
+        containers.append(contentsOf: candidates.prefix(suspiciousCount).map { pos in
+            StructureLootContainer(
+                block: Self.suspiciousSand.type.id,
+                pos: pos,
+                lootTable: Self.archaeologyLootTable,
+                lootSeed: Self.blockPosAsLong(pos)
+            )
+        })
+        return containers
     }
 
     private func shuffle<R: Random>(_ values: inout [PosInt3D], random: inout R) {

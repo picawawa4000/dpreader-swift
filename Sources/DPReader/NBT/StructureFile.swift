@@ -1,5 +1,6 @@
 import Foundation
 
+/// The direct Codable representation of a vanilla structure-template NBT file.
 public class StructureFile: Codable {
     public let DataVersion: Int32
     public let size: [Int32]
@@ -9,11 +10,13 @@ public class StructureFile: Codable {
     public let entities: [StructureFileEntity]
 }
 
+/// One block-state entry in a raw structure-file palette.
 public struct StructureFilePaletteElement: Codable {
     public let Name: String
     public let Properties: [String: String]?
 }
 
+/// One palette-indexed block in a raw structure file.
 public struct StructureFileBlock: Codable {
     public let state: Int32
     public let pos: [Int32]
@@ -21,6 +24,7 @@ public struct StructureFileBlock: Codable {
     public let nbt: [String: String]?
 }
 
+/// One entity record in a raw structure file.
 public struct StructureFileEntity: Codable {
     public let pos: [Int32]
     public let blockPos: [Int32]
@@ -28,18 +32,21 @@ public struct StructureFileEntity: Codable {
     public let nbt: [String: String]
 }
 
+/// One decoded block in a ``StructureTemplate``.
 public struct StructureTemplateBlock {
     public let state: Int
     public let pos: PosInt3D
     public let nbt: NBTTag?
 }
 
+/// One decoded entity in a ``StructureTemplate``.
 public struct StructureTemplateEntity {
     public let pos: [Double]
     public let blockPos: PosInt3D
     public let nbt: NBTTag?
 }
 
+/// A decoded, generation-ready Minecraft structure template.
 public struct StructureTemplate {
     public let size: PosInt3D
     public let palettes: [[BlockState]]
@@ -231,6 +238,7 @@ public struct StructureTemplate {
     }
 }
 
+/// Errors raised when required structure-template NBT fields are absent or malformed.
 public enum StructureTemplateDecodingError: Error, Equatable {
     case invalidRoot
     case missingField(String)

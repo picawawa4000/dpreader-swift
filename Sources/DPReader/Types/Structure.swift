@@ -1,3 +1,4 @@
+/// The type-specific output of complete structure block generation.
 public enum StructureGeneratedResult {
     case desertPyramid(DesertPyramidGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
@@ -5,11 +6,13 @@ public enum StructureGeneratedResult {
     case woodlandMansion(WoodlandMansionGenerationResult)
 }
 
+/// Errors raised when a structure type or required template cannot be generated.
 public enum StructureGenerationError: Error, Equatable {
     case unsupportedStructureType(String)
     case missingStructureTemplate(String)
 }
 
+/// A structure registry entry decoded from `worldgen/structure` JSON.
 public final class Structure: Codable {
     let type: String
     let biomes: Identifiers
@@ -108,6 +111,9 @@ public final class Structure: Codable {
         case terrainAdaptation = "terrain_adaptation"
     }
 
+    /// Selects and positions the structure's pieces without placing their blocks.
+    ///
+    /// - Returns: The piece graph, or `nil` when terrain rejects the structure start.
     public func generatePieceGraph(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -139,6 +145,9 @@ public final class Structure: Codable {
         }
     }
 
+    /// Generates the complete supported structure, including its sparse block volume and markers.
+    ///
+    /// - Returns: Type-specific generation output, or `nil` when terrain rejects the structure start.
     public func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -175,6 +184,42 @@ public final class Structure: Codable {
             throw StructureGenerationError.unsupportedStructureType(self.type)
         }
     }
+
+    /// Generates only the structure state needed to locate its loot containers.
+    public func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext
+    ) throws -> [StructureLootContainer]? {
+        switch self.type {
+        case "minecraft:desert_pyramid":
+            return DesertPyramid.generateLoot(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
+        case "minecraft:ocean_monument":
+            return OceanMonument.generateLoot(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
+        case "minecraft:stronghold":
+            return Stronghold.generateLoot(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
+        case "minecraft:woodland_mansion":
+            return try WoodlandMansion.generateLoot(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
+        default:
+            throw StructureGenerationError.unsupportedStructureType(self.type)
+        }
+    }
 }
 
 enum StructureSettings {
@@ -203,6 +248,7 @@ enum StructureSettings {
     }
 }
 
+/// Mob-spawn settings that replace biome spawns inside a structure.
 public struct StructureSpawnOverride: Codable {
     let boundingBox: StructureSpawnBoundingBox
     let spawns: [BiomeSpawnerEntry]
@@ -213,11 +259,13 @@ public struct StructureSpawnOverride: Codable {
     }
 }
 
+/// Whether a spawn override applies to the full structure or individual pieces.
 public enum StructureSpawnBoundingBox: String, Codable {
     case full
     case piece
 }
 
+/// The terrain-blending shape applied around a generated structure.
 public enum StructureTerrainAdaptation: String, Codable {
     case bury
     case beardThin = "beard_thin"
@@ -225,6 +273,7 @@ public enum StructureTerrainAdaptation: String, Codable {
     case encapsulate
 }
 
+/// Generation settings for a pool-based jigsaw structure.
 public struct JigsawStructureSettings: Codable {
     let maxDistanceFromCenter: Int
     let size: Int
@@ -303,6 +352,7 @@ public struct JigsawStructureSettings: Codable {
     }
 }
 
+/// Generation settings specific to mineshaft structures.
 public struct MineshaftStructureSettings: Codable {
     let mineshaftType: MineshaftType
 
@@ -311,15 +361,18 @@ public struct MineshaftStructureSettings: Codable {
     }
 }
 
+/// The visual and placement variant of a mineshaft.
 public enum MineshaftType: String, Codable {
     case normal
     case mesa
 }
 
+/// Height selection settings for a Nether fossil.
 public struct NetherFossilStructureSettings: Codable {
     let height: StructureHeightProvider
 }
 
+/// Temperature, size, and integrity settings for an ocean ruin.
 public struct OceanRuinStructureSettings: Codable {
     let biomeTemp: OceanRuinTemperature
     let clusterProbability: Double
@@ -332,15 +385,18 @@ public struct OceanRuinStructureSettings: Codable {
     }
 }
 
+/// The warm or cold template family used by an ocean ruin.
 public enum OceanRuinTemperature: String, Codable {
     case warm
     case cold
 }
 
+/// Weighted setup alternatives for a ruined portal.
 public struct RuinedPortalStructureSettings: Codable {
     let setups: [RuinedPortalSetup]
 }
 
+/// One weighted placement and transformation setup for a ruined portal.
 public struct RuinedPortalSetup: Codable {
     let airPocketProbability: Double
     let canBeCold: Bool
@@ -363,6 +419,7 @@ public struct RuinedPortalSetup: Codable {
     }
 }
 
+/// The terrain-relative location selected for a ruined portal.
 public enum RuinedPortalPlacement: String, Codable {
     case partlyBuried = "partly_buried"
     case onLandSurface = "on_land_surface"
@@ -372,6 +429,7 @@ public enum RuinedPortalPlacement: String, Codable {
     case inNether = "in_nether"
 }
 
+/// A constant or uniform distribution used to choose a structure's start height.
 public enum StructureHeightProvider: Codable, Equatable {
     case constant(VerticalAnchor)
     case uniform(minInclusive: VerticalAnchor, maxInclusive: VerticalAnchor)
@@ -418,6 +476,7 @@ private enum StructurePoolAliasTypeKey: String, CodingKey {
     case type
 }
 
+/// A polymorphic rule that redirects jigsaw structure-pool IDs.
 public enum StructurePoolAlias: Codable {
     case direct(DirectStructurePoolAlias)
     case random(RandomStructurePoolAlias)
@@ -450,6 +509,7 @@ public enum StructurePoolAlias: Codable {
     }
 }
 
+/// A pool alias that always replaces one pool ID with another.
 public struct DirectStructurePoolAlias: Codable {
     let alias: String
     let target: String
@@ -480,6 +540,7 @@ public struct DirectStructurePoolAlias: Codable {
     }
 }
 
+/// A pool alias that selects one weighted target pool.
 public struct RandomStructurePoolAlias: Codable {
     let alias: String
     let targets: [WeightedStructurePoolAliasTarget]
@@ -510,6 +571,7 @@ public struct RandomStructurePoolAlias: Codable {
     }
 }
 
+/// One weighted target in a random pool alias.
 public struct WeightedStructurePoolAliasTarget: Codable {
     let data: String
     let weight: Int
@@ -526,6 +588,7 @@ public struct WeightedStructurePoolAliasTarget: Codable {
     }
 }
 
+/// A pool alias that randomly selects a group of direct aliases.
 public struct RandomGroupStructurePoolAlias: Codable {
     let groups: [WeightedDirectStructurePoolAliasGroup]
 
@@ -551,16 +614,19 @@ public struct RandomGroupStructurePoolAlias: Codable {
     }
 }
 
+/// One weighted collection of direct aliases in a random-group alias.
 public struct WeightedDirectStructurePoolAliasGroup: Codable {
     let data: [DirectStructurePoolAlias]
     let weight: Int
 }
 
+/// Weighted structures paired with the rule that places their candidate starts.
 public struct StructureSet: Codable {
     let placement: StructurePlacement
     let structures: [WeightedStructure]
 }
 
+/// A structure registry ID and its selection weight within a structure set.
 public struct WeightedStructure: Codable {
     let structure: String
     let weight: Int
@@ -581,6 +647,7 @@ private enum StructurePlacementTypeKey: String, CodingKey {
     case type
 }
 
+/// A random-spread or concentric-rings structure placement rule.
 public enum StructurePlacement: Codable {
     case randomSpread(RandomSpreadStructurePlacement)
     case concentricRings(ConcentricRingsStructurePlacement)
@@ -608,6 +675,7 @@ public enum StructurePlacement: Codable {
     }
 }
 
+/// A grid-based placement rule that selects at most one candidate per region.
 public struct RandomSpreadStructurePlacement: Codable {
     let salt: Int
     let separation: Int
@@ -677,11 +745,13 @@ public struct RandomSpreadStructurePlacement: Codable {
     }
 }
 
+/// The distribution used to choose a candidate chunk within a placement region.
 public enum RandomSpreadStructurePlacementSpreadType: String, Codable {
     case linear
     case triangular
 }
 
+/// The vanilla compatibility algorithm used to apply placement frequency.
 public enum RandomSpreadStructurePlacementFrequencyReductionMethod: String, Codable {
     case `default` = "default"
     case legacyType1 = "legacy_type_1"
@@ -689,6 +759,7 @@ public enum RandomSpreadStructurePlacementFrequencyReductionMethod: String, Coda
     case legacyType3 = "legacy_type_3"
 }
 
+/// A rule that suppresses placements near another structure set.
 public struct StructurePlacementExclusionZone: Codable {
     let chunkCount: Int
     let otherSet: String
@@ -710,6 +781,7 @@ public struct StructurePlacementExclusionZone: Codable {
     }
 }
 
+/// A placement rule that arranges candidate starts in rings around world spawn.
 public struct ConcentricRingsStructurePlacement: Codable {
     let count: Int
     let distance: Int

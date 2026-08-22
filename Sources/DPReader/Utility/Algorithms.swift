@@ -21,6 +21,7 @@ public protocol Random {
     mutating func skip(calls: UInt)
 }
 
+/// A deterministic factory for deriving independent random streams from names or positions.
 public protocol RandomSplitter {
     /// The random type returned by this splitter's methods.
     associatedtype ReturnedRandom: Random
@@ -236,6 +237,7 @@ public struct XoroshiroChunkRandom: Random {
     return random
 }
 
+/// A splitter compatible with Minecraft's legacy Java-LCG random source.
 public struct CheckedRandomSplitter: RandomSplitter {
     public typealias ReturnedRandom = CheckedRandom
 
@@ -353,6 +355,7 @@ public struct XoroshiroRandom: Random {
     }
 }
 
+/// A splitter that derives xoroshiro streams from a 128-bit seed.
 public struct XoroshiroRandomSplitter: RandomSplitter {
     public typealias ReturnedRandom = XoroshiroRandom
 
@@ -429,6 +432,7 @@ private let UNSKEW_FACTOR_2D = (3.0 - SQRT_3) / 6.0
 }
 
 // For end islands.
+/// Minecraft-compatible two- and three-dimensional simplex noise.
 public final class SimplexNoise {
     private let permutation: [UInt8]
     private let originX, originY, originZ: Double
@@ -503,6 +507,7 @@ public final class SimplexNoise {
     }
 }
 
+/// One seeded octave of Minecraft-compatible improved Perlin noise.
 public final class PerlinNoise {
     private let permutation: [UInt8]
     private let permutationInts: [Int]
@@ -622,6 +627,7 @@ public final class PerlinNoise {
     }
 }
 
+/// A weighted collection of Perlin octaves sampled as one noise function.
 public final class OctavePerlinNoise {
     private let octaves: [Octave]
 
@@ -693,6 +699,7 @@ public final class OctavePerlinNoise {
     }
 }
 
+/// Two octave-Perlin samplers combined using Minecraft's legacy normal-noise algorithm.
 public final class DoublePerlinNoise {
     internal let firstSampler: OctavePerlinNoise
     internal let secondSampler: OctavePerlinNoise
@@ -756,6 +763,7 @@ struct WASMDoublePerlinNoiseSnapshot {
     let amplitude: Double
 }
 
+/// Vanilla's blended lower, upper, and interpolation noise density function.
 public final class InterpolatedNoise: DensityFunction {
     private let xzScale: Double, yScale: Double
     private let scaledXZScale: Double, scaledYScale: Double
@@ -958,6 +966,7 @@ public enum ModernNoiseNormalization: Codable {
     }
 }
 
+/// The modern seeded double-Perlin implementation used by current noise definitions.
 public final class ModernDoublePerlinNoise {
     private let octaves: [Octave]
 
@@ -998,6 +1007,7 @@ public final class ModernDoublePerlinNoise {
         return out
     }
 
+    /// Amplitudes and the first octave index that define a modern octave stack.
     public struct OctaveInfo {
         let index: Int
         let frequency: Double

@@ -6,6 +6,7 @@ import Foundation
 import zlib
 #endif
 
+/// A strongly typed value in Minecraft's Named Binary Tag format.
 public enum NBTTag: Equatable, Sendable {
     case end
     case byte(Int8)
@@ -28,6 +29,7 @@ public enum NBTTag: Equatable, Sendable {
 }
 
 public extension NBTTag {
+    /// A named top-level NBT value as stored in an NBT byte stream.
     struct Root: Equatable, Sendable {
         public let name: String
         public let tag: NBTTag
@@ -38,6 +40,7 @@ public extension NBTTag {
         }
     }
 
+    /// Errors raised while validating, reading, or writing binary NBT.
     enum CodingError: Error, Equatable {
         case invalidRootTag
         case invalidTagType(UInt8)
@@ -53,6 +56,7 @@ public extension NBTTag {
     }
 }
 
+/// An `Encoder` that produces ``NBTTag`` values or binary NBT data.
 public final class NBTEncoder: Encoder {
     public var codingPath: [any CodingKey]
     public var userInfo: [CodingUserInfoKey: Any]
@@ -96,12 +100,14 @@ public final class NBTEncoder: Encoder {
         NBTSingleValueEncodingContainer(codingPath: codingPath, userInfo: userInfo, box: box)
     }
 
+    /// Encodes a value to an in-memory NBT tag without a root name.
     public func encodeTag<T: Encodable>(_ value: T) throws -> NBTTag {
         let encoder = NBTEncoder(userInfo: userInfo)
         try value.encode(to: encoder)
         return try encoder.box.materialize(codingPath: [])
     }
 
+    /// Encodes a value to a named in-memory NBT root.
     public func encodeRoot<T: Encodable>(_ value: T, rootName: String = "") throws -> NBTTag.Root {
         let tag = try encodeTag(value)
         guard let tagType = tag.tagType, tagType != .end else {
@@ -110,6 +116,7 @@ public final class NBTEncoder: Encoder {
         return NBTTag.Root(name: rootName, tag: tag)
     }
 
+    /// Encodes a Codable value as an uncompressed binary NBT stream.
     public func encode<T: Encodable>(_ value: T, rootName: String = "") throws -> Data {
         try encode(encodeRoot(value, rootName: rootName))
     }
@@ -133,6 +140,7 @@ public final class NBTEncoder: Encoder {
     }
 }
 
+/// A `Decoder` that reads ``NBTTag`` values, binary NBT, and gzip-compressed NBT files.
 public final class NBTDecoder: Decoder {
     public var codingPath: [any CodingKey]
     public var userInfo: [CodingUserInfoKey: Any]
@@ -186,10 +194,12 @@ public final class NBTDecoder: Decoder {
         NBTSingleValueDecodingContainer(codingPath: codingPath, userInfo: userInfo, tag: try requireTag())
     }
 
+    /// Decodes the unnamed payload tag from a binary NBT stream.
     public func decode(_ data: Data) throws -> NBTTag {
         try decodeRoot(data).tag
     }
 
+    /// Decodes the name and payload from a binary NBT stream.
     public func decodeRoot(_ data: Data) throws -> NBTTag.Root {
         var reader = BinaryReader(data: data)
         let typeID = try reader.readUInt8()
@@ -203,6 +213,7 @@ public final class NBTDecoder: Decoder {
         return NBTTag.Root(name: name, tag: tag)
     }
 
+    /// Decodes a Codable value from an in-memory NBT tag.
     public func decode<T: Decodable>(_ type: T.Type, from tag: NBTTag) throws -> T {
         let decoder = NBTDecoder(tag: tag, codingPath: [], userInfo: userInfo)
         return try T(from: decoder)
@@ -212,10 +223,12 @@ public final class NBTDecoder: Decoder {
         try decode(type, from: root.tag)
     }
 
+    /// Decodes a Codable value from an uncompressed binary NBT stream.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         try decode(type, from: decodeRoot(data))
     }
 
+    /// Decodes a Codable value from an uncompressed or gzip-compressed NBT file.
     public func decode<T: Decodable>(_ type: T.Type, fromFileAt url: URL) throws -> T {
         try decode(type, from: try loadNBTData(from: url))
     }
