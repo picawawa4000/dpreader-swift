@@ -1,3 +1,4 @@
+/// A complete noise-generation configuration from `worldgen/noise_settings`.
 public final class NoiseSettings: Codable {
     // let seaLevel: Int
     // let disableMobGeneration: Bool
@@ -83,6 +84,7 @@ public final class NoiseSettings: Codable {
 
 // Several density functions that together create the world.
 // See the wiki's page on noise routers in datapacks for an explanation of what exactly these do.
+/// The named density functions used for terrain, aquifers, ore veins, and biome climate axes.
 public final class NoiseRouter: Codable {
     /// TERRAIN
 
@@ -257,6 +259,7 @@ private struct DensityFunctionEncoder: Encodable {
     }
 }
 
+/// The JSON representation of a namespaced block ID and optional state properties.
 public struct BlockStateDefinition: Codable {
     public let name: String
     public let properties: [String: String]?
@@ -272,6 +275,7 @@ public struct BlockStateDefinition: Codable {
     }
 }
 
+/// A vertical coordinate relative to the world bottom, top, or absolute zero.
 public enum VerticalAnchor: Codable, Equatable {
     case absolute(Int)
     case aboveBottom(Int)
@@ -324,8 +328,10 @@ public enum VerticalAnchor: Codable, Equatable {
     }
 }
 
+/// A polymorphic rule that chooses the block state placed on a generated surface.
 public protocol SurfaceRule: Encodable {}
 
+/// A surface rule that evaluates child rules in order and uses the first match.
 public struct SurfaceRuleSequence: SurfaceRule, Codable {
     public let sequence: [SurfaceRule]
 
@@ -351,6 +357,7 @@ public struct SurfaceRuleSequence: SurfaceRule, Codable {
     }
 }
 
+/// A surface rule that evaluates its child only when a condition succeeds.
 public struct SurfaceRuleConditionRule: SurfaceRule, Codable {
     public let ifTrue: SurfaceRuleCondition
     public let thenRun: SurfaceRule
@@ -380,6 +387,7 @@ public struct SurfaceRuleConditionRule: SurfaceRule, Codable {
     }
 }
 
+/// A terminal surface rule that places one block state.
 public struct SurfaceRuleBlock: SurfaceRule, Codable {
     public let resultState: BlockStateDefinition
 
@@ -404,6 +412,7 @@ public struct SurfaceRuleBlock: SurfaceRule, Codable {
     }
 }
 
+/// The vanilla badlands banding surface rule.
 public struct SurfaceRuleBandlands: SurfaceRule, Codable {
     public init() {}
 
@@ -421,8 +430,10 @@ public struct SurfaceRuleBandlands: SurfaceRule, Codable {
     }
 }
 
+/// A polymorphic predicate used to guard a surface rule.
 public protocol SurfaceRuleCondition: Encodable {}
 
+/// A condition that succeeds above the preliminary terrain surface.
 public struct SurfaceRuleAbovePreliminarySurface: SurfaceRuleCondition, Codable {
     public init() {}
 
@@ -440,6 +451,7 @@ public struct SurfaceRuleAbovePreliminarySurface: SurfaceRuleCondition, Codable 
     }
 }
 
+/// A condition that matches any configured biome or biome tag.
 public struct SurfaceRuleBiomeCondition: SurfaceRuleCondition, Codable {
     public let biomeIs: [String]
 
@@ -468,6 +480,7 @@ public struct SurfaceRuleBiomeCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A condition that tests whether the current column is a surface hole.
 public struct SurfaceRuleHoleCondition: SurfaceRuleCondition, Codable {
     public init() {}
 
@@ -485,6 +498,7 @@ public struct SurfaceRuleHoleCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A condition that compares a named noise value with an inclusive threshold range.
 public struct SurfaceRuleNoiseThresholdCondition: SurfaceRuleCondition, Codable {
     public let noise: String
     public let minThreshold: Double
@@ -519,6 +533,7 @@ public struct SurfaceRuleNoiseThresholdCondition: SurfaceRuleCondition, Codable 
     }
 }
 
+/// A condition that negates another surface-rule condition.
 public struct SurfaceRuleNotCondition: SurfaceRuleCondition, Codable {
     public let invert: SurfaceRuleCondition
 
@@ -543,6 +558,7 @@ public struct SurfaceRuleNotCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A condition that identifies steep terrain transitions.
 public struct SurfaceRuleSteepCondition: SurfaceRuleCondition, Codable {
     public init() {}
 
@@ -560,11 +576,13 @@ public struct SurfaceRuleSteepCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// Whether stone depth is measured from a floor or ceiling surface.
 public enum SurfaceRuleStoneDepthSurfaceType: String, Codable {
     case floor = "floor"
     case ceiling = "ceiling"
 }
 
+/// A condition based on depth below or above a stone surface.
 public struct SurfaceRuleStoneDepthCondition: SurfaceRuleCondition, Codable {
     public let offset: Int
     public let surfaceType: SurfaceRuleStoneDepthSurfaceType
@@ -604,6 +622,7 @@ public struct SurfaceRuleStoneDepthCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A condition that tests the biome-adjusted temperature at the current position.
 public struct SurfaceRuleTemperatureCondition: SurfaceRuleCondition, Codable {
     public init() {}
 
@@ -621,6 +640,7 @@ public struct SurfaceRuleTemperatureCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A seeded probabilistic transition between two vertical anchors.
 public struct SurfaceRuleVerticalGradientCondition: SurfaceRuleCondition, Codable {
     public let randomName: String
     public let trueAtAndBelow: VerticalAnchor
@@ -655,6 +675,7 @@ public struct SurfaceRuleVerticalGradientCondition: SurfaceRuleCondition, Codabl
     }
 }
 
+/// A condition based on the current water height and optional stone-depth offset.
 public struct SurfaceRuleWaterCondition: SurfaceRuleCondition, Codable {
     public let offset: Int
     public let surfaceDepthMultiplier: Int
@@ -689,6 +710,7 @@ public struct SurfaceRuleWaterCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A condition that succeeds above a configured vertical anchor.
 public struct SurfaceRuleYAboveCondition: SurfaceRuleCondition, Codable {
     public let anchor: VerticalAnchor
     public let surfaceDepthMultiplier: Int
@@ -723,6 +745,7 @@ public struct SurfaceRuleYAboveCondition: SurfaceRuleCondition, Codable {
     }
 }
 
+/// A decoding wrapper that dispatches a JSON `type` to a concrete surface condition.
 public struct SurfaceRuleConditionInitializer: Decodable {
     let value: SurfaceRuleCondition
 
@@ -731,6 +754,7 @@ public struct SurfaceRuleConditionInitializer: Decodable {
     }
 }
 
+/// A decoding wrapper that dispatches a JSON `type` to a concrete surface rule.
 public struct SurfaceRuleInitializer: Decodable {
     let value: SurfaceRule
 

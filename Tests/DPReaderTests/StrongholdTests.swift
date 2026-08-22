@@ -69,3 +69,16 @@ private func strongholdChestMarker(
         #expect(state.type.id == "minecraft:end_portal_frame")
     }
 }
+
+@Test func testStrongholdLootOnlyGenerationMatchesFullGeneration() async throws {
+    let worldSeed = UInt64(bitPattern: Int64(-5_340_060_218_582_311_607))
+    let startChunk = PosInt2D(x: -18, z: 86)
+    let context = strongholdTestContext()
+    let full = Stronghold.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
+    let loot = Stronghold.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+    let expected = full.chestLootMarkers.map {
+        StructureLootContainer(block: "minecraft:chest", pos: $0.pos, lootTable: $0.lootTable, lootSeed: $0.lootSeed)
+    }
+
+    #expect(loot == expected)
+}

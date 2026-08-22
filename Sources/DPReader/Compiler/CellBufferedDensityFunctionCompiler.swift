@@ -1146,6 +1146,7 @@ private func floorMod(_ value: Int32, _ divisor: Int32) -> Int32 {
     return remainder < 0 ? remainder + divisor : remainder
 }
 #else
+/// Compiles a density function into a native cell-buffered evaluator for a fixed cell shape and volume.
 public func compile(
     densityFunction root: any DensityFunction,
     cellSize: DensityFunctionCellSize,

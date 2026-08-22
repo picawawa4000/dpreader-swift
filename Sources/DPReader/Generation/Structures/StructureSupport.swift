@@ -261,6 +261,7 @@ func makeBoundingBox(
     }
 }
 
+/// The oriented collection of pieces selected for a structure start.
 public struct PieceGraph {
     public let startChunk: PosInt2D
     public let orientation: CardinalDirection
@@ -268,9 +269,32 @@ public struct PieceGraph {
     public let pieces: [StructurePiece]
 }
 
+/// The absolute position of a non-block feature represented by structure generation.
 public struct StructureMarker: Equatable {
     public let pos: PosInt3D
     public let represents: String
+}
+
+/// A loot-bearing block placed by structure generation.
+public struct StructureLootContainer: Equatable, Sendable {
+    /// The namespaced ID of the container block.
+    public let block: String
+
+    /// The absolute block position of the container.
+    public let pos: PosInt3D
+
+    /// The namespaced ID of the loot table assigned to the container.
+    public let lootTable: String
+
+    /// The seed used to generate the contents of the container.
+    public let lootSeed: Int64
+
+    public init(block: String, pos: PosInt3D, lootTable: String, lootSeed: Int64) {
+        self.block = addDefaultNamespace(block)
+        self.pos = pos
+        self.lootTable = addDefaultNamespace(lootTable)
+        self.lootSeed = lootSeed
+    }
 }
 
 private struct LocalStructurePosition {
@@ -358,6 +382,7 @@ private final class StructurePieceContentsRecorder {
     }
 }
 
+/// Base class for an oriented, bounded unit of a generated structure.
 public class StructurePiece {
     public let orientation: CardinalDirection
     public var boundingBox: BoundingBox

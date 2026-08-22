@@ -1,13 +1,16 @@
 import Foundation
 
+/// The positioned piece graph for a generated stronghold.
 public typealias StrongholdPieceGraph = PieceGraph
 
+/// A legacy marker describing one generated stronghold chest.
 public struct StrongholdLootChestMarker: Equatable {
     public let pos: PosInt3D
     public let lootTable: String
     public let lootSeed: Int64
 }
 
+/// The complete block, piece, loot, and special-marker output of stronghold generation.
 public struct StrongholdGenerationResult {
     public let graph: StrongholdPieceGraph
     public let blocks: StructureBlockVolume
@@ -15,10 +18,27 @@ public struct StrongholdGenerationResult {
     public let markers: [StructureMarker]
 }
 
+/// Entry points for deterministic vanilla stronghold generation.
 public enum Stronghold {
     private static let decoratorStep: Int32 = 4
     private static let decoratorIndex: Int32 = 19
 
+    /// Generates only the chunks that can contain stronghold loot chests.
+    public static func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext
+    ) -> [StructureLootContainer] {
+        self.generateLoot(
+            worldSeed: worldSeed,
+            startChunk: startChunk,
+            context: context,
+            decoratorIndex: Self.decoratorIndex,
+            decoratorStep: Self.decoratorStep
+        )
+    }
+
+    /// Builds and vertically positions the stronghold piece graph without placing blocks.
     public static func generatePieceGraph(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -38,6 +58,7 @@ public enum Stronghold {
         )
     }
 
+    /// Generates all stronghold chunks, blocks, loot chests, and special markers.
     public static func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -120,6 +141,71 @@ public enum Stronghold {
         )
     }
 
+    static func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext,
+        decoratorIndex: Int32,
+        decoratorStep: Int32
+    ) -> [StructureLootContainer] {
+        let layout = self.generateLayout(
+            worldSeed: worldSeed,
+            startChunk: startChunk,
+            seaLevel: context.seaLevel,
+            minimumWorldY: context.minimumWorldY
+        )
+        let bounds = combinedBounds(for: layout.pieces)
+        let writeBounds = expandedWriteBounds(for: bounds, minimumWorldY: context.minimumWorldY)
+        let strongholdPieces = layout.pieces.compactMap { $0 as? StrongholdPiece }
+        var targetChunkSet: Set<StrongholdLootChunk> = []
+        for piece in strongholdPieces {
+            for pos in piece.potentialLootContainerPositions {
+                targetChunkSet.insert(StrongholdLootChunk(x: pos.x >> 4, z: pos.z >> 4))
+            }
+        }
+        let targetChunks = targetChunkSet.sorted {
+            $0.x == $1.x ? $0.z < $1.z : $0.x < $1.x
+        }
+
+        for chunk in targetChunks {
+            var random = getStructureGenerationRandom(
+                worldSeed: worldSeed,
+                chunkX: chunk.x,
+                chunkZ: chunk.z,
+                decoratorIndex: decoratorIndex,
+                decoratorStep: decoratorStep
+            )
+            let chunkBox = BoundingBox(
+                minX: chunk.x << 4,
+                minY: writeBounds.minY,
+                minZ: chunk.z << 4,
+                maxX: (chunk.x << 4) + 15,
+                maxY: writeBounds.maxY,
+                maxZ: (chunk.z << 4) + 15
+            )
+            let volume = StructureBlockVolume(bounds: chunkBox, fallbackSampler: context.blockSampler)
+            let world = StructureWorldView(
+                seaLevel: context.seaLevel,
+                minimumWorldY: context.minimumWorldY,
+                volume: volume
+            )
+            for piece in layout.pieces where piece.boundingBox.intersects(chunkBox) {
+                piece.write(in: world, chunkBox: chunkBox, random: &random)
+            }
+        }
+
+        return strongholdPieces.flatMap { piece in
+            piece.chestLootMarkers.map { marker in
+                StructureLootContainer(
+                    block: "minecraft:chest",
+                    pos: marker.pos,
+                    lootTable: marker.lootTable,
+                    lootSeed: marker.lootSeed
+                )
+            }
+        }
+    }
+
     private static func generateLayout(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -184,6 +270,11 @@ public enum Stronghold {
         )
     }
 
+}
+
+private struct StrongholdLootChunk: Hashable {
+    let x: Int32
+    let z: Int32
 }
 
 private struct StrongholdLayout {
@@ -322,6 +413,10 @@ private class StrongholdPiece: StructurePiece {
 
     override var cachesGeneratedContents: Bool {
         false
+    }
+
+    var potentialLootContainerPositions: [PosInt3D] {
+        []
     }
 
     func fillOpenings<R: Random>(start: StrongholdStart, state: StrongholdLayoutState, random: inout R) {
@@ -730,6 +825,10 @@ private final class StrongholdChestCorridor: StrongholdPiece {
         _ = self.fillForwardOpening(start: start, state: state, random: &random, leftRightOffset: 1, heightOffset: 1)
     }
 
+    override var potentialLootContainerPositions: [PosInt3D] {
+        [self.getWorldPos(3, 2, 3)]
+    }
+
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
         self.fillRandomizedBox(world, chunkBox, 0, 0, 0, 4, 4, 6, boundaryOnly: true, random: &random)
         self.generateEntrance(world, &random, chunkBox, self.entryDoor, 1, 1, 0)
@@ -962,6 +1061,14 @@ private final class StrongholdLibrary: StrongholdPiece {
         self.tall = boundingBox.maxY - boundingBox.minY + 1 > 6
         super.init(chainLength: chainLength, orientation: orientation, boundingBox: boundingBox)
         self.entryDoor = self.getRandomEntrance(using: &random)
+    }
+
+    override var potentialLootContainerPositions: [PosInt3D] {
+        var positions = [self.getWorldPos(3, 3, 5)]
+        if self.tall {
+            positions.append(self.getWorldPos(12, 8, 1))
+        }
+        return positions
     }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
@@ -1451,6 +1558,10 @@ private final class StrongholdSquareRoom: StrongholdPiece {
         _ = self.fillForwardOpening(start: start, state: state, random: &random, leftRightOffset: 4, heightOffset: 1)
         _ = self.fillNWOpening(start: start, state: state, random: &random, heightOffset: 1, leftRightOffset: 4)
         _ = self.fillSEOpening(start: start, state: state, random: &random, heightOffset: 1, leftRightOffset: 4)
+    }
+
+    override var potentialLootContainerPositions: [PosInt3D] {
+        self.roomType == 2 ? [self.getWorldPos(3, 4, 8)] : []
     }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {

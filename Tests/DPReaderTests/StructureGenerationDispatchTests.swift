@@ -291,6 +291,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
 
     #expect(generatedGraph.pieces.count > 1)
     #expect(generatedResult.graph.boundingBox == generatedGraph.boundingBox)
+    #expect(try structure.generateLoot(worldSeed: 503815372, startChunk: PosInt2D(x: 0, z: 0), context: context) == [])
 }
 
 @Test func testStructureDispatchGeneratesStronghold() async throws {
@@ -364,6 +365,14 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
     #expect(!generatedResult.chestLootMarkers.isEmpty)
     #expect(generatedResult.chestLootMarkers.allSatisfy { $0.lootTable == "minecraft:chests/woodland_mansion" })
     #expect(generatedResult.graph.boundingBox == generatedGraph.boundingBox)
+
+    let loot = try #require(
+        try structure.generateLoot(worldSeed: 503815372, startChunk: PosInt2D(x: 0, z: 0), context: context)
+    )
+    let expected = generatedResult.chestLootMarkers.map {
+        StructureLootContainer(block: "minecraft:chest", pos: $0.pos, lootTable: $0.lootTable, lootSeed: $0.lootSeed)
+    }
+    #expect(loot == expected)
 }
 
 @Test func testReferenceWoodlandMansionReplacesLootStructureBlocksWithChests() async throws {
@@ -468,6 +477,14 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
 
     #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:fortress")) {
         _ = try structure.generate(
+            worldSeed: 503815372,
+            startChunk: PosInt2D(x: 0, z: 0),
+            context: context
+        )
+    }
+
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:fortress")) {
+        _ = try structure.generateLoot(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),
             context: context

@@ -1,6 +1,8 @@
 # ``DPReader``
 
-A loader for Minecraft data packs.
+A Swift library for loading Minecraft data packs and reproducing selected world-generation, structure, and loot algorithms.
+
+Load a ``DataPack`` to access its registries, then pass one or more packs to a ``WorldGenerator`` or one of the structure-generation APIs. Registry identifiers use Minecraft namespaced IDs such as `minecraft:overworld`.
 
 ## Topics
 
@@ -18,7 +20,7 @@ A loader for Minecraft data packs.
 
 ### Data
 
-- <doc:Data>
+- <doc:CoreData>
 
 ### Loot
 
@@ -32,3 +34,8 @@ A loader for Minecraft data packs.
 - <doc:Structures>
 - <doc:SurfaceRules>
 - <doc:Dimensions>
+
+### Deterministic Utilities
+
+- <doc:RNG>
+- <doc:DFCompiler>

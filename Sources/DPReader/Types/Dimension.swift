@@ -1,3 +1,4 @@
+/// A dimension definition containing its dimension type ID and chunk generator.
 public final class Dimension: Codable {
     let type: String
     let generator: DimensionGenerator
@@ -25,6 +26,7 @@ public final class Dimension: Codable {
     }
 }
 
+/// A polymorphic data-pack definition that selects how a dimension creates chunks.
 public protocol DimensionGenerator: Codable {
 }
 
@@ -32,6 +34,7 @@ private enum DimensionGeneratorTypeKey: String, CodingKey {
     case type
 }
 
+/// A Codable wrapper that dispatches to a concrete ``DimensionGenerator`` by its `type` field.
 public struct DimensionGeneratorInitializer: Codable {
     let value: DimensionGenerator
 
@@ -79,6 +82,7 @@ private func encodeDimensionGenerator(_ generator: DimensionGenerator, to encode
     }
 }
 
+/// A dimension generator driven by noise settings and a biome source.
 public struct NoiseDimensionGenerator: DimensionGenerator {
     let biomeSource: BiomeSource
     let settings: String
@@ -109,6 +113,7 @@ public struct NoiseDimensionGenerator: DimensionGenerator {
     }
 }
 
+/// A dimension generator that stacks constant block layers.
 public struct FlatDimensionGenerator: DimensionGenerator {
     let settings: FlatGeneratorSettings
 
@@ -134,6 +139,7 @@ public struct FlatDimensionGenerator: DimensionGenerator {
     }
 }
 
+/// Minecraft's block-state debug dimension generator.
 public struct DebugDimensionGenerator: DimensionGenerator {
     public init() {}
 
@@ -152,6 +158,7 @@ public struct DebugDimensionGenerator: DimensionGenerator {
     }
 }
 
+/// A generator that produces an empty dimension.
 public struct VoidDimensionGenerator: DimensionGenerator {
     let biomeSource: BiomeSource?
 
@@ -179,6 +186,7 @@ public struct VoidDimensionGenerator: DimensionGenerator {
     }
 }
 
+/// Biome, layers, lakes, and feature settings for a flat generator.
 public struct FlatGeneratorSettings: Codable {
     let biome: String
     let layers: [FlatLayer]
@@ -217,6 +225,7 @@ public struct FlatGeneratorSettings: Codable {
     }
 }
 
+/// One constant-height block layer in a flat world.
 public struct FlatLayer: Codable {
     let height: Int
     let block: String
@@ -244,6 +253,7 @@ public struct FlatLayer: Codable {
     }
 }
 
+/// A polymorphic rule for selecting biomes during chunk generation.
 public protocol BiomeSource: Codable {
 }
 
@@ -251,6 +261,7 @@ private enum BiomeSourceTypeKey: String, CodingKey {
     case type
 }
 
+/// A Codable wrapper that dispatches to a concrete ``BiomeSource`` by its `type` field.
 public struct BiomeSourceInitializer: Codable {
     let value: BiomeSource
 
@@ -298,6 +309,7 @@ private func encodeBiomeSource(_ biomeSource: BiomeSource, to encoder: Encoder) 
     }
 }
 
+/// A biome source that returns one biome everywhere.
 public struct FixedBiomeSource: BiomeSource {
     let biome: String
 
@@ -321,6 +333,7 @@ public struct FixedBiomeSource: BiomeSource {
     }
 }
 
+/// A biome source that alternates configured biomes in square regions.
 public struct CheckerboardBiomeSource: BiomeSource {
     let biomes: [String]
     let scale: Int
@@ -351,6 +364,7 @@ public struct CheckerboardBiomeSource: BiomeSource {
     }
 }
 
+/// A biome source that maps six-dimensional climate samples to biome IDs.
 public struct MultiNoiseBiomeSource: BiomeSource {
     let preset: String?
     let biomes: [MultiNoiseBiomeSourceBiome]?
@@ -390,6 +404,7 @@ public struct MultiNoiseBiomeSource: BiomeSource {
     }
 }
 
+/// The specialized biome source used by vanilla End dimensions.
 public struct TheEndBiomeSource: BiomeSource {
     public init() {}
 
@@ -408,6 +423,7 @@ public struct TheEndBiomeSource: BiomeSource {
     }
 }
 
+/// One climate hypercube and biome ID in a multi-noise biome source.
 public struct MultiNoiseBiomeSourceBiome: Codable, Sendable {
     let biome: String
     let parameters: MultiNoiseBiomeSourceParameters
@@ -435,6 +451,7 @@ public struct MultiNoiseBiomeSourceBiome: Codable, Sendable {
     }
 }
 
+/// The climate parameter ranges associated with a multi-noise biome entry.
 public struct MultiNoiseBiomeSourceParameters: Codable, Sendable {
     let temperature: BiomeParameterRange
     let humidity: BiomeParameterRange
@@ -473,6 +490,7 @@ public struct MultiNoiseBiomeSourceParameters: Codable, Sendable {
     }
 }
 
+/// A constant or inclusive floating-point range on one biome climate axis.
 public struct BiomeParameterRange: Codable, Sendable {
     let min: Double
     let max: Double

@@ -14,6 +14,7 @@ fileprivate extension URL {
     }
 }
 
+/// Registry groups that a ``DataPack`` loader should skip.
 public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
     public var rawValue: UInt64
 
@@ -21,14 +22,23 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
         self.rawValue = rawValue
     }
 
+    /// Skips density-function JSON.
     public static let noDensityFunctions = DataPackRegistryLoadingOptions(rawValue: 1 << 0)
+    /// Skips noise-parameter JSON.
     public static let noNoises = DataPackRegistryLoadingOptions(rawValue: 1 << 1)
+    /// Skips noise-settings JSON.
     public static let noNoiseSettings = DataPackRegistryLoadingOptions(rawValue: 1 << 2)
+    /// Skips dimension JSON.
     public static let noDimensions = DataPackRegistryLoadingOptions(rawValue: 1 << 3)
+    /// Skips biome JSON.
     public static let noBiomes = DataPackRegistryLoadingOptions(rawValue: 1 << 4)
+    /// Skips structure JSON.
     public static let noStructures = DataPackRegistryLoadingOptions(rawValue: 1 << 5)
+    /// Skips structure-set JSON.
     public static let noStructureSets = DataPackRegistryLoadingOptions(rawValue: 1 << 6)
+    /// Skips enchantment JSON.
     public static let noEnchantments = DataPackRegistryLoadingOptions(rawValue: 1 << 7)
+    /// Skips binary structure templates.
     public static let noStructureTemplates = DataPackRegistryLoadingOptions(rawValue: 1 << 8)
 }
 

@@ -1,3 +1,4 @@
+/// A biome definition decoded from `worldgen/biome` data-pack JSON.
 public final class Biome: Codable {
     let hasPrecipitation: Bool
     let temperature: Double
@@ -77,11 +78,13 @@ public final class Biome: Codable {
     }
 }
 
+/// An optional transformation applied to a biome's base temperature.
 public enum TemperatureModifier: String, Codable {
     case none = "none"
     case frozen = "frozen"
 }
 
+/// A weighted mob-spawn entry in a biome definition.
 public struct BiomeSpawnerEntry: Codable {
     let type: String
     let weight: Int
@@ -96,6 +99,7 @@ public struct BiomeSpawnerEntry: Codable {
     }
 }
 
+/// The spawn-density budget and charge assigned to one entity type in a biome.
 public struct BiomeSpawnCost: Codable {
     let energyBudget: Double
     let charge: Double

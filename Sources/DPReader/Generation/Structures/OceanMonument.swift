@@ -11,6 +11,7 @@ import Foundation
 /// Piece order matches generation order, which matters for overlapping writes.
 public typealias OceanMonumentPieceGraph = PieceGraph
 
+/// World information required while placing an ocean monument.
 public typealias OceanMonumentGenerationContext = StructureGenerationContext
 
 /// A room-grid coordinate within the monument's internal 5x3x5 room lattice.
@@ -46,6 +47,7 @@ struct OceanMonumentRoomPieceGraphSnapshot {
 /// One generated piece in the public graph view.
 public typealias OceanMonumentGraphPiece = StructurePiece
 
+/// The vanilla room or building design represented by a monument piece.
 public enum OceanMonumentPieceKind: String {
     case monumentBuilding
     case entryRoom
@@ -87,6 +89,16 @@ public struct OceanMonumentGenerationResult {
 ///   In vanilla, chunk-local reprocessing can make optional room details such as center pillars disagree
 ///   across chunk boundaries when a room is split between multiple chunk `postProcess` calls.
 public enum OceanMonument {
+    /// Ocean monuments do not contain loot-table-backed container blocks.
+    public static func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext
+    ) -> [StructureLootContainer] {
+        []
+    }
+
+    /// Selects and positions the monument room graph without placing blocks.
     public static func generatePieceGraph(worldSeed: WorldSeed, startChunk: PosInt2D) -> OceanMonumentPieceGraph {
         let root = makeRoot(worldSeed: worldSeed, startChunk: startChunk)
         return pieceGraph(from: root, startChunk: startChunk)
@@ -97,6 +109,7 @@ public enum OceanMonument {
         return roomPieceGraph(from: root, startChunk: startChunk)
     }
 
+    /// Generates the complete monument block volume and entity markers.
     public static func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,

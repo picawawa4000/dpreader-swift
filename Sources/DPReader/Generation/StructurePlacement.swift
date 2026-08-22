@@ -1,5 +1,6 @@
 import Foundation
 
+/// A candidate structure-set position before biome and start validation select one structure.
 public struct StructurePlacementSample {
     public let structureSetKey: RegistryKey<StructureSet>
     public let regionPos: PosInt2D
@@ -16,6 +17,7 @@ public struct StructurePlacementSample {
     }
 }
 
+/// A structure placement whose weighted entry has been resolved to a concrete structure.
 public struct ResolvedStructurePlacementSample {
     public let structureSetKey: RegistryKey<StructureSet>
     public let structureKey: RegistryKey<Structure>
@@ -38,6 +40,7 @@ public struct ResolvedStructurePlacementSample {
     }
 }
 
+/// Deterministically samples and resolves structure-set placements for one world seed.
 public final class StructurePlacementSampler {
     private let worldSeed: WorldSeed
     private let dataPacks: [DataPack]

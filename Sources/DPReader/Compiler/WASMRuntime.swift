@@ -15,6 +15,7 @@ public struct WASMDensityFunctionImports: Sendable {
     }
 }
 
+/// A host-callable WebAssembly density-function export.
 public typealias WASMDensityFunctionInvocation = @Sendable (Int32, Int32, Int32) -> Double
 
 /// Calls a fixed-size bulk export and copies its results into `output`.
@@ -23,6 +24,7 @@ public typealias WASMDensityFunctionBulkInvocation = @Sendable (
     Int32, Int32, Int32, UnsafeMutablePointer<Double>
 ) -> Void
 
+/// The six climate values returned by a compiled climate sampler.
 public struct WASMClimateSample: Sendable, Equatable {
     public let temperature: Double
     public let humidity: Double
@@ -48,10 +50,13 @@ public struct WASMClimateSample: Sendable, Equatable {
     }
 }
 
+/// A host-callable export that evaluates all six climate density functions at one position.
 public typealias WASMClimateInvocation = @Sendable (Int32, Int32, Int32) -> WASMClimateSample
+/// A host-callable compiled biome-tree search.
 public typealias WASMBiomeSearchInvocation = @Sendable (
     Double, Double, Double, Double, Double, Double, Int64, Int32
 ) -> Int32
+/// A host-callable export that fills a buffer with biome palette indices.
 public typealias WASMBiomeIDBulkInvocation = @Sendable (
     Int32, Int32, Int32, UnsafeMutablePointer<Int32>
 ) -> Void
@@ -142,18 +147,23 @@ public extension WASMRuntime {
 
 /// A convenience runtime adapter for browser or embedding bridges implemented with closures.
 public struct ClosureWASMRuntime: WASMRuntime {
+    /// A closure that instantiates one scalar density-function module.
     public typealias DensityFunctionInstantiator = @Sendable (
         [UInt8], String, WASMDensityFunctionImports
     ) throws -> WASMDensityFunctionInvocation
+    /// A closure that instantiates one biome-search module.
     public typealias BiomeSearchInstantiator = @Sendable (
         [UInt8], String
     ) throws -> WASMBiomeSearchInvocation
+    /// A closure that instantiates one six-value climate module.
     public typealias ClimateFunctionInstantiator = @Sendable (
         [UInt8], String, WASMDensityFunctionImports
     ) throws -> WASMClimateInvocation
+    /// A closure that instantiates one fixed-volume density sampler.
     public typealias DensityFunctionBulkInstantiator = @Sendable (
         [UInt8], String, String, Int, WASMDensityFunctionImports
     ) throws -> WASMDensityFunctionBulkInvocation
+    /// A closure that instantiates one fixed-volume biome sampler.
     public typealias BiomeIDBulkInstantiator = @Sendable (
         [UInt8], String, String, Int, WASMDensityFunctionImports
     ) throws -> WASMBiomeIDBulkInvocation

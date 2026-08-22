@@ -1,5 +1,6 @@
 import Foundation
 
+/// A registry selector expressed as one ID, one tag, or an explicit ID list.
 public struct RegistryReferenceList: Codable, Equatable {
     public let values: [TagValue]
 
@@ -38,6 +39,7 @@ public struct RegistryReferenceList: Codable, Equatable {
     }
 }
 
+/// A linear base-plus-per-level enchantment cost.
 public struct EnchantmentCost: Codable, Equatable {
     public let base: Int
     public let perLevelAboveFirst: Int
@@ -57,6 +59,7 @@ public struct EnchantmentCost: Codable, Equatable {
     }
 }
 
+/// The fields of an enchantment definition needed during loot evaluation.
 public struct Enchantment: Codable, Equatable {
     public let description: JSONValue
     public let supportedItems: RegistryReferenceList
@@ -134,6 +137,7 @@ public struct Enchantment: Codable, Equatable {
     }
 }
 
+/// Enchantment registries and tags consulted by enchantment-related item modifiers.
 public struct LootEnchantmentResources {
     public let enchantmentRegistry: Registry<Enchantment>
     public let tagRegistry: Registry<TagDefinition>

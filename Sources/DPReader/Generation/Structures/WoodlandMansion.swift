@@ -1,13 +1,16 @@
 import Foundation
 
+/// The positioned piece graph for a generated woodland mansion.
 public typealias WoodlandMansionPieceGraph = PieceGraph
 
+/// A legacy marker describing one generated woodland-mansion chest.
 public struct WoodlandMansionLootChestMarker: Equatable {
     public let pos: PosInt3D
     public let lootTable: String
     public let lootSeed: Int64
 }
 
+/// A selected mansion room template and its position in the generated layout.
 public struct WoodlandMansionRoomPlacement: Equatable {
     public let floor: Int
     public let templateName: String
@@ -39,6 +42,7 @@ public struct WoodlandMansionRoomPlacement: Equatable {
     }
 }
 
+/// The complete block, piece, loot, and entity-marker output of mansion generation.
 public struct WoodlandMansionGenerationResult {
     public let graph: WoodlandMansionPieceGraph
     public let blocks: StructureBlockVolume
@@ -46,10 +50,33 @@ public struct WoodlandMansionGenerationResult {
     public let markers: [StructureMarker]
 }
 
+/// Entry points for deterministic vanilla woodland-mansion generation.
 public enum WoodlandMansion {
     static let chestLootTable = "minecraft:chests/woodland_mansion"
     private static let foundationState = BlockState(type: Block(withID: "minecraft:cobblestone"))
 
+    /// Generates loot chests from the selected mansion templates without placing their blocks.
+    public static func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext
+    ) throws -> [StructureLootContainer]? {
+        guard let graph = try generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context) else {
+            return nil
+        }
+        var random = getStructureGenerationRandom(
+            worldSeed: worldSeed,
+            chunkX: startChunk.x,
+            chunkZ: startChunk.z,
+            decoratorIndex: 0,
+            decoratorStep: 0
+        )
+        return graph.pieces.compactMap { $0 as? WoodlandMansionPiece }.flatMap { piece in
+            piece.generateLoot(random: &random)
+        }
+    }
+
+    /// Selects mansion templates and adjusts their piece graph to terrain without placing blocks.
     public static func generatePieceGraph(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -72,6 +99,9 @@ public enum WoodlandMansion {
         )
     }
 
+    /// Returns the selected room templates and their absolute bounds.
+    ///
+    /// Set `adjustToTerrain` to `false` to inspect the raw layout around Y zero.
     public static func generateRoomPlacements(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -87,6 +117,7 @@ public enum WoodlandMansion {
         )?.rooms
     }
 
+    /// Generates the mansion's templates, foundation, loot chests, and entity markers.
     public static func generate(
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
@@ -429,6 +460,42 @@ private final class WoodlandMansionPiece: StructurePiece {
         }
     }
 
+    func generateLoot<R: Random>(random: inout R) -> [StructureLootContainer] {
+        var containers: [StructureLootContainer] = []
+        for block in self.template.blocks {
+            guard block.state >= 0 && block.state < self.template.palette.count else {
+                continue
+            }
+            let templateState = self.template.palette[block.state]
+            guard templateState.type.id == "minecraft:structure_block",
+                  let metadata = Self.structureMetadata(from: block.nbt)
+            else {
+                continue
+            }
+
+            if Self.chestFacing(for: metadata) != nil {
+                let pos = Self.transformedWorldPos(
+                    for: block.pos,
+                    templateSize: self.template.size,
+                    anchor: PosInt3D(x: self.boundingBox.minX, y: self.boundingBox.minY, z: self.boundingBox.minZ),
+                    mirror: self.mirror,
+                    rotation: self.rotation
+                )
+                containers.append(
+                    StructureLootContainer(
+                        block: "minecraft:chest",
+                        pos: pos,
+                        lootTable: WoodlandMansion.chestLootTable,
+                        lootSeed: Int64(bitPattern: random.nextLong())
+                    )
+                )
+            } else if metadata == "Group of Allays" {
+                _ = random.next(bound: 3)
+            }
+        }
+        return containers
+    }
+
     private func handleStructureMetadata<R: Random>(
         _ nbt: NBTTag?,
         world: StructureWorldView,
@@ -438,9 +505,7 @@ private final class WoodlandMansionPiece: StructurePiece {
         z: Int32,
         random: inout R
     ) {
-        guard case .compound(let values)? = nbt,
-              case .string(let metadata)? = values["metadata"]
-        else {
+        guard let metadata = Self.structureMetadata(from: nbt) else {
             return
         }
 
@@ -475,6 +540,15 @@ private final class WoodlandMansionPiece: StructurePiece {
         default:
             return
         }
+    }
+
+    private static func structureMetadata(from nbt: NBTTag?) -> String? {
+        guard case .compound(let values)? = nbt,
+              case .string(let metadata)? = values["metadata"]
+        else {
+            return nil
+        }
+        return metadata
     }
 
     private static func chestFacing(for metadata: String) -> CardinalDirection? {

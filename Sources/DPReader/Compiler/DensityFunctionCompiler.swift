@@ -6,6 +6,7 @@ public enum CompilationBackend: Sendable, Equatable {
     case wasm
 }
 
+/// Errors raised while lowering or instantiating a compiled density function.
 public enum DensityFunctionCompilationError: Error {
     case noLLVM
     case unsupportedCompilationStrategy(CompilationBackend)
@@ -22,6 +23,7 @@ private typealias NativeCompiledBiomeSearch = @convention(c) (
 private typealias NativeCompiledDensityFunctionIRBulk = @convention(c) (
     Int32, Int32, Int32, Int64, Int64, UnsafeMutablePointer<Int32>?
 ) -> Void
+/// The native calling convention for a density function that fills a caller-owned output buffer.
 public typealias CompiledDensityFunctionBuffer = @convention(c) (
     UnsafeRawPointer?,
     Int32,
@@ -249,6 +251,7 @@ public final class CompiledDensityFunctionBulkProgram: @unchecked Sendable {
     }
 }
 
+/// Describes the dimensions and coordinate stride of a fixed bulk-sampling volume.
 public struct CompiledDensityFunctionBufferContext: Sendable {
     public let xCount: Int32
     public let yCount: Int32
@@ -274,6 +277,7 @@ public struct CompiledDensityFunctionBufferContext: Sendable {
     }
 }
 
+/// Optional behavior used when compiling a buffered density-function program.
 public struct BufferedDensityFunctionCompilationOptions: Sendable {
     public var profilingState: BufferedDensityFunctionProfilingState?
 
@@ -282,6 +286,7 @@ public struct BufferedDensityFunctionCompilationOptions: Sendable {
     }
 }
 
+/// Timing and allocation statistics for one node in a buffered density-function plan.
 public struct BufferedDensityFunctionProfilingNode: Sendable, Codable {
     public let index: Int
     public let kind: String
@@ -297,6 +302,7 @@ public struct BufferedDensityFunctionProfilingNode: Sendable, Codable {
     public let totalNanos: UInt64
 }
 
+/// A timestamped buffer-pool event captured during profiling.
 public struct BufferedDensityFunctionProfilingEvent: Sendable, Codable {
     public let nanosSinceStart: UInt64
     public let kind: String
@@ -307,6 +313,7 @@ public struct BufferedDensityFunctionProfilingEvent: Sendable, Codable {
     public let retainedValueCount: Int
 }
 
+/// Call-count and timing statistics for a sampled density function.
 public struct BufferedDensityFunctionProfilingFunction: Sendable, Codable {
     public let index: Int
     public let type: String
@@ -316,6 +323,7 @@ public struct BufferedDensityFunctionProfilingFunction: Sendable, Codable {
     public let totalNanos: UInt64
 }
 
+/// A snapshot of compilation and execution metrics for a buffered program.
 public struct BufferedDensityFunctionProfilingReport: Sendable, Codable {
     public let buildNanos: UInt64
     public let totalNanos: UInt64
@@ -347,6 +355,7 @@ public struct BufferedDensityFunctionProfilingReport: Sendable, Codable {
     public let events: [BufferedDensityFunctionProfilingEvent]
 }
 
+/// Thread-safe storage for the most recently completed profiling report.
 public final class BufferedDensityFunctionProfilingState: @unchecked Sendable {
     private let lock = NSLock()
     private var lastReport: BufferedDensityFunctionProfilingReport?
@@ -517,6 +526,7 @@ private func findPreferredBulkGenerationCellCounts(
     return findPreferredBulkGenerationCellCounts(in: function, registry: registry, visited: &visited, referenceStack: &referenceStack)
 }
 
+/// Compiles a scalar density function with the selected backend.
 public func compile(
     densityFunction root: any DensityFunction,
     strategy: CompilationBackend = .llvm,

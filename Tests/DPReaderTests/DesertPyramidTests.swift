@@ -416,6 +416,26 @@ private func expectedRealDesertPyramidArchaeology() -> [ExpectedDesertPyramidLoo
     }
 }
 
+@Test func testDesertPyramidLootOnlyGenerationMatchesFullGeneration() async throws {
+    let worldSeed: WorldSeed = 503_815_372
+    let startChunk = PosInt2D(x: 0, z: 0)
+    let context = desertPyramidTestContext()
+    let full = try #require(
+        DesertPyramid.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
+    )
+    let loot = try #require(
+        DesertPyramid.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+    )
+
+    let expectedChests = full.chestLootMarkers.map {
+        StructureLootContainer(block: "minecraft:chest", pos: $0.pos, lootTable: $0.lootTable, lootSeed: $0.lootSeed)
+    }
+    let expectedArchaeology = full.archaeologyLootMarkers.map {
+        StructureLootContainer(block: "minecraft:suspicious_sand", pos: $0.pos, lootTable: $0.lootTable, lootSeed: $0.lootSeed)
+    }
+    #expect(loot == expectedChests + expectedArchaeology)
+}
+
 @Test func testDesertPyramidRejectsWhenAnyPlacementCornerIsBelowSeaLevel() async throws {
     let context = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
         let lowCorner = (pos.x == 0 && pos.z == 0)

@@ -76,6 +76,7 @@ These types are responsible for generating structures.
 - ``StructurePiece``
 - ``StructureGenerationError``
 - ``StructureGeneratedResult``
+- ``StructureLootContainer``
 - ``PieceGraph``
 - ``CardinalDirection``
 - ``LocalDirection``

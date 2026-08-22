@@ -7,6 +7,7 @@ import Foundation
 /// provided at https://minecraft.wiki/w/Pack_format#List_of_pack_formats.
 /// For formats before 82.0, the minor version will always be 0.
 public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, Sendable {
+    /// The pack format used when a data pack has no readable metadata.
     public static let assumedCurrent = Version(major: 92, minor: 0)
 
     public let major: Int
@@ -95,18 +96,22 @@ public struct VersionRange: Hashable, Sendable, CustomStringConvertible {
         self.maximum = maximum
     }
 
+    /// Creates a range containing exactly one pack format.
     public static func exactly(_ version: Version) -> VersionRange {
         VersionRange(minimum: version, maximum: version)
     }
 
+    /// Creates a range with no upper bound.
     public static func atLeast(_ version: Version) -> VersionRange {
         VersionRange(minimum: version, maximum: nil)
     }
 
+    /// Creates a range with no lower bound.
     public static func atMost(_ version: Version) -> VersionRange {
         VersionRange(minimum: nil, maximum: version)
     }
 
+    /// Creates an inclusive range between two pack formats.
     public static func between(_ minimum: Version, _ maximum: Version) -> VersionRange {
         VersionRange(minimum: minimum, maximum: maximum)
     }
@@ -142,6 +147,7 @@ public struct PackVersioning: Hashable, Sendable {
     public let supportedVersions: VersionRange
     public let selectedVersion: Version
 
+    /// Versioning used when no pack metadata is available.
     public static let assumedCurrent = PackVersioning(
         supportedVersions: .exactly(.assumedCurrent),
         selectedVersion: .assumedCurrent

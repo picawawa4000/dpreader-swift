@@ -1378,10 +1378,15 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
 /// Stores one 16x16x16 chunk section of terrain, exact block-biome data, and quart-biome data.
 /// Not concurrency-safe; callers must synchronize concurrent reads and writes.
 public final class ProtoChunkSection {
+    /// The length of each block axis in a section.
     public static let sideLength = 16
+    /// The number of block positions in a section.
     public static let blockCount = sideLength * sideLength * sideLength
+    /// The number of words in the solid-terrain bitmap.
     public static let bitmapWordCount = blockCount / 64
+    /// The length of each quart-biome axis in a section.
     public static let biomeSideLength = 4
+    /// The number of quart-biome positions in a section.
     public static let biomeCount = biomeSideLength * biomeSideLength * biomeSideLength
 
     private var terrainBitmap = [UInt64](repeating: 0, count: bitmapWordCount)
@@ -1505,9 +1510,13 @@ public final class ProtoChunkSection {
 /// A chunk implementation for world generation that stores terrain, exact block biomes, and quart biomes in 16x16x16 sections.
 /// Not concurrency-safe; callers must synchronize access when mutating or reading the same instance from multiple threads.
 public final class ProtoChunk {
+    /// The horizontal length of a chunk in blocks.
     public static let sideLength = 16
+    /// The vertical length of each chunk section in blocks.
     public static let sectionHeight = 16
+    /// The horizontal length of a chunk in quart-biome coordinates.
     public static let biomeSideLength = 4
+    /// The number of blocks represented by one quart-biome coordinate.
     public static let biomeScale = 4
 
     public private(set) var minY: Int32 = 0
@@ -1667,6 +1676,7 @@ public final class ProtoChunk {
     }
 }
 
+/// Optional metadata to compute for each three-dimensional terrain LOD sample.
 public struct TerrainLODPayloadOptions: OptionSet, Sendable, Equatable {
     public let rawValue: Int
 
@@ -1680,11 +1690,13 @@ public struct TerrainLODPayloadOptions: OptionSet, Sendable, Equatable {
     public static let material = TerrainLODPayloadOptions(rawValue: 1 << 1)
 }
 
+/// Optional biome and material metadata attached to one terrain LOD sample.
 public struct TerrainLODSamplePayload: Equatable {
     public let biome: RegistryKey<Biome>?
     public let materialID: String?
 }
 
+/// The chunk coordinates used to index grouped LOD output.
 public struct TerrainLODChunkKey: Hashable, Sendable {
     public let x: Int32
     public let z: Int32
@@ -1704,6 +1716,7 @@ public struct TerrainLODColumn: Equatable {
     public let samplePayloads: [TerrainLODSamplePayload]?
 }
 
+/// Terrain LOD columns grouped by their containing chunk.
 public struct TerrainLODChunk: Equatable {
     public let key: TerrainLODChunkKey
     public let columns: [TerrainLODColumn]
@@ -1734,6 +1747,7 @@ public struct TerrainLODResult: Equatable {
     }
 }
 
+/// One adaptive horizontal cell containing an optional surface height and biome.
 public struct TerrainSurfaceLODCell: Equatable {
     public let x: Int32
     public let z: Int32
@@ -1742,6 +1756,7 @@ public struct TerrainSurfaceLODCell: Equatable {
     public let surfaceBiome: RegistryKey<Biome>?
 }
 
+/// Surface LOD cells grouped by their containing chunk.
 public struct TerrainSurfaceLODChunk: Equatable {
     public let key: TerrainLODChunkKey
     public let cells: [TerrainSurfaceLODCell]
@@ -1771,6 +1786,7 @@ public struct TerrainSurfaceLODResult: Equatable {
     }
 }
 
+/// A progress snapshot emitted while streaming terrain or surface LOD chunks.
 public struct TerrainLODProgress: Sendable, Equatable {
     public let completedChunkCount: Int
     public let totalChunkCount: Int
@@ -5563,6 +5579,7 @@ public final class WorldGenerator {
     }
 }
 
+/// The six climate density values used to select a biome.
 public struct NoisePoint: Sendable, Equatable {
     public let temperature: Double
     public let humidity: Double

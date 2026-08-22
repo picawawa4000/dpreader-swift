@@ -177,6 +177,7 @@ public final class UnbakedNoise: DensityFunctionNoise {
     }
 }
 
+/// A seed-initialized noise implementation ready for density-function sampling.
 public final class BakedNoise: DensityFunctionNoise {
     public let key: RegistryKey<NoiseDefinition>
     let sampler: DoublePerlinNoise
@@ -277,6 +278,7 @@ private struct EndIslandsSimplexNoise {
     }
 }
 
+/// A mutable simplex-noise sampler used by End-island density generation.
 public struct DensityFunctionSimplexNoise {
     fileprivate var noise: EndIslandsSimplexNoise
     // For debugging.
@@ -442,6 +444,7 @@ public struct DensityFunctionSimplexNoise {
         return self.operation
     }
 
+    /// The unary transformation applied to the input density value.
     public enum OperationType: String, Decodable {
         case ABS = "minecraft:abs"
         case SQUARE = "minecraft:square"
@@ -547,6 +550,7 @@ public struct DensityFunctionSimplexNoise {
         return self.operation
     }
 
+    /// The arithmetic operation applied to the two input density functions.
     public enum OperationType: String, Decodable {
         case ADD = "minecraft:add"
         case MULTIPLY = "minecraft:mul"
@@ -1156,6 +1160,7 @@ public struct DensityFunctionSimplexNoise {
         return self.argument
     }
 
+    /// The vanilla caching strategy represented by this marker.
     public enum CacheType: String, Decodable {
         case interpolated = "minecraft:interpolated"
         case cache2D = "minecraft:cache_2d"
@@ -1470,6 +1475,7 @@ public struct DensityFunctionSimplexNoise {
         return self.type
     }
 
+    /// The rarity mapper used to scale the sampled noise.
     public enum ScalingType: String, Codable {
         case scaleTunnels = "type_1"
         case scaleCaves = "type_2"
