@@ -12,17 +12,20 @@ public struct StructureGenerationContext {
     public let minimumWorldY: Int32
     public let blockSampler: (PosInt3D) -> BlockState
     public let structureTemplateProvider: (String) -> StructureTemplate?
+    private let structureDecorationParametersProvider: (String) -> StructureDecorationParameters?
 
     public init(
         seaLevel: Int32,
         minimumWorldY: Int32,
         blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) },
-        structureTemplateProvider: @escaping (String) -> StructureTemplate? = { _ in nil }
+        structureTemplateProvider: @escaping (String) -> StructureTemplate? = { _ in nil },
+        structureDecorationParametersProvider: @escaping (String) -> StructureDecorationParameters? = { _ in nil }
     ) {
         self.seaLevel = seaLevel
         self.minimumWorldY = minimumWorldY
         self.blockSampler = blockSampler
         self.structureTemplateProvider = structureTemplateProvider
+        self.structureDecorationParametersProvider = structureDecorationParametersProvider
     }
 
     public init(
@@ -32,8 +35,10 @@ public struct StructureGenerationContext {
         blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) }
     ) {
         let templateRegistry = Registry<StructureTemplate>()
+        let structureRegistry = Registry<Structure>()
         for dataPack in dataPacks {
             templateRegistry.mergeDown(with: dataPack.structureTemplateRegistry)
+            structureRegistry.mergeDown(with: dataPack.structureRegistry)
         }
         self.init(
             seaLevel: seaLevel,
@@ -41,12 +46,74 @@ public struct StructureGenerationContext {
             blockSampler: blockSampler,
             structureTemplateProvider: { identifier in
                 templateRegistry.get(RegistryKey(referencing: addDefaultNamespace(identifier)))
+            },
+            structureDecorationParametersProvider: { identifier in
+                let normalizedIdentifier = addDefaultNamespace(identifier)
+                guard let entry = structureRegistry.entries().first(where: { $0.key.name == normalizedIdentifier }) else {
+                    return nil
+                }
+                guard let step = StructureGenerationStep(structureStep: entry.value.step) else {
+                    return nil
+                }
+                let index = structureRegistry.entries()
+                    .filter { StructureGenerationStep(structureStep: $0.value.step) == step }
+                    .map(\.key.name)
+                    .sorted()
+                    .firstIndex(of: entry.key.name)
+                guard let index else {
+                    return nil
+                }
+                return StructureDecorationParameters(step: step.rawIndex, index: Int32(index))
             }
         )
     }
 
     public func structureTemplate(named identifier: String) -> StructureTemplate? {
         self.structureTemplateProvider(addDefaultNamespace(identifier))
+    }
+
+    /// Returns the decoration RNG parameters for a loaded structure registry entry.
+    ///
+    /// The generation step comes from the structure's data-pack definition. Its index is
+    /// calculated from the active registry entries at that same step, so it tracks changes
+    /// to the structure registry between game versions.
+    public func structureDecorationParameters(forStructureID identifier: String) -> StructureDecorationParameters? {
+        self.structureDecorationParametersProvider(addDefaultNamespace(identifier))
+    }
+}
+
+/// The numeric parameters used to seed a structure's chunk-decoration random stream.
+public struct StructureDecorationParameters: Equatable {
+    /// The structure's generation-step ordinal.
+    public let step: Int32
+    /// The structure's position among entries in that generation step.
+    public let index: Int32
+}
+
+/// Vanilla generation steps used by structure definitions.
+///
+/// Structure JSON supplies the named step; this type translates that loaded name to the
+/// ordinal used by chunk-decoration RNG seeding.
+public enum StructureGenerationStep: String, CaseIterable {
+    case rawGeneration = "raw_generation"
+    case lakes
+    case localModifications = "local_modifications"
+    case undergroundStructures = "underground_structures"
+    case surfaceStructures = "surface_structures"
+    case strongholds
+    case undergroundOres = "underground_ores"
+    case undergroundDecoration = "underground_decoration"
+    case fluidSprings = "fluid_springs"
+    case vegetalDecoration = "vegetal_decoration"
+    case topLayerModification = "top_layer_modification"
+
+    /// The ordinal Mojang uses when deriving the decoration RNG seed.
+    var rawIndex: Int32 {
+        Int32(Self.allCases.firstIndex(of: self)!)
+    }
+
+    init?(structureStep rawValue: String) {
+        self.init(rawValue: addDefaultNamespace(rawValue).replacingOccurrences(of: "minecraft:", with: ""))
     }
 }
 

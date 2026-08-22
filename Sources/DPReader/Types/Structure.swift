@@ -10,6 +10,7 @@ public enum StructureGeneratedResult {
 public enum StructureGenerationError: Error, Equatable {
     case unsupportedStructureType(String)
     case missingStructureTemplate(String)
+    case missingStructureDecorationParameters(String)
 }
 
 /// A structure registry entry decoded from `worldgen/structure` JSON.
@@ -172,10 +173,14 @@ public final class Structure: Codable {
                 Stronghold.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
             )
         case "minecraft:woodland_mansion":
+            guard let decoration = context.structureDecorationParameters(forStructureID: "minecraft:mansion") else {
+                throw StructureGenerationError.missingStructureDecorationParameters("minecraft:mansion")
+            }
             guard let result = try WoodlandMansion.generate(
                 worldSeed: worldSeed,
                 startChunk: startChunk,
-                context: context
+                context: context,
+                decoration: decoration
             ) else {
                 return nil
             }
@@ -211,10 +216,14 @@ public final class Structure: Codable {
                 context: context
             )
         case "minecraft:woodland_mansion":
+            guard let decoration = context.structureDecorationParameters(forStructureID: "minecraft:mansion") else {
+                throw StructureGenerationError.missingStructureDecorationParameters("minecraft:mansion")
+            }
             return try WoodlandMansion.generateLoot(
                 worldSeed: worldSeed,
                 startChunk: startChunk,
-                context: context
+                context: context,
+                decoration: decoration
             )
         default:
             throw StructureGenerationError.unsupportedStructureType(self.type)

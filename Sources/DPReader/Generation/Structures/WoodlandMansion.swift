@@ -61,19 +61,52 @@ public enum WoodlandMansion {
         startChunk: PosInt2D,
         context: StructureGenerationContext
     ) throws -> [StructureLootContainer]? {
+        guard let decoration = context.structureDecorationParameters(forStructureID: "minecraft:mansion") else {
+            throw StructureGenerationError.missingStructureDecorationParameters("minecraft:mansion")
+        }
+        return try generateLoot(
+            worldSeed: worldSeed,
+            startChunk: startChunk,
+            context: context,
+            decoration: decoration
+        )
+    }
+
+    static func generateLoot(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext,
+        decoration: StructureDecorationParameters
+    ) throws -> [StructureLootContainer]? {
         guard let graph = try generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context) else {
             return nil
         }
-        var random = getStructureGenerationRandom(
-            worldSeed: worldSeed,
-            chunkX: startChunk.x,
-            chunkZ: startChunk.z,
-            decoratorIndex: 0,
-            decoratorStep: 0
-        )
-        return graph.pieces.compactMap { $0 as? WoodlandMansionPiece }.flatMap { piece in
-            piece.generateLoot(random: &random)
+        let mansionPieces = graph.pieces.compactMap { $0 as? WoodlandMansionPiece }
+        var containers: [StructureLootContainer] = []
+        let bounds = graph.boundingBox
+        for chunkZ in (bounds.minZ >> 4)...(bounds.maxZ >> 4) {
+            for chunkX in (bounds.minX >> 4)...(bounds.maxX >> 4) {
+                let chunkBox = BoundingBox(
+                    minX: chunkX &* 16,
+                    minY: context.minimumWorldY,
+                    minZ: chunkZ &* 16,
+                    maxX: chunkX &* 16 &+ 15,
+                    maxY: Int32.max,
+                    maxZ: chunkZ &* 16 &+ 15
+                )
+                var random = getStructureGenerationRandom(
+                    worldSeed: worldSeed,
+                    chunkX: chunkX,
+                    chunkZ: chunkZ,
+                    decoratorIndex: decoration.index,
+                    decoratorStep: decoration.step
+                )
+                for piece in mansionPieces where piece.boundingBox.intersects(chunkBox) {
+                    containers.append(contentsOf: piece.generateLoot(in: chunkBox, random: &random))
+                }
+            }
         }
+        return containers
     }
 
     /// Selects mansion templates and adjusts their piece graph to terrain without placing blocks.
@@ -123,6 +156,23 @@ public enum WoodlandMansion {
         startChunk: PosInt2D,
         context: StructureGenerationContext
     ) throws -> WoodlandMansionGenerationResult? {
+        guard let decoration = context.structureDecorationParameters(forStructureID: "minecraft:mansion") else {
+            throw StructureGenerationError.missingStructureDecorationParameters("minecraft:mansion")
+        }
+        return try generate(
+            worldSeed: worldSeed,
+            startChunk: startChunk,
+            context: context,
+            decoration: decoration
+        )
+    }
+
+    static func generate(
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext,
+        decoration: StructureDecorationParameters
+    ) throws -> WoodlandMansionGenerationResult? {
         guard let graph = try generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context) else {
             return nil
         }
@@ -131,8 +181,8 @@ public enum WoodlandMansion {
             worldSeed: worldSeed,
             chunkX: startChunk.x,
             chunkZ: startChunk.z,
-            decoratorIndex: 0,
-            decoratorStep: 0
+            decoratorIndex: decoration.index,
+            decoratorStep: decoration.step
         )
         let writeBounds = expandedWriteBounds(for: graph.boundingBox, minimumWorldY: context.minimumWorldY)
         let volume = StructureBlockVolume(bounds: writeBounds, fallbackSampler: context.blockSampler)
@@ -244,7 +294,11 @@ public enum WoodlandMansion {
             }
 
             for piece in pieces {
-                piece.boundingBox.move(0, terrainY, 0)
+                if let mansionPiece = piece as? WoodlandMansionPiece {
+                    mansionPiece.movePlacement(byY: terrainY)
+                } else {
+                    piece.boundingBox.move(0, terrainY, 0)
+                }
             }
             rooms = rooms.map { $0.moved(y: terrainY) }
         }
@@ -378,7 +432,12 @@ private enum MansionDirection: CaseIterable {
         }
     }
 
-    static let vanillaHorizontalOrder: [MansionDirection] = [.south, .west, .north, .east]
+    /// `Direction.fromHorizontalQuarterTurns` indexes its directions in this order.
+    static let horizontalQuarterTurnOrder: [MansionDirection] = [.south, .west, .north, .east]
+
+    /// Iterating `Direction.Type.HORIZONTAL` preserves the declaration order of
+    /// Minecraft's horizontal `Direction` values.
+    static let horizontalIterationOrder: [MansionDirection] = [.north, .south, .west, .east]
 }
 
 private struct MansionPlacement {
@@ -401,6 +460,8 @@ private struct MansionGeneratedPieces {
 private final class WoodlandMansionPiece: StructurePiece {
     let templateName: String
     private let template: StructureTemplate
+    /// Vanilla's placement origin, before a template's rotation moves its bounds.
+    private var placementOrigin: PosInt3D
     private let rotation: MansionRotation
     private let mirror: MansionMirror
     private(set) var chestLootMarkers: [WoodlandMansionLootChestMarker] = []
@@ -417,19 +478,18 @@ private final class WoodlandMansionPiece: StructurePiece {
         }
         self.templateName = templateName
         self.template = template
+        self.placementOrigin = position
         self.rotation = rotation
         self.mirror = mirror
-        let size = Self.transformedSize(for: template.size, rotation: rotation)
+        let bounds = Self.transformedBounds(
+            for: template.size,
+            anchor: position,
+            mirror: mirror,
+            rotation: rotation
+        )
         super.init(
             orientation: .south,
-            boundingBox: BoundingBox(
-                minX: position.x,
-                minY: position.y,
-                minZ: position.z,
-                maxX: position.x + size.x - 1,
-                maxY: position.y + size.y - 1,
-                maxZ: position.z + size.z - 1
-            )
+            boundingBox: bounds
         )
     }
 
@@ -442,7 +502,7 @@ private final class WoodlandMansionPiece: StructurePiece {
             let transformedPos = Self.transformedWorldPos(
                 for: block.pos,
                 templateSize: self.template.size,
-                anchor: PosInt3D(x: self.boundingBox.minX, y: self.boundingBox.minY, z: self.boundingBox.minZ),
+                anchor: self.placementOrigin,
                 mirror: self.mirror,
                 rotation: self.rotation
             )
@@ -460,8 +520,30 @@ private final class WoodlandMansionPiece: StructurePiece {
         }
     }
 
-    func generateLoot<R: Random>(random: inout R) -> [StructureLootContainer] {
+    func generateLoot<R: Random>(in chunkBox: BoundingBox, random: inout R) -> [StructureLootContainer] {
         var containers: [StructureLootContainer] = []
+
+        // StructureTemplate places raw NBT chest blocks before its structure
+        // metadata markers. Those decorative chests still consume a loot seed.
+        for block in self.template.blocks {
+            guard block.state >= 0 && block.state < self.template.palette.count,
+                  block.nbt != nil,
+                  self.template.palette[block.state].type.id == "minecraft:chest"
+            else {
+                continue
+            }
+            let pos = Self.transformedWorldPos(
+                for: block.pos,
+                templateSize: self.template.size,
+                anchor: self.placementOrigin,
+                mirror: self.mirror,
+                rotation: self.rotation
+            )
+            if chunkBox.contains(pos) {
+                _ = random.nextLong()
+            }
+        }
+
         for block in self.template.blocks {
             guard block.state >= 0 && block.state < self.template.palette.count else {
                 continue
@@ -473,14 +555,18 @@ private final class WoodlandMansionPiece: StructurePiece {
                 continue
             }
 
+            let pos = Self.transformedWorldPos(
+                for: block.pos,
+                templateSize: self.template.size,
+                anchor: self.placementOrigin,
+                mirror: self.mirror,
+                rotation: self.rotation
+            )
+            guard chunkBox.contains(pos) else {
+                continue
+            }
+
             if Self.chestFacing(for: metadata) != nil {
-                let pos = Self.transformedWorldPos(
-                    for: block.pos,
-                    templateSize: self.template.size,
-                    anchor: PosInt3D(x: self.boundingBox.minX, y: self.boundingBox.minY, z: self.boundingBox.minZ),
-                    mirror: self.mirror,
-                    rotation: self.rotation
-                )
                 containers.append(
                     StructureLootContainer(
                         block: "minecraft:chest",
@@ -489,11 +575,19 @@ private final class WoodlandMansionPiece: StructurePiece {
                         lootSeed: Int64(bitPattern: random.nextLong())
                     )
                 )
-            } else if metadata == "Group of Allays" {
-                _ = random.next(bound: 3)
             }
         }
         return containers
+    }
+
+    /// Moves both the piece bounds and the template's vanilla placement origin.
+    func movePlacement(byY y: Int32) {
+        self.boundingBox.move(0, y, 0)
+        self.placementOrigin = PosInt3D(
+            x: self.placementOrigin.x,
+            y: self.placementOrigin.y + y,
+            z: self.placementOrigin.z
+        )
     }
 
     private func handleStructureMetadata<R: Random>(
@@ -561,15 +655,6 @@ private final class WoodlandMansionPiece: StructurePiece {
         }
     }
 
-    private static func transformedSize(for size: PosInt3D, rotation: MansionRotation) -> PosInt3D {
-        switch rotation {
-        case .none, .clockwise180:
-            return size
-        case .clockwise90, .counterclockwise90:
-            return PosInt3D(x: size.z, y: size.y, z: size.x)
-        }
-    }
-
     private static func transformedWorldPos(
         for pos: PosInt3D,
         templateSize: PosInt3D,
@@ -577,12 +662,71 @@ private final class WoodlandMansionPiece: StructurePiece {
         mirror: MansionMirror,
         rotation: MansionRotation
     ) -> PosInt3D {
-        let transformed = transformTemplatePos(pos, size: templateSize, mirror: mirror, rotation: rotation)
+        let transformed = transformTemplatePositionAroundOrigin(pos, mirror: mirror, rotation: rotation)
         return PosInt3D(
             x: anchor.x + transformed.x,
             y: anchor.y + transformed.y,
             z: anchor.z + transformed.z
         )
+    }
+
+    private static func transformedBounds(
+        for size: PosInt3D,
+        anchor: PosInt3D,
+        mirror: MansionMirror,
+        rotation: MansionRotation
+    ) -> BoundingBox {
+        let corners = [
+            PosInt3D(x: 0, y: 0, z: 0),
+            PosInt3D(x: size.x - 1, y: 0, z: 0),
+            PosInt3D(x: 0, y: 0, z: size.z - 1),
+            PosInt3D(x: size.x - 1, y: 0, z: size.z - 1)
+        ].map { corner in
+            transformTemplatePositionAroundOrigin(corner, mirror: mirror, rotation: rotation)
+        }
+        let xs = corners.map(\.x)
+        let zs = corners.map(\.z)
+        return BoundingBox(
+            minX: anchor.x + (xs.min() ?? 0),
+            minY: anchor.y,
+            minZ: anchor.z + (zs.min() ?? 0),
+            maxX: anchor.x + (xs.max() ?? 0),
+            maxY: anchor.y + size.y - 1,
+            maxZ: anchor.z + (zs.max() ?? 0)
+        )
+    }
+
+    /// Matches `StructureTemplate.transform` with a zero pivot.  Placement
+    /// offsets are rotated around the template origin rather than translated
+    /// back into a positive local bounding box.
+    private static func transformTemplatePositionAroundOrigin(
+        _ pos: PosInt3D,
+        mirror: MansionMirror,
+        rotation: MansionRotation
+    ) -> PosInt3D {
+        var x = pos.x
+        let y = pos.y
+        var z = pos.z
+
+        switch mirror {
+        case .none:
+            break
+        case .leftRight:
+            z = -z
+        case .frontBack:
+            x = -x
+        }
+
+        switch rotation {
+        case .none:
+            return PosInt3D(x: x, y: y, z: z)
+        case .clockwise90:
+            return PosInt3D(x: -z, y: y, z: x)
+        case .clockwise180:
+            return PosInt3D(x: -x, y: y, z: -z)
+        case .counterclockwise90:
+            return PosInt3D(x: z, y: y, z: -x)
+        }
     }
 
     static func transformTemplatePos(
@@ -982,7 +1126,7 @@ private struct MansionParameters {
     }
 
     func findConnectedRoomDirection(_ i: Int, _ j: Int, floor: Int, roomID: Int) -> MansionDirection? {
-        for direction in MansionDirection.vanillaHorizontalOrder {
+        for direction in MansionDirection.horizontalIterationOrder {
             if self.isRoomId(i + Int(direction.stepX), j + Int(direction.stepZ), floor: floor, roomID: roomID) {
                 return direction
             }
@@ -1006,7 +1150,7 @@ private struct MansionParameters {
         layout.update(i + Int(direction.stepX), j + Int(direction.stepZ), expected: Self.unset, newValue: Self.corridor)
 
         for _ in 0..<8 {
-            let candidate = MansionDirection.vanillaHorizontalOrder[Int(self.random.next(bound: 4))]
+            let candidate = MansionDirection.horizontalQuarterTurnOrder[Int(self.random.next(bound: 4))]
             if candidate != direction.opposite && (candidate != .east || !self.random.nextBoolean()) {
                 let nextI = i + Int(direction.stepX)
                 let nextJ = j + Int(direction.stepZ)
@@ -1108,7 +1252,7 @@ private struct MansionParameters {
         }
 
         var corridorStarts: [MansionDirection] = []
-        for direction in MansionDirection.vanillaHorizontalOrder {
+        for direction in MansionDirection.horizontalIterationOrder {
             if self.thirdFloorLayout.get(nextI + Int(direction.stepX), nextJ + Int(direction.stepZ)) == Self.unset {
                 corridorStarts.append(direction)
             }
@@ -1319,7 +1463,7 @@ private struct MansionLayoutGenerator {
 
                         var corridorEntrances: [MansionDirection] = []
                         if (flags & MansionParameters.entranceCellFlag) == MansionParameters.entranceCellFlag {
-                            for direction in MansionDirection.vanillaHorizontalOrder {
+                            for direction in MansionDirection.horizontalIterationOrder {
                                 if layout.get(i + Int(direction.stepX), j + Int(direction.stepZ)) == MansionParameters.corridor {
                                     corridorEntrances.append(direction)
                                 }
@@ -1640,51 +1784,47 @@ private struct MansionLayoutGenerator {
         pool: RoomPool,
         staircase: Bool
     ) throws -> WoodlandMansionPiece {
-        let functional = pool.mediumFunctionalRoom(using: &self.random, staircase: staircase)
-        let generic = pool.mediumGenericRoom(using: &self.random, staircase: staircase)
-        let secret = pool.mediumSecretRoom(using: &self.random)
-
         let piece: WoodlandMansionPiece
         if entranceDirection == .east && connectedRoomDirection == .south {
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: offset(pos, direction: .east, distance: 1, rotation: rotation), rotation: rotation)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: offset(pos, direction: .east, distance: 1, rotation: rotation), rotation: rotation)
         } else if entranceDirection == .east && connectedRoomDirection == .north {
             let placed = offset(offset(pos, direction: .east, distance: 1, rotation: rotation), direction: .south, distance: 6, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation, mirror: .leftRight)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation, mirror: .leftRight)
         } else if entranceDirection == .west && connectedRoomDirection == .north {
             let placed = offset(offset(pos, direction: .east, distance: 7, rotation: rotation), direction: .south, distance: 6, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation.combined(with: .clockwise180))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .clockwise180))
         } else if entranceDirection == .west && connectedRoomDirection == .south {
             let placed = offset(pos, direction: .east, distance: 7, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation, mirror: .frontBack)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation, mirror: .frontBack)
         } else if entranceDirection == .south && connectedRoomDirection == .east {
             let placed = offset(pos, direction: .east, distance: 1, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation.combined(with: .clockwise90), mirror: .leftRight)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .clockwise90), mirror: .leftRight)
         } else if entranceDirection == .south && connectedRoomDirection == .west {
             let placed = offset(pos, direction: .east, distance: 7, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation.combined(with: .clockwise90))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .clockwise90))
         } else if entranceDirection == .north && connectedRoomDirection == .west {
             let placed = offset(offset(pos, direction: .east, distance: 7, rotation: rotation), direction: .south, distance: 6, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation.combined(with: .clockwise90), mirror: .frontBack)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .clockwise90), mirror: .frontBack)
         } else if entranceDirection == .north && connectedRoomDirection == .east {
             let placed = offset(offset(pos, direction: .east, distance: 1, rotation: rotation), direction: .south, distance: 6, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: functional, position: placed, rotation: rotation.combined(with: .counterclockwise90))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumFunctionalRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .counterclockwise90))
         } else if entranceDirection == .south && connectedRoomDirection == .north {
             let placed = offset(offset(pos, direction: .east, distance: 1, rotation: rotation), direction: .north, distance: 8, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: generic, position: placed, rotation: rotation)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumGenericRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation)
         } else if entranceDirection == .north && connectedRoomDirection == .south {
             let placed = offset(offset(pos, direction: .east, distance: 7, rotation: rotation), direction: .south, distance: 14, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: generic, position: placed, rotation: rotation.combined(with: .clockwise180))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumGenericRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .clockwise180))
         } else if entranceDirection == .west && connectedRoomDirection == .east {
             let placed = offset(pos, direction: .east, distance: 15, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: generic, position: placed, rotation: rotation.combined(with: .clockwise90))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumGenericRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .clockwise90))
         } else if entranceDirection == .east && connectedRoomDirection == .west {
             let placed = offset(offset(pos, direction: .west, distance: 7, rotation: rotation), direction: .south, distance: 6, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: generic, position: placed, rotation: rotation.combined(with: .counterclockwise90))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumGenericRoom(using: &self.random, staircase: staircase), position: placed, rotation: rotation.combined(with: .counterclockwise90))
         } else if entranceDirection == .up && connectedRoomDirection == .east {
-            piece = try WoodlandMansionPiece(context: self.context, templateName: secret, position: offset(pos, direction: .east, distance: 15, rotation: rotation), rotation: rotation.combined(with: .clockwise90))
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumSecretRoom(using: &self.random), position: offset(pos, direction: .east, distance: 15, rotation: rotation), rotation: rotation.combined(with: .clockwise90))
         } else if entranceDirection == .up && connectedRoomDirection == .south {
             let placed = offset(offset(pos, direction: .east, distance: 1, rotation: rotation), direction: .north, distance: 0, rotation: rotation)
-            piece = try WoodlandMansionPiece(context: self.context, templateName: secret, position: placed, rotation: rotation)
+            piece = try WoodlandMansionPiece(context: self.context, templateName: pool.mediumSecretRoom(using: &self.random), position: placed, rotation: rotation)
         } else {
             fatalError("Unhandled mansion medium room configuration")
         }
