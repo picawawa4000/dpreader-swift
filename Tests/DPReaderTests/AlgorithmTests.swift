@@ -21,6 +21,15 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
     #expect(cr.compareForTest(expectedSeed: 167197105033405))
 }
 
+@Test func testCheckedRandomSplitterUsesVanillaPositionOverflow() async throws {
+    var random = CheckedRandom(seed: 123_458)
+    let splitter = random.nextSplitter()
+    var split = splitter.split(usingPos: PosInt3D(x: 1_577, y: 68, z: 1_118))
+
+    #expect(split.next(bound: 5) == 0)
+    #expect(split.next(bound: 5) == 4)
+}
+
 @Test func testXoroshiroRandom() async throws {
     let seed: UInt64 = 167197105033405
     var xr = XoroshiroRandom(seed: seed)

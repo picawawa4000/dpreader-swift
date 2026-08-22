@@ -814,6 +814,17 @@ private final class DesertPyramidPiece: StructurePiece {
         return remainder >= 0 ? quotient : quotient - 1
     }
 
+    override func getWorldX(_ x: Int32, _ z: Int32) -> Int32 {
+        switch self.orientation {
+        case .north, .south:
+            return self.boundingBox.minX + x
+        case .west:
+            return self.boundingBox.minX + z
+        case .east:
+            return self.boundingBox.maxX - z
+        }
+    }
+
     override func getWorldZ(_ x: Int32, _ z: Int32) -> Int32 {
         switch self.orientation {
         case .north:

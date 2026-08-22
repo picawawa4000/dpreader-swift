@@ -248,7 +248,9 @@ public struct CheckedRandomSplitter: RandomSplitter {
     }
 
     public func split(usingPos pos: PosInt3D) -> ReturnedRandom {
-        let l = overflow(Int64(pos.x)) &* 3129871
+        // Vanilla multiplies X as an `int` before widening the result to a
+        // `long`, so this term must overflow at 32 bits rather than 64 bits.
+        let l = overflow(Int64(pos.x &* 3_129_871))
             ^ overflow(Int64(pos.z)) &* 116129781
             ^ overflow(Int64(pos.y))
         let m = l &* l &* 42317861 &+ l &* 11
