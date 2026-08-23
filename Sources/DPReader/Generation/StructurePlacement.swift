@@ -184,6 +184,10 @@ public final class StructurePlacementSampler {
 
         if structure.type == "minecraft:ocean_monument" {
             let surroundingTag = Identifiers.tagID("minecraft:required_ocean_monument_surrounding")
+            let surroundingBiomeNames = try self.resolveRegistryEntries(
+                matching: surroundingTag,
+                in: "worldgen/biome"
+            )
             let checkX = startChunk.x &* 16 &+ 9
             let checkZ = startChunk.z &* 16 &+ 9
             let radius: Int32 = 29
@@ -198,7 +202,7 @@ public final class StructurePlacementSampler {
                     for quartX in minQuartX...maxQuartX {
                         let position = PosInt3D(x: quartX &* 4, y: quartY &* 4, z: quartZ &* 4)
                         guard let biome = try context.biome(at: position),
-                              try self.registryEntry(biome.name, matches: surroundingTag, in: "worldgen/biome") else {
+                              surroundingBiomeNames.contains(biome.name) else {
                             return nil
                         }
                     }
@@ -206,8 +210,12 @@ public final class StructurePlacementSampler {
             }
         }
 
+        let allowedBiomeNames = try self.resolveRegistryEntries(
+            matching: structure.biomes,
+            in: "worldgen/biome"
+        )
         guard let biome = try context.biome(at: generationPosition),
-              try self.registryEntry(biome.name, matches: structure.biomes, in: "worldgen/biome") else {
+              allowedBiomeNames.contains(biome.name) else {
             return nil
         }
         return ValidatedStructureStart(
@@ -380,8 +388,7 @@ public final class StructurePlacementSampler {
             to: to,
             atY: 0,
             in: dimension,
-            scale: 4,
-            forceBaking: true
+            scale: 4
         ) else {
             return result
         }
@@ -508,19 +515,7 @@ public final class StructurePlacementSampler {
     }
 
     private func registryEntry(_ entryName: String, matches identifiers: Identifiers, in registryPath: String) throws -> Bool {
-        switch identifiers {
-        case .rawID(let id):
-            return entryName == id
-        case .tagID(let tag):
-            return try self.registryEntry(entryName, isInTag: tag, in: registryPath, visitedTags: [])
-        case .idList(let ids):
-            for identifier in ids {
-                if try self.registryEntry(entryName, matches: identifier, in: registryPath) {
-                    return true
-                }
-            }
-            return false
-        }
+        try self.resolveRegistryEntries(matching: identifiers, in: registryPath).contains(entryName)
     }
 
     private func resolveRegistryEntries(matching identifiers: Identifiers, in registryPath: String) throws -> Set<String> {
