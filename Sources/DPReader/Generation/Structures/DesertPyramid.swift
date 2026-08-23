@@ -22,6 +22,13 @@ public struct DesertPyramidGenerationResult {
 
 /// Entry points for deterministic vanilla desert-pyramid generation.
 public enum DesertPyramid {
+    private static let fallbackDecoration = StructureDecorationParameters(step: 4, index: 1)
+
+    private static func decorationParameters(for context: StructureGenerationContext) -> StructureDecorationParameters {
+        context.structureDecorationParameters(forStructureID: "minecraft:desert_pyramid")
+            ?? Self.fallbackDecoration
+    }
+
     /// Generates the pyramid's chests and suspicious-sand loot without rendering its blocks.
     public static func generateLoot(
         worldSeed: WorldSeed,
@@ -37,12 +44,13 @@ public enum DesertPyramid {
             chunkZ: startChunk.z
         )
         let piece = DesertPyramidPiece(worldSeed: worldSeed, startChunk: startChunk, random: &constructorRandom)
+        let decoration = Self.decorationParameters(for: context)
         var random = getStructureGenerationRandom(
             worldSeed: worldSeed,
             chunkX: startChunk.x,
             chunkZ: startChunk.z,
-            decoratorIndex: DesertPyramidPiece.decoratorIndex,
-            decoratorStep: DesertPyramidPiece.decoratorStep
+            decoratorIndex: decoration.index,
+            decoratorStep: decoration.step
         )
         guard piece.adjustToMinHeight(context: context, random: &random) else {
             return nil
@@ -65,12 +73,13 @@ public enum DesertPyramid {
             chunkZ: startChunk.z
         )
         let piece = DesertPyramidPiece(worldSeed: worldSeed, startChunk: startChunk, random: &constructorRandom)
+        let decoration = Self.decorationParameters(for: context)
         var random = getStructureGenerationRandom(
             worldSeed: worldSeed,
             chunkX: startChunk.x,
             chunkZ: startChunk.z,
-            decoratorIndex: DesertPyramidPiece.decoratorIndex,
-            decoratorStep: DesertPyramidPiece.decoratorStep
+            decoratorIndex: decoration.index,
+            decoratorStep: decoration.step
         )
         guard piece.adjustToMinHeight(context: context, random: &random) else {
             return nil
@@ -98,12 +107,13 @@ public enum DesertPyramid {
             chunkZ: startChunk.z
         )
         let piece = DesertPyramidPiece(worldSeed: worldSeed, startChunk: startChunk, random: &constructorRandom)
+        let decoration = Self.decorationParameters(for: context)
         var random = getStructureGenerationRandom(
             worldSeed: worldSeed,
             chunkX: startChunk.x,
             chunkZ: startChunk.z,
-            decoratorIndex: DesertPyramidPiece.decoratorIndex,
-            decoratorStep: DesertPyramidPiece.decoratorStep
+            decoratorIndex: decoration.index,
+            decoratorStep: decoration.step
         )
         guard piece.adjustToMinHeight(context: context, random: &random) else {
             return nil

@@ -106,4 +106,57 @@ private func strongholdChestMarker(
         "1x minecraft:diamond_horse_armor",
         "1x minecraft:iron_leggings"
     ])
+
+    // A minimal cave-air fixture: skipped stronghold boundary cells also skip their
+    // RNG draws. Five such cells align this regression with the vanilla chest seed.
+    let chestPos = PosInt3D(x: 1_348, y: 49, z: 743)
+    let graph = Stronghold.generatePieceGraph(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: 85, z: 46),
+        context: strongholdTestContext()
+    )
+    let library = try #require(graph.pieces.first {
+        $0.boundingBox.contains(chestPos)
+            && $0.boundingBox.maxX - $0.boundingBox.minX + 1 >= 13
+            && $0.boundingBox.maxZ - $0.boundingBox.minZ + 1 >= 13
+    })
+    func worldPos(localX: Int32, localY: Int32, localZ: Int32) -> PosInt3D {
+        let box = library.boundingBox
+        switch library.orientation {
+        case .north:
+            return PosInt3D(x: box.minX + localX, y: box.minY + localY, z: box.maxZ - localZ)
+        case .south:
+            return PosInt3D(x: box.minX + localX, y: box.minY + localY, z: box.minZ + localZ)
+        case .west:
+            return PosInt3D(x: box.maxX - localZ, y: box.minY + localY, z: box.minZ + localX)
+        case .east:
+            return PosInt3D(x: box.minX + localZ, y: box.minY + localY, z: box.minZ + localX)
+        }
+    }
+    let localMaxY = library.boundingBox.maxY - library.boundingBox.minY
+    var caveAir: [PosInt3D] = []
+    for y in Int32(0)...localMaxY {
+        for x in Int32(0)...13 {
+            for z in Int32(0)...14 {
+                let boundary = x == 0 || x == 13 || y == 0 || y == localMaxY || z == 0 || z == 14
+                guard boundary else { continue }
+                let pos = worldPos(localX: x, localY: y, localZ: z)
+                guard pos.x >> 4 == 84 && pos.z >> 4 == 46 else { continue }
+                caveAir.append(pos)
+                if caveAir.count == 5 { break }
+            }
+            if caveAir.count == 5 { break }
+        }
+        if caveAir.count == 5 { break }
+    }
+    let secondContext = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
+        BlockState(type: Block(withID: caveAir.contains(pos) ? "minecraft:air" : "minecraft:stone"))
+    }
+    let secondStronghold = Stronghold.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: 85, z: 46),
+        context: secondContext
+    )
+    let secondChest = try #require(secondStronghold.first { $0.pos == chestPos })
+    #expect(secondChest.lootSeed == 4_406_998_950_581_121_497)
 }

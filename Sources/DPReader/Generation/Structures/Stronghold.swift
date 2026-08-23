@@ -20,8 +20,15 @@ public struct StrongholdGenerationResult {
 
 /// Entry points for deterministic vanilla stronghold generation.
 public enum Stronghold {
-    private static let decoratorStep: Int32 = 4
-    private static let decoratorIndex: Int32 = 19
+    private static let fallbackDecoration = StructureDecorationParameters(step: 4, index: 19)
+
+    private static func decorationParameters(for context: StructureGenerationContext) -> StructureDecorationParameters {
+        // The fallback preserves the standalone API for callers that construct a
+        // minimal context. Loaded data packs supply the version-specific step and
+        // registry index used by vanilla.
+        context.structureDecorationParameters(forStructureID: "minecraft:stronghold")
+            ?? Self.fallbackDecoration
+    }
 
     /// Generates only the chunks that can contain stronghold loot chests.
     public static func generateLoot(
@@ -29,12 +36,13 @@ public enum Stronghold {
         startChunk: PosInt2D,
         context: StructureGenerationContext
     ) -> [StructureLootContainer] {
-        self.generateLoot(
+        let decoration = Self.decorationParameters(for: context)
+        return self.generateLoot(
             worldSeed: worldSeed,
             startChunk: startChunk,
             context: context,
-            decoratorIndex: Self.decoratorIndex,
-            decoratorStep: Self.decoratorStep
+            decoratorIndex: decoration.index,
+            decoratorStep: decoration.step
         )
     }
 
@@ -64,12 +72,13 @@ public enum Stronghold {
         startChunk: PosInt2D,
         context: StructureGenerationContext
     ) -> StrongholdGenerationResult {
-        self.generate(
+        let decoration = Self.decorationParameters(for: context)
+        return self.generate(
             worldSeed: worldSeed,
             startChunk: startChunk,
             context: context,
-            decoratorIndex: Self.decoratorIndex,
-            decoratorStep: Self.decoratorStep
+            decoratorIndex: decoration.index,
+            decoratorStep: decoration.step
         )
     }
 
@@ -154,8 +163,6 @@ public enum Stronghold {
             seaLevel: context.seaLevel,
             minimumWorldY: context.minimumWorldY
         )
-        let bounds = combinedBounds(for: layout.pieces)
-        let writeBounds = expandedWriteBounds(for: bounds, minimumWorldY: context.minimumWorldY)
         let strongholdPieces = layout.pieces.compactMap { $0 as? StrongholdPiece }
         var targetChunkSet: Set<StrongholdLootChunk> = []
         for piece in strongholdPieces {
@@ -177,10 +184,10 @@ public enum Stronghold {
             )
             let chunkBox = BoundingBox(
                 minX: chunk.x << 4,
-                minY: writeBounds.minY,
+                minY: context.minimumWorldY,
                 minZ: chunk.z << 4,
                 maxX: (chunk.x << 4) + 15,
-                maxY: writeBounds.maxY,
+                maxY: Int32.max,
                 maxZ: (chunk.z << 4) + 15
             )
             let volume = StructureBlockVolume(bounds: chunkBox, fallbackSampler: context.blockSampler)

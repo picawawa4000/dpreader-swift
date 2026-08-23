@@ -83,7 +83,7 @@ public struct StructureGenerationContext {
 }
 
 /// The numeric parameters used to seed a structure's chunk-decoration random stream.
-public struct StructureDecorationParameters: Equatable {
+public struct StructureDecorationParameters: Equatable, Sendable {
     /// The structure's generation-step ordinal.
     public let step: Int32
     /// The structure's position among entries in that generation step.

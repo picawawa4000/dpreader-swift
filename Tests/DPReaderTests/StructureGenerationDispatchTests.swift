@@ -137,13 +137,25 @@ private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGene
     }
 }
 
-@Test func testLoadedMansionDecorationParameters() async throws {
+@Test func testLoadedStructureDecorationParameters() async throws {
     let context = try mansionTestContext()
-    let parameters = try #require(
+    let mansion = try #require(
         context.structureDecorationParameters(forStructureID: "minecraft:mansion")
     )
-    #expect(parameters.step == 4)
-    #expect(parameters.index == 5)
+    #expect(mansion.step == 4)
+    #expect(mansion.index == 5)
+
+    let pyramid = try #require(
+        context.structureDecorationParameters(forStructureID: "minecraft:desert_pyramid")
+    )
+    #expect(pyramid.step == 4)
+    #expect(pyramid.index == 1)
+
+    let stronghold = try #require(
+        context.structureDecorationParameters(forStructureID: "minecraft:stronghold")
+    )
+    #expect(stronghold.step == 4)
+    #expect(stronghold.index == 19)
 }
 
 private func loadMansionLootEnchantmentResources() throws -> LootEnchantmentResources {
