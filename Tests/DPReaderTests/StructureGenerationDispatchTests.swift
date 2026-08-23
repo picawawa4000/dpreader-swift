@@ -677,6 +677,32 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
     #expect(!containers.contains { $0.pos == PosInt3D(x: -727, y: 77, z: -2_034) })
 }
 
+@Test func testSeed123458JungleTempleLootContainers() async throws {
+    let structure = Structure(
+        type: "minecraft:jungle_temple",
+        biomes: .rawID("minecraft:jungle"),
+        spawnOverrides: [:],
+        step: "surface_structures"
+    )
+    let context = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
+        // Heightmaps return the first air block; the real fixture has heightmap Y=95.
+        BlockState(type: Block(withID: pos.y <= 94 ? "minecraft:stone" : "minecraft:air"))
+    }
+    let containers = try #require(try structure.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: 19, z: -79),
+        context: context
+    ))
+    #expect(containers.sorted {
+        $0.pos.x == $1.pos.x ? $0.pos.y < $1.pos.y : $0.pos.x < $1.pos.x
+    } == [
+        StructureLootContainer(block: "minecraft:dispenser", pos: PosInt3D(x: 307, y: 93, z: -1251), lootTable: "minecraft:chests/jungle_temple_dispenser", lootSeed: -922_536_149_578_112_079),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 312, y: 92, z: -1253), lootTable: "minecraft:chests/jungle_temple", lootSeed: -8_998_445_778_454_986_147),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 313, y: 92, z: -1260), lootTable: "minecraft:chests/jungle_temple", lootSeed: 3_998_629_534_634_752_572),
+        StructureLootContainer(block: "minecraft:dispenser", pos: PosInt3D(x: 313, y: 93, z: -1253), lootTable: "minecraft:chests/jungle_temple_dispenser", lootSeed: 2_229_079_904_170_270_178)
+    ])
+}
+
 @Test func testStructureDispatchRejectsUnsupportedTypes() async throws {
     let structure = Structure(
         type: "minecraft:fortress",

@@ -7,7 +7,9 @@ public struct JungleTempleGenerationResult {
 }
 
 public enum JungleTemple {
-    private static let fallbackDecoration = StructureDecorationParameters(step: 4, index: 7)
+    // The registry key is `jungle_pyramid`; `jungle_temple` is its serializer type.
+    // In the vanilla 1.21.11 surface-structure registry it is index 4 (zero based).
+    private static let fallbackDecoration = StructureDecorationParameters(step: 4, index: 4)
 
     public static func generatePieceGraph(
         worldSeed: WorldSeed,
@@ -43,12 +45,25 @@ public enum JungleTemple {
         let writeBounds = BoundingBox(minX: piece.boundingBox.minX, minY: context.minimumWorldY + 1, minZ: piece.boundingBox.minZ, maxX: piece.boundingBox.maxX, maxY: piece.boundingBox.maxY, maxZ: piece.boundingBox.maxZ)
         let volume = StructureBlockVolume(bounds: writeBounds, fallbackSampler: context.blockSampler)
         let world = StructureWorldView(seaLevel: context.seaLevel, minimumWorldY: context.minimumWorldY, volume: volume)
-        piece.write(in: world, chunkBox: writeBounds, random: &random)
+        let parameters = context.structureDecorationParameters(forStructureID: "minecraft:jungle_pyramid") ?? fallbackDecoration
+        for chunkZ in (piece.boundingBox.minZ >> 4)...(piece.boundingBox.maxZ >> 4) {
+            for chunkX in (piece.boundingBox.minX >> 4)...(piece.boundingBox.maxX >> 4) {
+                let chunkBox = BoundingBox(
+                    minX: chunkX &* 16, minY: context.minimumWorldY + 1, minZ: chunkZ &* 16,
+                    maxX: chunkX &* 16 &+ 15, maxY: piece.boundingBox.maxY, maxZ: chunkZ &* 16 &+ 15
+                )
+                var chunkRandom = getStructureGenerationRandom(
+                    worldSeed: worldSeed, chunkX: chunkX, chunkZ: chunkZ,
+                    decoratorIndex: parameters.index, decoratorStep: parameters.step
+                )
+                piece.write(in: world, chunkBox: chunkBox, random: &chunkRandom)
+            }
+        }
         return JungleTempleGenerationResult(graph: graph, blocks: volume, lootContainers: piece.lootContainers)
     }
 
     private static func decorationRandom(worldSeed: WorldSeed, startChunk: PosInt2D, context: StructureGenerationContext) -> XoroshiroChunkRandom {
-        let parameters = context.structureDecorationParameters(forStructureID: "minecraft:jungle_temple") ?? fallbackDecoration
+        let parameters = context.structureDecorationParameters(forStructureID: "minecraft:jungle_pyramid") ?? fallbackDecoration
         return getStructureGenerationRandom(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z, decoratorIndex: parameters.index, decoratorStep: parameters.step)
     }
 
@@ -65,15 +80,24 @@ private final class JungleTemplePiece: StructurePiece {
 
     init<R: Random>(worldSeed: WorldSeed, startChunk: PosInt2D, random: inout R) {
         self.worldSeed = worldSeed
-        let orientation = randomOrientation(using: &random)
-        let boundingBox = makeBoundingBox(
-            x: startChunk.x * 16,
-            y: Self.initialY,
-            z: startChunk.z * 16,
-            orientation: orientation,
-            width: Self.width,
-            height: Self.height,
-            depth: Self.depth
+        // Direction.Type.HORIZONTAL is ordered north, south, west, east in vanilla.
+        let orientation: HorizontalDirection
+        switch random.next(bound: 4) {
+        case 0: orientation = .north
+        case 1: orientation = .south
+        case 2: orientation = .west
+        default: orientation = .east
+        }
+        // Scattered-feature starts are anchored at the north-west corner of their
+        // allocated chunk.  Unlike the generic stronghold-piece helper, this anchor
+        // is not rotated before the local-coordinate transform is applied.
+        let boundingBox = BoundingBox(
+            minX: startChunk.x * 16,
+            minY: Self.initialY,
+            minZ: startChunk.z * 16,
+            maxX: startChunk.x * 16 + Self.width - 1,
+            maxY: Self.initialY + Self.height - 1,
+            maxZ: startChunk.z * 16 + Self.depth - 1
         )
         super.init(orientation: orientation.publicValue, boundingBox: boundingBox)
     }
@@ -124,311 +148,48 @@ private final class JungleTemplePiece: StructurePiece {
         self.fillBox(world, chunkBox, 1, -3, 1, 3, -1, 13, Blocks.airState)
         self.fillBox(world, chunkBox, 1, -3, 1, 9, -1, 5, Blocks.airState)
 
+        for i: Int32 in [0, 14] {
+            self.randomPillars(world, chunkBox, x: 2, z: i, random: &random)
+            self.randomPillars(world, chunkBox, x: 4, z: i, random: &random)
+            self.randomPillars(world, chunkBox, x: 7, z: i, random: &random)
+            self.randomPillars(world, chunkBox, x: 9, z: i, random: &random)
+        }
+        self.fillRandomizedBox(world, chunkBox, 5, 6, 0, 6, 6, 0, boundaryOnly: true, random: &random)
+        for i: Int32 in [0, 11] {
+            for j in stride(from: Int32(2), through: 12, by: 2) {
+                self.fillRandomizedBox(world, chunkBox, i, 4, j, i, 5, j, boundaryOnly: true, random: &random)
+            }
+            self.fillRandomizedBox(world, chunkBox, i, 6, 5, i, 6, 5, boundaryOnly: true, random: &random)
+            self.fillRandomizedBox(world, chunkBox, i, 6, 9, i, 6, 9, boundaryOnly: true, random: &random)
+        }
+        for (x, z) in [(Int32(2), Int32(2)), (9, 2), (2, 12), (9, 12)] {
+            self.fillRandomizedBox(world, chunkBox, x, 7, z, x, 9, z, boundaryOnly: true, random: &random)
+        }
+        for (x, z) in [(Int32(4), Int32(4)), (7, 4), (4, 10), (7, 10)] {
+            self.fillRandomizedBox(world, chunkBox, x, 9, z, x, 9, z, boundaryOnly: true, random: &random)
+        }
+        self.fillRandomizedBox(world, chunkBox, 5, 9, 7, 6, 9, 7, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 4, 1, 9, 4, 1, 9, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 7, 1, 9, 7, 1, 9, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 4, 1, 10, 7, 2, 10, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 5, 4, 5, 6, 4, 5, boundaryOnly: true, random: &random)
+        for k in stride(from: Int32(1), through: 13, by: 2) {
+            self.fillRandomizedBox(world, chunkBox, 1, -3, k, 1, -2, k, boundaryOnly: true, random: &random)
+        }
+        for k in stride(from: Int32(2), through: 12, by: 2) {
+            self.fillRandomizedBox(world, chunkBox, 1, -1, k, 3, -1, k, boundaryOnly: true, random: &random)
+        }
+        self.fillRandomizedBox(world, chunkBox, 2, -2, 1, 5, -2, 1, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 7, -2, 1, 9, -2, 1, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 6, -3, 1, 6, -3, 1, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 6, -1, 1, 6, -1, 1, boundaryOnly: true, random: &random)
         self.placeContainer(world, chunkBox, 3, -2, 1, block: "minecraft:dispenser", table: "minecraft:chests/jungle_temple_dispenser", random: &random)
         self.placeContainer(world, chunkBox, 9, -2, 3, block: "minecraft:dispenser", table: "minecraft:chests/jungle_temple_dispenser", random: &random)
         self.placeContainer(world, chunkBox, 8, -3, 3, block: "minecraft:chest", table: "minecraft:chests/jungle_temple", random: &random)
+        self.fillRandomizedBox(world, chunkBox, 9, -1, 1, 9, -1, 5, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 8, -3, 8, 8, -3, 10, boundaryOnly: true, random: &random)
+        self.fillRandomizedBox(world, chunkBox, 10, -3, 8, 10, -3, 10, boundaryOnly: true, random: &random)
         self.placeContainer(world, chunkBox, 9, -3, 10, block: "minecraft:chest", table: "minecraft:chests/jungle_temple", random: &random)
-        /*
-        this.fillWithOutline(world, chunkBox, 0, -4, 0, this.width - 1, 0, this.depth - 1, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 2, 1, 2, 9, 2, 2, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 2, 1, 12, 9, 2, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 2, 1, 3, 2, 2, 11, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 9, 1, 3, 9, 2, 11, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 1, 3, 1, 10, 6, 1, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 1, 3, 13, 10, 6, 13, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 1, 3, 2, 1, 6, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 10, 3, 2, 10, 6, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 2, 3, 2, 9, 3, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 2, 6, 2, 9, 6, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 3, 7, 3, 8, 7, 11, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 4, 8, 4, 7, 8, 10, false, random, COBBLESTONE_RANDOMIZER);
-         this.fill(world, chunkBox, 3, 1, 3, 8, 2, 11);
-         this.fill(world, chunkBox, 4, 3, 6, 7, 3, 9);
-         this.fill(world, chunkBox, 2, 4, 2, 9, 5, 12);
-         this.fill(world, chunkBox, 4, 6, 5, 7, 6, 9);
-         this.fill(world, chunkBox, 5, 7, 6, 6, 7, 8);
-         this.fill(world, chunkBox, 5, 1, 2, 6, 2, 2);
-         this.fill(world, chunkBox, 5, 2, 12, 6, 2, 12);
-         this.fill(world, chunkBox, 5, 5, 1, 6, 5, 1);
-         this.fill(world, chunkBox, 5, 5, 13, 6, 5, 13);
-         this.addBlock(world, Blocks.AIR.getDefaultState(), 1, 5, 5, chunkBox);
-         this.addBlock(world, Blocks.AIR.getDefaultState(), 10, 5, 5, chunkBox);
-         this.addBlock(world, Blocks.AIR.getDefaultState(), 1, 5, 9, chunkBox);
-         this.addBlock(world, Blocks.AIR.getDefaultState(), 10, 5, 9, chunkBox);
-
-         for (int i = 0; i <= 14; i += 14) {
-            this.fillWithOutline(world, chunkBox, 2, 4, i, 2, 5, i, false, random, COBBLESTONE_RANDOMIZER);
-            this.fillWithOutline(world, chunkBox, 4, 4, i, 4, 5, i, false, random, COBBLESTONE_RANDOMIZER);
-            this.fillWithOutline(world, chunkBox, 7, 4, i, 7, 5, i, false, random, COBBLESTONE_RANDOMIZER);
-            this.fillWithOutline(world, chunkBox, 9, 4, i, 9, 5, i, false, random, COBBLESTONE_RANDOMIZER);
-         }
-
-         this.fillWithOutline(world, chunkBox, 5, 6, 0, 6, 6, 0, false, random, COBBLESTONE_RANDOMIZER);
-
-         for (int i = 0; i <= 11; i += 11) {
-            for (int j = 2; j <= 12; j += 2) {
-               this.fillWithOutline(world, chunkBox, i, 4, j, i, 5, j, false, random, COBBLESTONE_RANDOMIZER);
-            }
-
-            this.fillWithOutline(world, chunkBox, i, 6, 5, i, 6, 5, false, random, COBBLESTONE_RANDOMIZER);
-            this.fillWithOutline(world, chunkBox, i, 6, 9, i, 6, 9, false, random, COBBLESTONE_RANDOMIZER);
-         }
-
-         this.fillWithOutline(world, chunkBox, 2, 7, 2, 2, 9, 2, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 9, 7, 2, 9, 9, 2, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 2, 7, 12, 2, 9, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 9, 7, 12, 9, 9, 12, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 4, 9, 4, 4, 9, 4, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 7, 9, 4, 7, 9, 4, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 4, 9, 10, 4, 9, 10, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 7, 9, 10, 7, 9, 10, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 5, 9, 7, 6, 9, 7, false, random, COBBLESTONE_RANDOMIZER);
-         BlockState lv = Blocks.COBBLESTONE_STAIRS.getDefaultState().with(StairsBlock.FACING, Direction.EAST);
-         BlockState lv2 = Blocks.COBBLESTONE_STAIRS.getDefaultState().with(StairsBlock.FACING, Direction.WEST);
-         BlockState lv3 = Blocks.COBBLESTONE_STAIRS.getDefaultState().with(StairsBlock.FACING, Direction.SOUTH);
-         BlockState lv4 = Blocks.COBBLESTONE_STAIRS.getDefaultState().with(StairsBlock.FACING, Direction.NORTH);
-         this.addBlock(world, lv4, 5, 9, 6, chunkBox);
-         this.addBlock(world, lv4, 6, 9, 6, chunkBox);
-         this.addBlock(world, lv3, 5, 9, 8, chunkBox);
-         this.addBlock(world, lv3, 6, 9, 8, chunkBox);
-         this.addBlock(world, lv4, 4, 0, 0, chunkBox);
-         this.addBlock(world, lv4, 5, 0, 0, chunkBox);
-         this.addBlock(world, lv4, 6, 0, 0, chunkBox);
-         this.addBlock(world, lv4, 7, 0, 0, chunkBox);
-         this.addBlock(world, lv4, 4, 1, 8, chunkBox);
-         this.addBlock(world, lv4, 4, 2, 9, chunkBox);
-         this.addBlock(world, lv4, 4, 3, 10, chunkBox);
-         this.addBlock(world, lv4, 7, 1, 8, chunkBox);
-         this.addBlock(world, lv4, 7, 2, 9, chunkBox);
-         this.addBlock(world, lv4, 7, 3, 10, chunkBox);
-         this.fillWithOutline(world, chunkBox, 4, 1, 9, 4, 1, 9, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 7, 1, 9, 7, 1, 9, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 4, 1, 10, 7, 2, 10, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 5, 4, 5, 6, 4, 5, false, random, COBBLESTONE_RANDOMIZER);
-         this.addBlock(world, lv, 4, 4, 5, chunkBox);
-         this.addBlock(world, lv2, 7, 4, 5, chunkBox);
-
-         for (int k = 0; k < 4; k++) {
-            this.addBlock(world, lv3, 5, 0 - k, 6 + k, chunkBox);
-            this.addBlock(world, lv3, 6, 0 - k, 6 + k, chunkBox);
-            this.fill(world, chunkBox, 5, 0 - k, 7 + k, 6, 0 - k, 9 + k);
-         }
-
-         this.fill(world, chunkBox, 1, -3, 12, 10, -1, 13);
-         this.fill(world, chunkBox, 1, -3, 1, 3, -1, 13);
-         this.fill(world, chunkBox, 1, -3, 1, 9, -1, 5);
-
-         for (int k = 1; k <= 13; k += 2) {
-            this.fillWithOutline(world, chunkBox, 1, -3, k, 1, -2, k, false, random, COBBLESTONE_RANDOMIZER);
-         }
-
-         for (int k = 2; k <= 12; k += 2) {
-            this.fillWithOutline(world, chunkBox, 1, -1, k, 3, -1, k, false, random, COBBLESTONE_RANDOMIZER);
-         }
-
-         this.fillWithOutline(world, chunkBox, 2, -2, 1, 5, -2, 1, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 7, -2, 1, 9, -2, 1, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 6, -3, 1, 6, -3, 1, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 6, -1, 1, 6, -1, 1, false, random, COBBLESTONE_RANDOMIZER);
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE_HOOK.getDefaultState().with(TripwireHookBlock.FACING, Direction.EAST).with(TripwireHookBlock.ATTACHED, true),
-            1,
-            -3,
-            8,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE_HOOK.getDefaultState().with(TripwireHookBlock.FACING, Direction.WEST).with(TripwireHookBlock.ATTACHED, true),
-            4,
-            -3,
-            8,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE.getDefaultState().with(TripwireBlock.EAST, true).with(TripwireBlock.WEST, true).with(TripwireBlock.ATTACHED, true),
-            2,
-            -3,
-            8,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE.getDefaultState().with(TripwireBlock.EAST, true).with(TripwireBlock.WEST, true).with(TripwireBlock.ATTACHED, true),
-            3,
-            -3,
-            8,
-            chunkBox
-         );
-         BlockState lv5 = Blocks.REDSTONE_WIRE
-            .getDefaultState()
-            .with(RedstoneWireBlock.WIRE_CONNECTION_NORTH, WireConnection.SIDE)
-            .with(RedstoneWireBlock.WIRE_CONNECTION_SOUTH, WireConnection.SIDE);
-         this.addBlock(world, lv5, 5, -3, 7, chunkBox);
-         this.addBlock(world, lv5, 5, -3, 6, chunkBox);
-         this.addBlock(world, lv5, 5, -3, 5, chunkBox);
-         this.addBlock(world, lv5, 5, -3, 4, chunkBox);
-         this.addBlock(world, lv5, 5, -3, 3, chunkBox);
-         this.addBlock(world, lv5, 5, -3, 2, chunkBox);
-         this.addBlock(
-            world,
-            Blocks.REDSTONE_WIRE
-               .getDefaultState()
-               .with(RedstoneWireBlock.WIRE_CONNECTION_NORTH, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_WEST, WireConnection.SIDE),
-            5,
-            -3,
-            1,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.REDSTONE_WIRE
-               .getDefaultState()
-               .with(RedstoneWireBlock.WIRE_CONNECTION_EAST, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_WEST, WireConnection.SIDE),
-            4,
-            -3,
-            1,
-            chunkBox
-         );
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 3, -3, 1, chunkBox);
-         if (!this.placedTrap1) {
-            this.placedTrap1 = this.addDispenser(world, chunkBox, random, 3, -2, 1, Direction.NORTH, LootTables.JUNGLE_TEMPLE_DISPENSER_CHEST);
-         }
-
-         this.addBlock(world, Blocks.VINE.getDefaultState().with(VineBlock.SOUTH, true), 3, -2, 2, chunkBox);
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE_HOOK.getDefaultState().with(TripwireHookBlock.FACING, Direction.NORTH).with(TripwireHookBlock.ATTACHED, true),
-            7,
-            -3,
-            1,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE_HOOK.getDefaultState().with(TripwireHookBlock.FACING, Direction.SOUTH).with(TripwireHookBlock.ATTACHED, true),
-            7,
-            -3,
-            5,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE.getDefaultState().with(TripwireBlock.NORTH, true).with(TripwireBlock.SOUTH, true).with(TripwireBlock.ATTACHED, true),
-            7,
-            -3,
-            2,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE.getDefaultState().with(TripwireBlock.NORTH, true).with(TripwireBlock.SOUTH, true).with(TripwireBlock.ATTACHED, true),
-            7,
-            -3,
-            3,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.TRIPWIRE.getDefaultState().with(TripwireBlock.NORTH, true).with(TripwireBlock.SOUTH, true).with(TripwireBlock.ATTACHED, true),
-            7,
-            -3,
-            4,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.REDSTONE_WIRE
-               .getDefaultState()
-               .with(RedstoneWireBlock.WIRE_CONNECTION_EAST, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_WEST, WireConnection.SIDE),
-            8,
-            -3,
-            6,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.REDSTONE_WIRE
-               .getDefaultState()
-               .with(RedstoneWireBlock.WIRE_CONNECTION_WEST, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_SOUTH, WireConnection.SIDE),
-            9,
-            -3,
-            6,
-            chunkBox
-         );
-         this.addBlock(
-            world,
-            Blocks.REDSTONE_WIRE
-               .getDefaultState()
-               .with(RedstoneWireBlock.WIRE_CONNECTION_NORTH, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_SOUTH, WireConnection.UP),
-            9,
-            -3,
-            5,
-            chunkBox
-         );
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 9, -3, 4, chunkBox);
-         this.addBlock(world, lv5, 9, -2, 4, chunkBox);
-         if (!this.placedTrap2) {
-            this.placedTrap2 = this.addDispenser(world, chunkBox, random, 9, -2, 3, Direction.WEST, LootTables.JUNGLE_TEMPLE_DISPENSER_CHEST);
-         }
-
-         this.addBlock(world, Blocks.VINE.getDefaultState().with(VineBlock.EAST, true), 8, -1, 3, chunkBox);
-         this.addBlock(world, Blocks.VINE.getDefaultState().with(VineBlock.EAST, true), 8, -2, 3, chunkBox);
-         if (!this.placedMainChest) {
-            this.placedMainChest = this.addChest(world, chunkBox, random, 8, -3, 3, LootTables.JUNGLE_TEMPLE_CHEST);
-         }
-
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 9, -3, 2, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 8, -3, 1, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 4, -3, 5, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 5, -2, 5, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 5, -1, 5, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 6, -3, 5, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 7, -2, 5, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 7, -1, 5, chunkBox);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 8, -3, 5, chunkBox);
-         this.fillWithOutline(world, chunkBox, 9, -1, 1, 9, -1, 5, false, random, COBBLESTONE_RANDOMIZER);
-         this.fill(world, chunkBox, 8, -3, 8, 10, -1, 10);
-         this.addBlock(world, Blocks.CHISELED_STONE_BRICKS.getDefaultState(), 8, -2, 11, chunkBox);
-         this.addBlock(world, Blocks.CHISELED_STONE_BRICKS.getDefaultState(), 9, -2, 11, chunkBox);
-         this.addBlock(world, Blocks.CHISELED_STONE_BRICKS.getDefaultState(), 10, -2, 11, chunkBox);
-         BlockState lv6 = Blocks.LEVER.getDefaultState().with(LeverBlock.FACING, Direction.NORTH).with(LeverBlock.FACE, BlockFace.WALL);
-         this.addBlock(world, lv6, 8, -2, 12, chunkBox);
-         this.addBlock(world, lv6, 9, -2, 12, chunkBox);
-         this.addBlock(world, lv6, 10, -2, 12, chunkBox);
-         this.fillWithOutline(world, chunkBox, 8, -3, 8, 8, -3, 10, false, random, COBBLESTONE_RANDOMIZER);
-         this.fillWithOutline(world, chunkBox, 10, -3, 8, 10, -3, 10, false, random, COBBLESTONE_RANDOMIZER);
-         this.addBlock(world, Blocks.MOSSY_COBBLESTONE.getDefaultState(), 10, -2, 9, chunkBox);
-         this.addBlock(world, lv5, 8, -2, 9, chunkBox);
-         this.addBlock(world, lv5, 8, -2, 10, chunkBox);
-         this.addBlock(
-            world,
-            Blocks.REDSTONE_WIRE
-               .getDefaultState()
-               .with(RedstoneWireBlock.WIRE_CONNECTION_NORTH, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_SOUTH, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_EAST, WireConnection.SIDE)
-               .with(RedstoneWireBlock.WIRE_CONNECTION_WEST, WireConnection.SIDE),
-            10,
-            -1,
-            9,
-            chunkBox
-         );
-         this.addBlock(world, Blocks.STICKY_PISTON.getDefaultState().with(PistonBlock.FACING, Direction.UP), 9, -2, 8, chunkBox);
-         this.addBlock(world, Blocks.STICKY_PISTON.getDefaultState().with(PistonBlock.FACING, Direction.WEST), 10, -2, 8, chunkBox);
-         this.addBlock(world, Blocks.STICKY_PISTON.getDefaultState().with(PistonBlock.FACING, Direction.WEST), 10, -1, 8, chunkBox);
-         this.addBlock(world, Blocks.REPEATER.getDefaultState().with(RepeaterBlock.FACING, Direction.NORTH), 10, -2, 10, chunkBox);
-         if (!this.placedHiddenChest) {
-            this.placedHiddenChest = this.addChest(world, chunkBox, random, 9, -3, 10, LootTables.JUNGLE_TEMPLE_CHEST);
-         }
-         */
     }
 
     override func postProcess<R: Random>(in world: StructureWorldView, chunkBox: BoundingBox, random: inout R) {
@@ -438,6 +199,10 @@ private final class JungleTemplePiece: StructurePiece {
 
     private func fillBox(_ world: StructureWorldView, _ chunkBox: BoundingBox, _ x0: Int32, _ y0: Int32, _ z0: Int32, _ x1: Int32, _ y1: Int32, _ z1: Int32, _ state: BlockState) {
         for y in y0...y1 { for x in x0...x1 { for z in z0...z1 { self.placeBlock(world, state, x, y, z, chunkBox) } } }
+    }
+
+    private func randomPillars<R: Random>(_ world: StructureWorldView, _ chunkBox: BoundingBox, x: Int32, z: Int32, random: inout R) {
+        self.fillRandomizedBox(world, chunkBox, x, 4, z, x, 5, z, boundaryOnly: true, random: &random)
     }
 
     private func placeContainer<R: Random>(_ world: StructureWorldView, _ chunkBox: BoundingBox, _ x: Int32, _ y: Int32, _ z: Int32, block: String, table: String, random: inout R) {
