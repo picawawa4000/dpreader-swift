@@ -435,9 +435,8 @@ private enum MansionDirection: CaseIterable {
     /// `Direction.fromHorizontalQuarterTurns` indexes its directions in this order.
     static let horizontalQuarterTurnOrder: [MansionDirection] = [.south, .west, .north, .east]
 
-    /// Iterating `Direction.Type.HORIZONTAL` preserves the declaration order of
-    /// Minecraft's horizontal `Direction` values.
-    static let horizontalIterationOrder: [MansionDirection] = [.north, .south, .west, .east]
+    /// `Direction.Type.HORIZONTAL` iterates these four directions in vanilla order.
+    static let horizontalIterationOrder: [MansionDirection] = [.north, .east, .south, .west]
 }
 
 private struct MansionPlacement {
@@ -699,7 +698,7 @@ private final class WoodlandMansionPiece: StructurePiece {
     /// Matches `StructureTemplate.transform` with a zero pivot.  Placement
     /// offsets are rotated around the template origin rather than translated
     /// back into a positive local bounding box.
-    private static func transformTemplatePositionAroundOrigin(
+    fileprivate static func transformTemplatePositionAroundOrigin(
         _ pos: PosInt3D,
         mirror: MansionMirror,
         rotation: MansionRotation
@@ -729,34 +728,26 @@ private final class WoodlandMansionPiece: StructurePiece {
         }
     }
 
-    static func transformTemplatePos(
+    fileprivate static func applyTransformedOffset(
         _ pos: PosInt3D,
         size: PosInt3D,
         mirror: MansionMirror,
         rotation: MansionRotation
     ) -> PosInt3D {
-        var x = pos.x
-        let y = pos.y
-        var z = pos.z
-
-        switch mirror {
-        case .none:
-            break
-        case .leftRight:
-            z = size.z - 1 - z
-        case .frontBack:
-            x = size.x - 1 - x
-        }
+        let offsetX = size.x - 1
+        let offsetZ = size.z - 1
+        let mirrorX = mirror == .frontBack ? offsetX : 0
+        let mirrorZ = mirror == .leftRight ? offsetZ : 0
 
         switch rotation {
         case .none:
-            return PosInt3D(x: x, y: y, z: z)
+            return PosInt3D(x: pos.x + mirrorX, y: pos.y, z: pos.z + mirrorZ)
         case .clockwise90:
-            return PosInt3D(x: size.z - 1 - z, y: y, z: x)
+            return PosInt3D(x: pos.x + offsetZ - mirrorZ, y: pos.y, z: pos.z + mirrorX)
         case .clockwise180:
-            return PosInt3D(x: size.x - 1 - x, y: y, z: size.z - 1 - z)
+            return PosInt3D(x: pos.x + offsetX - mirrorX, y: pos.y, z: pos.z + offsetZ - mirrorZ)
         case .counterclockwise90:
-            return PosInt3D(x: z, y: y, z: size.x - 1 - x)
+            return PosInt3D(x: pos.x + mirrorZ, y: pos.y, z: pos.z + offsetX - mirrorX)
         }
     }
 
@@ -1764,14 +1755,20 @@ private struct MansionLayoutGenerator {
             templateName = pool.smallSecretRoom(using: &self.random)
         }
 
-        var offsetPos = WoodlandMansionPiece.transformTemplatePos(
-            PosInt3D(x: 1, y: 0, z: 0),
+        var offsetPos = WoodlandMansionPiece.applyTransformedOffset(
+            // Small-room placement starts at the transformed template origin; the
+            // doorway direction only chooses the rotation.
+            PosInt3D(x: 0, y: 0, z: 0),
             size: PosInt3D(x: 7, y: 8, z: 7),
             mirror: .none,
             rotation: roomRotation
         )
         let finalRotation = roomRotation.combined(with: rotation)
-        offsetPos = WoodlandMansionPiece.transformTemplatePos(offsetPos, size: PosInt3D(x: 7, y: 8, z: 7), mirror: .none, rotation: rotation)
+        offsetPos = WoodlandMansionPiece.transformTemplatePositionAroundOrigin(
+            offsetPos,
+            mirror: .none,
+            rotation: rotation
+        )
         let finalPos = PosInt3D(x: pos.x + offsetPos.x, y: pos.y, z: pos.z + offsetPos.z)
         return try WoodlandMansionPiece(context: self.context, templateName: templateName, position: finalPos, rotation: finalRotation)
     }

@@ -646,6 +646,25 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
     }
 }
 
+@Test func testSeed123458WoodlandMansionChestPosition() async throws {
+    let structure = Structure(
+        type: "minecraft:woodland_mansion",
+        biomes: .rawID("minecraft:dark_forest"),
+        spawnOverrides: [:],
+        step: "surface_structures"
+    )
+    let containers = try #require(
+        try structure.generateLoot(
+            worldSeed: 123_458,
+            startChunk: PosInt2D(x: -44, z: -129),
+            context: mansionTestContext(terrainTopY: 70)
+        )
+    )
+
+    #expect(containers.contains { $0.pos == PosInt3D(x: -724, y: 77, z: -2_038) })
+    #expect(!containers.contains { $0.pos == PosInt3D(x: -727, y: 77, z: -2_034) })
+}
+
 @Test func testStructureDispatchRejectsUnsupportedTypes() async throws {
     let structure = Structure(
         type: "minecraft:fortress",

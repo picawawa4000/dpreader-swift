@@ -82,3 +82,28 @@ private func strongholdChestMarker(
 
     #expect(loot == expected)
 }
+
+@Test func testSeed123458StrongholdChestLoot() async throws {
+    let containers = Stronghold.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: -6, z: -95),
+        context: strongholdTestContext()
+    )
+    let chest = try #require(containers.first { $0.pos == PosInt3D(x: -90, y: -24, z: -1_488) })
+
+    #expect(chest.lootTable == "minecraft:chests/stronghold_corridor")
+    #expect(chest.lootSeed == -6_825_683_577_099_892_493)
+    let root = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let tableURL = root.appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/stronghold_corridor.json")
+    let table = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: tableURL))
+    let items = try table.generateLoot(
+        withContext: LootContext(random: CheckedRandom(seed: UInt64(bitPattern: chest.lootSeed)))
+    )
+    #expect(items.map { "\($0.count)x \($0.itemName)" }.sorted() == [
+        "1x minecraft:diamond_horse_armor",
+        "1x minecraft:iron_leggings"
+    ])
+}
