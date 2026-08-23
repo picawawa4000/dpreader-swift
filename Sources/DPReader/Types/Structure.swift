@@ -1,6 +1,7 @@
 /// The type-specific output of complete structure block generation.
 public enum StructureGeneratedResult {
     case desertPyramid(DesertPyramidGenerationResult)
+    case jungleTemple(JungleTempleGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
     case stronghold(StrongholdGenerationResult)
     case woodlandMansion(WoodlandMansionGenerationResult)
@@ -127,6 +128,12 @@ public final class Structure: Codable {
                 startChunk: startChunk,
                 context: context
             )
+        case "minecraft:jungle_temple":
+            return JungleTemple.generatePieceGraph(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
         case "minecraft:ocean_monument":
             return OceanMonument.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk)
         case "minecraft:stronghold":
@@ -168,6 +175,13 @@ public final class Structure: Codable {
             return .oceanMonument(
                 OceanMonument.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
             )
+        case "minecraft:jungle_temple":
+            guard let result = JungleTemple.generate(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            ) else { return nil }
+            return .jungleTemple(result)
         case "minecraft:stronghold":
             return .stronghold(
                 Stronghold.generate(worldSeed: worldSeed, startChunk: startChunk, context: context)
@@ -199,6 +213,12 @@ public final class Structure: Codable {
         switch self.type {
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
+        case "minecraft:jungle_temple":
+            return JungleTemple.generateLoot(
                 worldSeed: worldSeed,
                 startChunk: startChunk,
                 context: context

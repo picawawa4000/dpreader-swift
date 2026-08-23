@@ -1411,7 +1411,11 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         self.isInInterpolationLoop = false
     }
 
-    private func generateAlignedTerrain(into chunk: ProtoChunk, using terrainInterpolator: VanillaChunkTerrainInterpolator) {
+    private func generateAlignedTerrain(
+        into chunk: ProtoChunk,
+        using terrainInterpolator: VanillaChunkTerrainInterpolator,
+        aquifer: AquiferSampler? = nil
+    ) {
         let horizontalBlockCount = Int(self.horizontalCellBlockCount)
         let verticalBlockCount = Int(self.verticalCellBlockCount)
 
@@ -1437,9 +1441,18 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                             let blockIndexBase = sectionBlockYBase | baseLocalZShift | (baseLocalX + localCellX)
                             for localCellZ in 0..<horizontalBlockCount {
                                 terrainInterpolator.interpolateZ(self.horizontalCellDeltas[localCellZ])
-                                section.setTerrainUnchecked(
-                                    terrainInterpolator.currentDensity > 0.0,
-                                    blockIndex: blockIndexBase | self.horizontalBlockIndexOffsets[localCellZ]
+                                let localX = Int32(baseLocalX + localCellX)
+                                let localZ = Int32((baseLocalZShift >> 4) + localCellZ)
+                                self.setGeneratedBlock(
+                                    in: section,
+                                    blockIndex: blockIndexBase | self.horizontalBlockIndexOffsets[localCellZ],
+                                    worldPosition: PosInt3D(
+                                        x: self.chunkStartX + localX,
+                                        y: baseY + Int32(localCellY),
+                                        z: self.chunkStartZ + localZ
+                                    ),
+                                    density: terrainInterpolator.currentDensity,
+                                    aquifer: aquifer
                                 )
                             }
                         }
@@ -1451,7 +1464,11 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    private func generateClippedTerrain(into chunk: ProtoChunk, using terrainInterpolator: VanillaChunkTerrainInterpolator) {
+    private func generateClippedTerrain(
+        into chunk: ProtoChunk,
+        using terrainInterpolator: VanillaChunkTerrainInterpolator,
+        aquifer: AquiferSampler? = nil
+    ) {
         let horizontalBlockCount = Int(self.horizontalCellBlockCount)
         let verticalBlockCount = Int(self.verticalCellBlockCount)
 
@@ -1482,9 +1499,16 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                                 terrainInterpolator.interpolateZ(self.horizontalCellDeltas[localCellZ])
                                 guard localZ >= 0 && localZ < ProtoChunk.sideLength else { continue }
 
-                                section.setTerrainUnchecked(
-                                    terrainInterpolator.currentDensity > 0.0,
-                                    blockIndex: sectionBlockYBase | (localZ << 4) | localX
+                                self.setGeneratedBlock(
+                                    in: section,
+                                    blockIndex: sectionBlockYBase | (localZ << 4) | localX,
+                                    worldPosition: PosInt3D(
+                                        x: self.chunkStartX + Int32(localX),
+                                        y: baseY + Int32(localCellY),
+                                        z: self.chunkStartZ + Int32(localZ)
+                                    ),
+                                    density: terrainInterpolator.currentDensity,
+                                    aquifer: aquifer
                                 )
                             }
                         }
@@ -1496,7 +1520,11 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         }
     }
 
-    func generateTerrain(into chunk: ProtoChunk, with terrainDensity: any DensityFunction) {
+    func generateTerrain(
+        into chunk: ProtoChunk,
+        with terrainDensity: any DensityFunction,
+        aquifer: AquiferSampler? = nil
+    ) {
         let directSamplingTerrainDensity = self.strippedTerrainSamplingFunction(from: terrainDensity)
         let terrainInterpolator = VanillaChunkTerrainInterpolator(delegate: directSamplingTerrainDensity, using: self)
         let usesFullHorizontalCells =
@@ -1506,9 +1534,35 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
 
         terrainInterpolator.fillStartColumns(atCellX: self.startCellX)
         if usesFullHorizontalCells {
-            self.generateAlignedTerrain(into: chunk, using: terrainInterpolator)
+            self.generateAlignedTerrain(into: chunk, using: terrainInterpolator, aquifer: aquifer)
         } else {
-            self.generateClippedTerrain(into: chunk, using: terrainInterpolator)
+            self.generateClippedTerrain(into: chunk, using: terrainInterpolator, aquifer: aquifer)
+        }
+    }
+
+    @inline(__always) private func setGeneratedBlock(
+        in section: ProtoChunkSection,
+        blockIndex: Int,
+        worldPosition: PosInt3D,
+        density: Double,
+        aquifer: AquiferSampler?
+    ) {
+        guard let aquifer else {
+            section.setTerrainUnchecked(density > 0, blockIndex: blockIndex)
+            return
+        }
+        if let state = aquifer.apply(at: worldPosition, density: density) {
+            section.setGeneratedBlockUnchecked(
+                state,
+                isDensityTerrain: density > 0,
+                blockIndex: blockIndex
+            )
+        } else {
+            section.setGeneratedBlockUnchecked(
+                nil,
+                isDensityTerrain: density > 0,
+                blockIndex: blockIndex
+            )
         }
     }
 

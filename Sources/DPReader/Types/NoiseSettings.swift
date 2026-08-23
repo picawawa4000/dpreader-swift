@@ -1,12 +1,13 @@
 /// A complete noise-generation configuration from `worldgen/noise_settings`.
 public final class NoiseSettings: Codable {
-    // let seaLevel: Int
-    // let disableMobGeneration: Bool
-    // let oreVeinsEnabled: Bool
-    // let aquifersEnabled: Bool
+    public let seaLevel: Int
+    public let disableMobGeneration: Bool
+    public let oreVeinsEnabled: Bool
+    public let aquifersEnabled: Bool
     let legacyRandomSource: Bool
-    // let defaultBlock: BlockState
-    // let defaultFluid: BlockState
+    public let defaultBlock: BlockStateDefinition
+    public let defaultFluid: BlockStateDefinition
+    private var includesExtendedGeneratorSettings: Bool
     // let spawnTarget: [NoiseParameter]
     let minY: Int, height: Int, sizeHorizontal: Int, sizeVertical: Int
     let noiseRouter: NoiseRouter
@@ -14,6 +15,12 @@ public final class NoiseSettings: Codable {
 
     public init(
         legacyRandomSource: Bool,
+        seaLevel: Int? = nil,
+        disableMobGeneration: Bool? = nil,
+        oreVeinsEnabled: Bool? = nil,
+        aquifersEnabled: Bool? = nil,
+        defaultBlock: BlockStateDefinition? = nil,
+        defaultFluid: BlockStateDefinition? = nil,
         minY: Int,
         height: Int,
         sizeHorizontal: Int,
@@ -21,6 +28,14 @@ public final class NoiseSettings: Codable {
         noiseRouter: NoiseRouter,
         surfaceRule: SurfaceRule
     ) {
+        self.seaLevel = seaLevel ?? 63
+        self.disableMobGeneration = disableMobGeneration ?? false
+        self.oreVeinsEnabled = oreVeinsEnabled ?? false
+        self.aquifersEnabled = aquifersEnabled ?? false
+        self.defaultBlock = defaultBlock ?? BlockStateDefinition(name: "minecraft:stone")
+        self.defaultFluid = defaultFluid ?? BlockStateDefinition(name: "minecraft:water", properties: ["level": "0"])
+        self.includesExtendedGeneratorSettings = seaLevel != nil || disableMobGeneration != nil
+            || oreVeinsEnabled != nil || aquifersEnabled != nil || defaultBlock != nil || defaultFluid != nil
         self.legacyRandomSource = legacyRandomSource
         self.minY = minY
         self.height = height
@@ -32,6 +47,17 @@ public final class NoiseSettings: Codable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.includesExtendedGeneratorSettings = container.contains(.seaLevel)
+            || container.contains(.disableMobGeneration) || container.contains(.oreVeinsEnabled)
+            || container.contains(.aquifersEnabled) || container.contains(.defaultBlock) || container.contains(.defaultFluid)
+        self.seaLevel = try container.decodeIfPresent(Int.self, forKey: .seaLevel) ?? 63
+        self.disableMobGeneration = try container.decodeIfPresent(Bool.self, forKey: .disableMobGeneration) ?? false
+        self.oreVeinsEnabled = try container.decodeIfPresent(Bool.self, forKey: .oreVeinsEnabled) ?? false
+        self.aquifersEnabled = try container.decodeIfPresent(Bool.self, forKey: .aquifersEnabled) ?? false
+        self.defaultBlock = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .defaultBlock)
+            ?? BlockStateDefinition(name: "minecraft:stone")
+        self.defaultFluid = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .defaultFluid)
+            ?? BlockStateDefinition(name: "minecraft:water", properties: ["level": "0"])
         self.legacyRandomSource = try container.decode(Bool.self, forKey: .legacyRandomSource)
         self.noiseRouter = try container.decode(NoiseRouter.self, forKey: .noiseRouter)
         self.surfaceRule = try container.decode(SurfaceRuleInitializer.self, forKey: .surfaceRule).value
@@ -45,6 +71,14 @@ public final class NoiseSettings: Codable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        if self.includesExtendedGeneratorSettings {
+            try container.encode(self.seaLevel, forKey: .seaLevel)
+            try container.encode(self.disableMobGeneration, forKey: .disableMobGeneration)
+            try container.encode(self.oreVeinsEnabled, forKey: .oreVeinsEnabled)
+            try container.encode(self.aquifersEnabled, forKey: .aquifersEnabled)
+            try container.encode(self.defaultBlock, forKey: .defaultBlock)
+            try container.encode(self.defaultFluid, forKey: .defaultFluid)
+        }
         try container.encode(self.legacyRandomSource, forKey: .legacyRandomSource)
         try container.encode(self.noiseRouter, forKey: .noiseRouter)
         try container.encode(SurfaceRuleEncoder(value: self.surfaceRule), forKey: .surfaceRule)
@@ -56,8 +90,14 @@ public final class NoiseSettings: Codable {
     }
 
     public func with(noiseRouter: NoiseRouter) -> NoiseSettings {
-        return NoiseSettings(
+        let copy = NoiseSettings(
             legacyRandomSource: self.legacyRandomSource,
+            seaLevel: self.seaLevel,
+            disableMobGeneration: self.disableMobGeneration,
+            oreVeinsEnabled: self.oreVeinsEnabled,
+            aquifersEnabled: self.aquifersEnabled,
+            defaultBlock: self.defaultBlock,
+            defaultFluid: self.defaultFluid,
             minY: self.minY,
             height: self.height,
             sizeHorizontal: self.sizeHorizontal,
@@ -65,10 +105,18 @@ public final class NoiseSettings: Codable {
             noiseRouter: noiseRouter,
             surfaceRule: self.surfaceRule
         )
+        copy.includesExtendedGeneratorSettings = self.includesExtendedGeneratorSettings
+        return copy
     }
 
     private enum CodingKeys: String, CodingKey {
         case noise = "noise"
+        case seaLevel = "sea_level"
+        case disableMobGeneration = "disable_mob_generation"
+        case oreVeinsEnabled = "ore_veins_enabled"
+        case aquifersEnabled = "aquifers_enabled"
+        case defaultBlock = "default_block"
+        case defaultFluid = "default_fluid"
         case legacyRandomSource = "legacy_random_source"
         case noiseRouter = "noise_router"
         case surfaceRule = "surface_rule"
@@ -260,13 +308,19 @@ private struct DensityFunctionEncoder: Encodable {
 }
 
 /// The JSON representation of a namespaced block ID and optional state properties.
-public struct BlockStateDefinition: Codable {
+public struct BlockStateDefinition: Codable, Equatable, Sendable {
     public let name: String
     public let properties: [String: String]?
 
     public init(name: String, properties: [String: String]? = nil) {
-        self.name = name
+        self.name = addDefaultNamespace(name)
         self.properties = properties
+    }
+
+    public var blockState: BlockState {
+        let block = Block(withID: addDefaultNamespace(self.name))
+        if let properties { return BlockState(type: block, properties: properties) }
+        return BlockState(type: block)
     }
 
     private enum CodingKeys: String, CodingKey {

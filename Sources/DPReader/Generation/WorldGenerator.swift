@@ -7,6 +7,8 @@ final class WorldGenerationRegistries {
     var bakedNoiseRegistry = Registry<DoublePerlinNoise>()
     var biomeRegistry = Registry<Biome>()
     var dimensionRegistry = Registry<Dimension>()
+    var configuredCarverRegistry = Registry<ConfiguredCarver>()
+    var tagRegistry = Registry<TagDefinition>()
 }
 
 private enum ConfiguredBiomeSampler {
@@ -1390,12 +1392,16 @@ public final class ProtoChunkSection {
     public static let biomeCount = biomeSideLength * biomeSideLength * biomeSideLength
 
     private var terrainBitmap = [UInt64](repeating: 0, count: bitmapWordCount)
+    private let defaultTerrainState: BlockState
+    private var blockOverrides: [Int: BlockState] = [:]
     private var blockBiomes = [RegistryKey<Biome>?](repeating: nil, count: blockCount)
     private var quartBiomes = [RegistryKey<Biome>?](repeating: nil, count: biomeCount)
 
     /// Creates an empty section with no terrain bits and no assigned biomes.
     /// Not concurrency-safe.
-    public init() {}
+    public init(defaultTerrainState: BlockState = BlockState(type: Block(withID: "minecraft:stone"))) {
+        self.defaultTerrainState = defaultTerrainState
+    }
 
     /// Returns the section terrain bitmap in local block order.
     /// Not concurrency-safe.
@@ -1411,6 +1417,7 @@ public final class ProtoChunkSection {
 
     func clear() {
         self.terrainBitmap = [UInt64](repeating: 0, count: Self.bitmapWordCount)
+        self.blockOverrides.removeAll(keepingCapacity: true)
         self.blockBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.blockCount)
         self.quartBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.biomeCount)
     }
@@ -1422,6 +1429,46 @@ public final class ProtoChunkSection {
             self.terrainBitmap[wordIndex] |= bitMask
         } else {
             self.terrainBitmap[wordIndex] &= ~bitMask
+        }
+        self.blockOverrides.removeValue(forKey: blockIndex)
+    }
+
+    @inline(__always) func setBlockUnchecked(_ state: BlockState, blockIndex: Int) {
+        let solid = Self.isSolid(state)
+        let wordIndex = blockIndex >> 6
+        let bitMask = UInt64(1) << UInt64(blockIndex & 63)
+        if solid {
+            self.terrainBitmap[wordIndex] |= bitMask
+        } else {
+            self.terrainBitmap[wordIndex] &= ~bitMask
+        }
+        let implicitState = solid ? self.defaultTerrainState : Blocks.airState
+        if state == implicitState {
+            self.blockOverrides.removeValue(forKey: blockIndex)
+        } else {
+            self.blockOverrides[blockIndex] = state
+        }
+    }
+
+    /// Stores a generated material while retaining raw final-density occupancy.
+    @inline(__always) func setGeneratedBlockUnchecked(
+        _ state: BlockState?,
+        isDensityTerrain: Bool,
+        blockIndex: Int
+    ) {
+        let state = state ?? self.defaultTerrainState
+        let wordIndex = blockIndex >> 6
+        let bitMask = UInt64(1) << UInt64(blockIndex & 63)
+        if isDensityTerrain {
+            self.terrainBitmap[wordIndex] |= bitMask
+        } else {
+            self.terrainBitmap[wordIndex] &= ~bitMask
+        }
+        let implicitState = isDensityTerrain ? self.defaultTerrainState : Blocks.airState
+        if state == implicitState {
+            self.blockOverrides.removeValue(forKey: blockIndex)
+        } else {
+            self.blockOverrides[blockIndex] = state
         }
     }
 
@@ -1439,6 +1486,44 @@ public final class ProtoChunkSection {
         } else {
             self.terrainBitmap[wordIndex] &= ~bitMask
         }
+        self.blockOverrides.removeValue(forKey: blockIndex)
+    }
+
+    @inline(__always) func setBlock(_ state: BlockState, at pos: PosInt3D) {
+        let blockIndex = Self.blockIndex(pos)
+        let solid = Self.isSolid(state)
+        self.setTerrainBitmap(solid, at: pos)
+        let implicitState = solid ? self.defaultTerrainState : Blocks.airState
+        if state == implicitState {
+            self.blockOverrides.removeValue(forKey: blockIndex)
+        } else {
+            self.blockOverrides[blockIndex] = state
+        }
+    }
+
+    @inline(__always) func block(at pos: PosInt3D) -> BlockState {
+        let blockIndex = Self.blockIndex(pos)
+        if let override = self.blockOverrides[blockIndex] { return override }
+        return self.isTerrain(at: pos) ? self.defaultTerrainState : Blocks.airState
+    }
+
+    @inline(__always) private func setTerrainBitmap(_ isSolid: Bool, at pos: PosInt3D) {
+        let blockIndex = (Int(pos.y) << 8) | (Int(pos.z) << 4) | Int(pos.x)
+        let wordIndex = blockIndex >> 6
+        let bitMask = UInt64(1) << UInt64(blockIndex & 63)
+        if isSolid {
+            self.terrainBitmap[wordIndex] |= bitMask
+        } else {
+            self.terrainBitmap[wordIndex] &= ~bitMask
+        }
+    }
+
+    @inline(__always) private static func isSolid(_ state: BlockState) -> Bool {
+        !state.type.isAir && state.type.id != "minecraft:water" && state.type.id != "minecraft:lava"
+    }
+
+    @inline(__always) private static func blockIndex(_ pos: PosInt3D) -> Int {
+        (Int(pos.y) << 8) | (Int(pos.z) << 4) | Int(pos.x)
     }
 
     @inline(__always) func isTerrain(at pos: PosInt3D) -> Bool {
@@ -1522,6 +1607,8 @@ public final class ProtoChunk {
     public private(set) var minY: Int32 = 0
     public private(set) var height: Int32 = 0
     private var sections: [ProtoChunkSection] = []
+    private var defaultTerrainState = BlockState(type: Block(withID: "minecraft:stone"))
+    var aquiferSampler: AquiferSampler?
 
     /// Creates an empty proto-chunk with no configured vertical range.
     /// Not concurrency-safe.
@@ -1548,14 +1635,22 @@ public final class ProtoChunk {
     ///   - minY: The minimum block Y stored by the chunk.
     ///   - height: The total chunk height in blocks. Must be positive and divisible by `sectionHeight`.
     /// - Throws: `WorldGenerationErrors.invalidProtoChunkHeight` if `height` is not section-aligned.
-    public func configure(minY: Int32, height: Int32) throws {
+    public func configure(
+        minY: Int32,
+        height: Int32,
+        defaultTerrainState: BlockState = BlockState(type: Block(withID: "minecraft:stone"))
+    ) throws {
         guard height > 0 && height % Int32(Self.sectionHeight) == 0 else {
             throw WorldGenerationErrors.invalidProtoChunkHeight(Int(height))
         }
 
         self.minY = minY
         self.height = height
-        self.sections = (0..<Int(height / Int32(Self.sectionHeight))).map { _ in ProtoChunkSection() }
+        self.defaultTerrainState = defaultTerrainState
+        self.aquiferSampler = nil
+        self.sections = (0..<Int(height / Int32(Self.sectionHeight))).map { _ in
+            ProtoChunkSection(defaultTerrainState: defaultTerrainState)
+        }
     }
 
     /// Clears all terrain and biome data currently stored in the chunk.
@@ -1673,6 +1768,24 @@ public final class ProtoChunk {
         let sectionIndex = Int(pos.y) >> 4
         let localY = pos.y & 15
         return self.sections[sectionIndex].isTerrain(at: PosInt3D(x: pos.x, y: localY, z: pos.z))
+    }
+
+    /// Sets a block state at one chunk-local position and keeps the terrain bitmap in sync.
+    @inline(__always) public func setBlock(_ state: BlockState, atLocal pos: PosInt3D) {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
+        precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z position out of range")
+        let sectionIndex = Int(pos.y) >> 4
+        self.sections[sectionIndex].setBlock(state, at: PosInt3D(x: pos.x, y: pos.y & 15, z: pos.z))
+    }
+
+    /// Returns the block state at one chunk-local position.
+    @inline(__always) public func block(atLocal pos: PosInt3D) -> BlockState {
+        precondition(pos.x >= 0 && pos.x < Int32(Self.sideLength), "x position out of range")
+        precondition(pos.y >= 0 && pos.y < self.height, "y position out of range")
+        precondition(pos.z >= 0 && pos.z < Int32(Self.sideLength), "z position out of range")
+        let sectionIndex = Int(pos.y) >> 4
+        return self.sections[sectionIndex].block(at: PosInt3D(x: pos.x, y: pos.y & 15, z: pos.z))
     }
 }
 
@@ -2344,6 +2457,8 @@ public final class WorldGenerator {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
             self.registries.biomeRegistry.mergeDown(with: datapack.biomeRegistry)
             self.registries.dimensionRegistry.mergeDown(with: datapack.dimensionsRegistry)
+            self.registries.configuredCarverRegistry.mergeDown(with: datapack.configuredCarverRegistry)
+            self.registries.tagRegistry.mergeDown(with: datapack.tagRegistry)
         }
 
         if let configKey {
@@ -3061,7 +3176,7 @@ public final class WorldGenerator {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height)
+        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
 
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
@@ -3083,7 +3198,7 @@ public final class WorldGenerator {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height)
+        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
 
         if let biomeSampler = self.configuredChunkBiomeSampler() {
             switch biomeSampler {
@@ -3680,7 +3795,7 @@ public final class WorldGenerator {
 
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height)
+        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
 
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
@@ -3720,7 +3835,110 @@ public final class WorldGenerator {
             }
         }
 
-        chunkSampler.generateTerrain(into: chunk, with: chunkGenerationFunctions.terrainDensity)
+        let aquifer = AquiferSampler(settings: config, chunkPos: chunkPos, worldSeed: self.worldSeed)
+        chunk.aquiferSampler = aquifer
+        chunkSampler.generateTerrain(
+            into: chunk,
+            with: chunkGenerationFunctions.terrainDensity,
+            aquifer: aquifer
+        )
+    }
+
+    /// Applies the configured surface rule to a previously generated chunk.
+    /// Call this after ``generateInto(_:at:)`` and before ``carve(_:at:)``.
+    public func applySurfaceRules(to chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+        let config = try self.validatedTerrainConfig(for: "Surface generation")
+        guard chunk.minY == Int32(config.minY), chunk.height == Int32(config.height) else {
+            throw WorldGenerationErrors.invalidProtoChunkHeight(Int(chunk.height))
+        }
+        SurfaceRuleApplicator(
+            settings: config,
+            noises: self.registries.bakedNoiseRegistry,
+            biomes: self.registries.biomeRegistry,
+            worldSeed: self.worldSeed
+        ).apply(to: chunk, at: chunkPos)
+    }
+
+    /// Runs configured biome carvers against a previously generated and surfaced chunk.
+    /// Carver starts from the vanilla 17x17 source-chunk neighborhood are considered.
+    public func carve(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+        let config = try self.validatedTerrainConfig(for: "Carving")
+        guard chunk.minY == Int32(config.minY), chunk.height == Int32(config.height) else {
+            throw WorldGenerationErrors.invalidProtoChunkHeight(Int(chunk.height))
+        }
+        try self.applyCarvers(to: chunk, at: chunkPos)
+    }
+
+    private func applyCarvers(to chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+        guard !self.registries.configuredCarverRegistry.entries().isEmpty else { return }
+        if chunk.aquiferSampler == nil {
+            let config = try self.validatedTerrainConfig(for: "Carving")
+            chunk.aquiferSampler = AquiferSampler(settings: config, chunkPos: chunkPos, worldSeed: self.worldSeed)
+        }
+        let applicator = CarverApplicator { [registries = self.registries] replaceable, blockID in
+            Self.carverReplaceable(replaceable, contains: blockID, tags: registries.tagRegistry)
+        }
+        var mask = CarvingMask(minY: chunk.minY, height: chunk.height)
+        for offsetX in -8...8 {
+            for offsetZ in -8...8 {
+                let source = PosInt2D(x: chunkPos.x + Int32(offsetX), z: chunkPos.z + Int32(offsetZ))
+                let biomeKey: RegistryKey<Biome>?
+                if let dimension = self.configuredDimensionKey {
+                    biomeKey = try self.sampleBiome(
+                        at: PosInt3D(x: source.x * 16, y: 0, z: source.z * 16),
+                        in: dimension
+                    )
+                } else {
+                    biomeKey = chunk.biome(atLocal: PosInt3D(x: 8, y: min(max(0, -chunk.minY), chunk.height - 1), z: 8))
+                }
+                guard let biomeKey, let biome = self.registries.biomeRegistry.get(biomeKey) else { continue }
+                var configured: [(ConfiguredCarver, Int)] = []
+                configured.reserveCapacity(biome.carvers.count)
+                for (index, id) in biome.carvers.enumerated() {
+                    let key = RegistryKey<ConfiguredCarver>(referencing: addDefaultNamespace(id))
+                    if let carver = self.registries.configuredCarverRegistry.get(key) {
+                        configured.append((carver, index))
+                    }
+                }
+                applicator.apply(
+                    configured,
+                    to: chunk,
+                    targetChunkPos: chunkPos,
+                    sourceChunkPos: source,
+                    worldSeed: self.worldSeed,
+                    aquifer: chunk.aquiferSampler,
+                    mask: &mask
+                )
+            }
+        }
+    }
+
+    private static func carverReplaceable(
+        _ configured: String,
+        contains blockID: String,
+        tags: Registry<TagDefinition>
+    ) -> Bool {
+        if !configured.hasPrefix("#") { return addDefaultNamespace(configured) == addDefaultNamespace(blockID) }
+        var visited = Set<String>()
+        func matches(tagName: String) -> Bool {
+            let normalized = addDefaultNamespace(tagName)
+            guard visited.insert(normalized).inserted else { return false }
+            let parts = normalized.split(separator: ":", maxSplits: 1).map(String.init)
+            let namespacedBlockTag = parts.count == 2 ? "\(parts[0]):block/\(parts[1])" : "minecraft:block/\(normalized)"
+            guard let tag = tags.get(RegistryKey<TagDefinition>(referencing: namespacedBlockTag)) else { return false }
+            for value in tag.values {
+                switch value {
+                case .rawID(let id): if addDefaultNamespace(id) == addDefaultNamespace(blockID) { return true }
+                case .tagID(let id): if matches(tagName: id) { return true }
+                }
+            }
+            return false
+        }
+        return matches(tagName: String(configured.dropFirst()))
     }
 
     #if DEBUG && !(os(WASI) || arch(wasm32))
@@ -3737,7 +3955,7 @@ public final class WorldGenerator {
         func makeContext() throws -> (ProtoChunk, VanillaChunkTerrainSampler, ChunkGenerationDensityFunctions, UInt64, UInt64, UInt64) {
             let chunk = ProtoChunk()
             let configureStart = DispatchTime.now().uptimeNanoseconds
-            try chunk.configure(minY: minY, height: height)
+            try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
             let configureEnd = DispatchTime.now().uptimeNanoseconds
 
             let samplerInitStart = DispatchTime.now().uptimeNanoseconds
@@ -3877,7 +4095,7 @@ public final class WorldGenerator {
         func makeContext() throws -> (ProtoChunk, VanillaChunkTerrainSampler, ChunkGenerationDensityFunctions, UInt64, UInt64, UInt64) {
             let chunk = ProtoChunk()
             let configureStart = DispatchTime.now().uptimeNanoseconds
-            try chunk.configure(minY: minY, height: height)
+            try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
             let configureEnd = DispatchTime.now().uptimeNanoseconds
 
             let samplerInitStart = DispatchTime.now().uptimeNanoseconds

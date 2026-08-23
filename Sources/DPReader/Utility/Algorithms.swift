@@ -258,8 +258,11 @@ public struct CheckedRandomSplitter: RandomSplitter {
     }
 
     public func split(usingString string: String) -> ReturnedRandom {
-        fatalError("CheckedRandomSplitter.split(usingString:) is currently unsupported (because I don't think it's ever used)!")
-        #warning("Unimplemented function CheckedRandomSplitter.split(usingString:)!")
+        var hash: Int32 = 0
+        for codeUnit in string.utf16 {
+            hash = hash &* 31 &+ Int32(codeUnit)
+        }
+        return CheckedRandom(seed: UInt64(bitPattern: Int64(hash)) ^ self.seed)
     }
 
     public func split(usingLong seed: WorldSeed) -> ReturnedRandom {

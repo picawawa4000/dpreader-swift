@@ -140,6 +140,8 @@ public enum Blocks {
     static let infestedStoneBricks = Block(withID: "minecraft:infested_stone_bricks")
     static let caveAir = Block(withID: "minecraft:cave_air")
     static let wallTorch = Block(withID: "minecraft:wall_torch")
+    static let cobblestone = Block(withID: "minecraft:cobblestone")
+    static let mossyCobblestone = Block(withID: "minecraft:mossy_cobblestone")
 
     static let airState = BlockState(type: air)
     static let waterState = BlockState(type: water)
@@ -154,6 +156,8 @@ public enum Blocks {
     static let mossyStoneBricksState = BlockState(type: mossyStoneBricks)
     static let infestedStoneBricksState = BlockState(type: infestedStoneBricks)
     static let caveAirState = BlockState(type: caveAir)
+    static let cobblestoneState = BlockState(type: cobblestone)
+    static let mossyCobblestoneState = BlockState(type: mossyCobblestone)
 }
 
 /// A cardinal direction in world space.
@@ -908,4 +912,56 @@ func getStructureGenerationRandom(
         index: decoratorIndex,
         step: decoratorStep
     )
+}
+
+func randomOrientation<R: Random>(using random: inout R) -> HorizontalDirection {
+    switch Int(random.next(bound: 4)) {
+    case 0: return .south
+    case 1: return .west
+    case 2: return .north
+    default: return .east
+    }
+}
+
+func minimumSurfaceY(in boundingBox: BoundingBox, context: StructureGenerationContext) -> Int32? {
+    var minimumY: Int32?
+    for worldX in boundingBox.minX...boundingBox.maxX {
+        for worldZ in boundingBox.minZ...boundingBox.maxZ {
+            guard let surfaceY = surfaceY(atX: worldX, z: worldZ, context: context) else {
+                return nil
+            }
+            if let currentMinimum = minimumY {
+                minimumY = min(currentMinimum, surfaceY)
+            } else {
+                minimumY = surfaceY
+            }
+        }
+    }
+    return minimumY
+}
+
+func averageSurfaceY(in boundingBox: BoundingBox, context: StructureGenerationContext) -> Int32? {
+    var totalY: Int32 = 0
+    var samples: Int32 = 0
+    for worldX in boundingBox.minX...boundingBox.maxX {
+        for worldZ in boundingBox.minZ...boundingBox.maxZ {
+            guard let surfaceY = surfaceY(atX: worldX, z: worldZ, context: context) else {
+                return nil
+            }
+            totalY += surfaceY
+            samples += 1
+        }
+    }
+    return totalY / samples
+}
+
+func surfaceY(atX x: Int32, z: Int32, context: StructureGenerationContext) -> Int32? {
+    let maxSearchY = max(Int32(319), context.seaLevel + 64)
+    for y in stride(from: maxSearchY, through: context.minimumWorldY, by: -1) {
+        let state = context.blockSampler(PosInt3D(x: x, y: y, z: z))
+        if !state.type.isAir {
+            return y + 1
+        }
+    }
+    return nil
 }

@@ -210,7 +210,7 @@ private final class DesertPyramidPiece: StructurePiece {
 
     init<R: Random>(worldSeed: WorldSeed, startChunk: PosInt2D, random: inout R) {
         self.worldSeed = worldSeed
-        let orientation = Self.randomOrientation(using: &random)
+        let orientation = randomOrientation(using: &random)
         let boundingBox = makeBoundingBox(
             x: startChunk.x * 16,
             y: Self.initialY,
@@ -224,7 +224,7 @@ private final class DesertPyramidPiece: StructurePiece {
     }
 
     func adjustToMinHeight<R: Random>(context: StructureGenerationContext, random: inout R) -> Bool {
-        guard let minimumSurfaceY = self.minimumSurfaceY(context: context), minimumSurfaceY >= context.seaLevel else {
+        guard let minimumSurfaceY = minimumSurfaceY(in: self.boundingBox, context: context), minimumSurfaceY >= context.seaLevel else {
             return false
         }
         let downwardOffset = Int32(random.next(bound: 3))
@@ -758,48 +758,11 @@ private final class DesertPyramidPiece: StructurePiece {
         }
     }
 
-    private func minimumSurfaceY(context: StructureGenerationContext) -> Int32? {
-        var minimumY: Int32?
-        for worldX in self.boundingBox.minX...self.boundingBox.maxX {
-            for worldZ in self.boundingBox.minZ...self.boundingBox.maxZ {
-                guard let surfaceY = self.surfaceY(atX: worldX, z: worldZ, context: context) else {
-                    return nil
-                }
-                if let currentMinimum = minimumY {
-                    minimumY = min(currentMinimum, surfaceY)
-                } else {
-                    minimumY = surfaceY
-                }
-            }
-        }
-        return minimumY
-    }
-
-    private func surfaceY(atX x: Int32, z: Int32, context: StructureGenerationContext) -> Int32? {
-        let maxSearchY = max(Int32(319), context.seaLevel + 64)
-        for y in stride(from: maxSearchY, through: context.minimumWorldY, by: -1) {
-            let state = context.blockSampler(PosInt3D(x: x, y: y, z: z))
-            if !state.type.isAir {
-                return y + 1
-            }
-        }
-        return nil
-    }
-
     private func sandstoneStairs(localFacing: CardinalDirection) -> BlockState {
         BlockState(
             type: Block(withID: "minecraft:sandstone_stairs"),
             properties: ["facing": self.worldFacing(forLocal: localFacing).rawValue]
         )
-    }
-
-    private static func randomOrientation<R: Random>(using random: inout R) -> HorizontalDirection {
-        switch Int(random.next(bound: 4)) {
-        case 0: return .south
-        case 1: return .west
-        case 2: return .north
-        default: return .east
-        }
     }
 
     private static func blockPosAsLong(_ pos: PosInt3D) -> Int64 {

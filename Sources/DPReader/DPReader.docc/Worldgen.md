@@ -23,6 +23,18 @@ try generator.generateInto(chunk, at: PosInt2D(x: 0, z: 0))
 let localPosition = PosInt3D(x: 8, y: 64 - chunk.minY, z: 8)
 let isSolid = chunk.isTerrain(atLocal: localPosition)
 let biome = chunk.biome(atLocal: localPosition)
+let material = chunk.block(atLocal: localPosition)
+```
+
+`generateInto` also resolves the configured aquifer. `isTerrain(atLocal:)` retains raw final-density occupancy for terrain-analysis compatibility, while `block(atLocal:)` exposes aquifer barriers, water, lava, and air. Carvers reuse the same per-chunk aquifer sampler.
+
+Surface rules and carvers are explicit, ordered post-processing steps. This keeps raw density terrain available to callers that only need occupancy while allowing complete material generation when requested.
+
+```swift
+try generator.applySurfaceRules(to: chunk, at: PosInt2D(x: 0, z: 0))
+try generator.carve(chunk, at: PosInt2D(x: 0, z: 0))
+
+let block = chunk.block(atLocal: localPosition)
 ```
 
 For point queries, use ``WorldGenerator/sampleBlockBiome(at:in:)`` or the climate sampling APIs. For maps and renderers that do not require full block resolution, see ``WorldGenerator/sampleLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:threadCount:payloads:progressHandler:chunkHandler:)`` and ``WorldGenerator/sampleSurfaceLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:threadCount:progressHandler:chunkHandler:)``.
@@ -45,6 +57,19 @@ For point queries, use ``WorldGenerator/sampleBlockBiome(at:in:)`` or the climat
 - ``ProtoChunkSection``
 - ``PosInt2D``
 - ``PosInt3D``
+- ``WorldGenerator/applySurfaceRules(to:at:)``
+- ``WorldGenerator/carve(_:at:)``
+
+### Carvers
+
+- ``ConfiguredCarver``
+- ``CarverConfig``
+- ``CaveCarverConfig``
+- ``RavineCarverConfig``
+- ``RavineCarverShape``
+- ``CarverFloatProvider``
+- ``CarverHeightProvider``
+- ``CarverDebugSettings``
 
 ### Additional Sampling
 

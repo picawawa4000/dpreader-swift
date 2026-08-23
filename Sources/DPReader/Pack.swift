@@ -40,6 +40,8 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
     public static let noEnchantments = DataPackRegistryLoadingOptions(rawValue: 1 << 7)
     /// Skips binary structure templates.
     public static let noStructureTemplates = DataPackRegistryLoadingOptions(rawValue: 1 << 8)
+    /// Skips configured-carver JSON.
+    public static let noConfiguredCarvers = DataPackRegistryLoadingOptions(rawValue: 1 << 9)
 }
 
 /// Represents a data pack.
@@ -55,6 +57,7 @@ public final class DataPack {
     public let structureRegistry = Registry<Structure>()
     public let structureSetRegistry = Registry<StructureSet>()
     public let structureTemplateRegistry = Registry<StructureTemplate>()
+    public let configuredCarverRegistry = Registry<ConfiguredCarver>()
     public let versioning: PackVersioning
     public var packFormat: Version { versioning.selectedVersion }
 
@@ -114,6 +117,7 @@ public final class DataPack {
             if !options.contains(.noNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoiseSettings) { try self.loadNoiseSettings(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noBiomes) { try self.loadBiomes(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
+            if !options.contains(.noConfiguredCarvers) { try self.loadConfiguredCarvers(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noStructures) { try self.loadStructures(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noStructureSets) { try self.loadStructureSets(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
@@ -212,6 +216,27 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("noise")
+        }
+    }
+
+    private func loadConfiguredCarvers(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "configured_carver")
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        let decoder = makeDecoder()
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.producesRelativePathURLs]
+        ) else {
+            throw LoadingErrors.failedToEnumerateDirectory("configured_carver")
+        }
+        for case let filepath as URL in enumerator {
+            if !Self.shouldDecodeFile(at: filepath) { continue }
+            let value = try decoder.decode(ConfiguredCarver.self, from: Data(contentsOf: filepath))
+            let key = RegistryKey<ConfiguredCarver>(
+                referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath)
+            )
+            self.configuredCarverRegistry.register(value, forKey: key)
         }
     }
 
