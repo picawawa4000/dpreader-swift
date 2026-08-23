@@ -254,7 +254,7 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         minimumWorldY: -64,
         maximumWorldY: 319,
         heightmapSampler: { _, x, z in
-            x == 21 && z == 21 ? 62 : 70
+            x == 20 && z == 20 ? 62 : 70
         },
         biomeSampler: { _ in RegistryKey(referencing: "minecraft:desert") }
     )

@@ -199,6 +199,48 @@ private func makeRealTempleContext(worldSeed: WorldSeed, startChunk: PosInt2D) t
     }
 }
 
+@Test func testSeed123458DesertPyramidCornerValidationUsesOccupiedBounds() async throws {
+    let seed: WorldSeed = 123_458
+    let accepted = [PosInt2D(x: 72, z: 52), PosInt2D(x: 75, z: 83)]
+    let rejected = PosInt2D(x: 97, z: 44)
+    let starts = accepted + [rejected]
+    var contexts: [StructureGenerationContext] = []
+    for startChunk in starts {
+        contexts.append(try makeRealTempleContext(worldSeed: seed, startChunk: startChunk))
+    }
+
+    for (index, startChunk) in accepted.enumerated() {
+        let context = contexts[index]
+        #expect(DesertPyramid.generatePieceGraph(worldSeed: seed, startChunk: startChunk, context: context) != nil)
+    }
+    let rejectedContext = contexts[2]
+    #expect(DesertPyramid.generatePieceGraph(worldSeed: seed, startChunk: rejected, context: rejectedContext) == nil)
+
+    let pack = try DataPack(
+        fromRootPath: vanilla12111Root,
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: seed, usingDataPacks: [pack])
+    let structure = RegistryKey<Structure>(referencing: "minecraft:desert_pyramid")
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+
+    for (index, startChunk) in starts.enumerated() {
+        let context = contexts[index]
+        let validation = StructureStartValidationContext(
+            dimension: dimension,
+            maximumWorldY: 319,
+            generationContext: context,
+            biomeSampler: { _ in RegistryKey(referencing: "minecraft:desert") }
+        )
+        let start = try sampler.validateStructureStart(for: structure, atChunk: startChunk, using: validation)
+        if startChunk == rejected {
+            #expect(start == nil)
+        } else {
+            #expect(start != nil)
+        }
+    }
+}
+
 private func sortMarkers(_ markers: [DesertPyramidLootMarker]) -> [DesertPyramidLootMarker] {
     markers.sorted { left, right in
         if left.pos.z != right.pos.z { return left.pos.z < right.pos.z }

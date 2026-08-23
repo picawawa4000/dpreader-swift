@@ -275,9 +275,9 @@ extension Structure {
     ) throws -> Int32 {
         try min(
             context.height(.worldSurfaceWG, x: startX, z: startZ),
-            context.height(.worldSurfaceWG, x: startX &+ width, z: startZ),
-            context.height(.worldSurfaceWG, x: startX, z: startZ &+ depth),
-            context.height(.worldSurfaceWG, x: startX &+ width, z: startZ &+ depth)
+            context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ),
+            context.height(.worldSurfaceWG, x: startX, z: startZ &+ depth &- 1),
+            context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ &+ depth &- 1)
         )
     }
 

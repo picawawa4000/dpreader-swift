@@ -161,9 +161,9 @@ public enum DesertPyramid {
         let depth = DesertPyramidPiece.depth
         return min(
             surfaceY(atX: startX, z: startZ, context: context),
-            surfaceY(atX: startX, z: startZ + depth, context: context),
-            surfaceY(atX: startX + width, z: startZ, context: context),
-            surfaceY(atX: startX + width, z: startZ + depth, context: context)
+            surfaceY(atX: startX, z: startZ + depth - 1, context: context),
+            surfaceY(atX: startX + width - 1, z: startZ, context: context),
+            surfaceY(atX: startX + width - 1, z: startZ + depth - 1, context: context)
         )
     }
 
