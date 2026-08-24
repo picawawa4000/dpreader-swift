@@ -44,7 +44,7 @@ final class SurfaceRuleApplicator {
 
     func apply(to chunk: ProtoChunk, at chunkPos: PosInt2D) {
         let minY = chunk.minY
-        let defaultState = self.settings.defaultBlock.blockState
+        let defaultState = self.settings.defaultBlock
 
         var heights = [Int32](repeating: minY - 1, count: 256)
         for z in Int32(0)..<16 {
@@ -83,7 +83,7 @@ final class SurfaceRuleApplicator {
                 while worldY >= minY {
                     let local = PosInt3D(x: x, y: worldY - minY, z: z)
                     let state = chunk.block(atLocal: local)
-                    if state.type.isAir {
+                    if state.isAir {
                         stoneDepthAbove = 0
                         stoneBottom = Int32.max
                         fluidHeight = nil
@@ -97,7 +97,7 @@ final class SurfaceRuleApplicator {
                             var scanY = worldY - 1
                             while scanY >= minY {
                                 let below = chunk.block(atLocal: PosInt3D(x: x, y: scanY - minY, z: z))
-                                if below.type.isAir || Self.isFluid(below) {
+                                if below.isAir || Self.isFluid(below) {
                                     stoneBottom = scanY + 1
                                     break
                                 }
@@ -151,7 +151,7 @@ final class SurfaceRuleApplicator {
     func evaluate(rule: any SurfaceRule, context: SurfaceRuleEvaluationContext) -> BlockState? {
         switch rule {
         case let block as SurfaceRuleBlock:
-            return block.resultState.blockState
+            return block.resultState
         case let sequence as SurfaceRuleSequence:
             for child in sequence.sequence {
                 if let result = self.evaluate(rule: child, context: context) { return result }
@@ -249,7 +249,7 @@ final class SurfaceRuleApplicator {
     private func highestNonAirY(in chunk: ProtoChunk, x: Int32, z: Int32) -> Int32 {
         var localY = chunk.height - 1
         while localY >= 0 {
-            if !chunk.block(atLocal: PosInt3D(x: x, y: localY, z: z)).type.isAir {
+            if !chunk.block(atLocal: PosInt3D(x: x, y: localY, z: z)).isAir {
                 return chunk.minY + localY
             }
             localY -= 1
@@ -272,15 +272,15 @@ final class SurfaceRuleApplicator {
         var scanY = min(top, maximumY)
         while scanY >= chunk.minY {
             let state = chunk.block(atLocal: PosInt3D(x: x, y: scanY - chunk.minY, z: z))
-            if state.type.id == self.settings.defaultBlock.name { break }
-            if state.type.id == "minecraft:water" { return }
+            if state.id == self.settings.defaultBlock.id { break }
+            if state.id == "minecraft:water" { return }
             scanY -= 1
         }
         var fillY = min(top, maximumY)
         while fillY >= chunk.minY {
             let local = PosInt3D(x: x, y: fillY - chunk.minY, z: z)
-            guard chunk.block(atLocal: local).type.isAir else { break }
-            chunk.setBlock(self.settings.defaultBlock.blockState, atLocal: local)
+            guard chunk.block(atLocal: local).isAir else { break }
+            chunk.setBlock(self.settings.defaultBlock, atLocal: local)
             fillY -= 1
         }
     }
@@ -315,14 +315,14 @@ final class SurfaceRuleApplicator {
         let snowDepth = 2 + Int(random.next(bound: 4))
         let snowLimit = Int32(self.settings.seaLevel + 18 + Int(random.next(bound: 10)))
         var snowPlaced = 0
-        let packedIce = BlockState(type: Block(withID: "minecraft:packed_ice"))
-        let snow = BlockState(type: Block(withID: "minecraft:snow_block"))
+        let packedIce = BlockState(id: "minecraft:packed_ice")
+        let snow = BlockState(id: "minecraft:snow_block")
         var worldY = min(chunk.minY + chunk.height - 1, max(surfaceY, Int32(upper) + 1))
         while worldY >= max(chunk.minY, minimumY) {
             let local = PosInt3D(x: x, y: worldY - chunk.minY, z: z)
             let state = chunk.block(atLocal: local)
-            let placeInAir = state.type.isAir && worldY < Int32(targetTop) && random.nextDouble() > 0.01
-            let placeInWater = state.type.id == "minecraft:water" && worldY > Int32(lower)
+            let placeInAir = state.isAir && worldY < Int32(targetTop) && random.nextDouble() > 0.01
+            let placeInWater = state.id == "minecraft:water" && worldY > Int32(lower)
                 && worldY < Int32(self.settings.seaLevel) && lower != 0 && random.nextDouble() > 0.15
             if placeInAir || placeInWater {
                 if snowPlaced <= snowDepth && worldY > snowLimit {
@@ -346,7 +346,7 @@ final class SurfaceRuleApplicator {
     }
 
     private static func isFluid(_ state: BlockState) -> Bool {
-        state.type.id == "minecraft:water" || state.type.id == "minecraft:lava"
+        state.id == "minecraft:water" || state.id == "minecraft:lava"
     }
 
     private static func resolve(_ anchor: VerticalAnchor, minY: Int32, height: Int32) -> Int32 {
@@ -369,7 +369,7 @@ final class SurfaceRuleApplicator {
     }
 
     private static func makeTerracottaBands(random: inout XoroshiroRandom) -> [BlockState] {
-        func state(_ id: String) -> BlockState { BlockState(type: Block(withID: "minecraft:\(id)")) }
+        func state(_ id: String) -> BlockState { BlockState(id: "minecraft:\(id)") }
         var bands = [BlockState](repeating: state("terracotta"), count: 192)
         var index = 0
         while index < bands.count {

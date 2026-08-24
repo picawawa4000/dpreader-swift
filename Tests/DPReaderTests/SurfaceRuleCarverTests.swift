@@ -56,7 +56,7 @@ private func aquiferTestSettings(
             depth: zero,
             weirdness: zero
         ),
-        surfaceRule: SurfaceRuleBlock(resultState: .init(name: "minecraft:stone"))
+        surfaceRule: SurfaceRuleBlock(resultState: .init(id: "minecraft:stone"))
     )
 }
 
@@ -68,7 +68,7 @@ private func aquiferTestSettings(
         sizeHorizontal: 1,
         sizeVertical: 2,
         noiseRouter: surfaceCarverTestRouter(),
-        surfaceRule: SurfaceRuleBlock(resultState: .init(name: "minecraft:stone"))
+        surfaceRule: SurfaceRuleBlock(resultState: .init(id: "minecraft:stone"))
     )
     let evaluator = SurfaceRuleApplicator(
         settings: settings,
@@ -79,11 +79,11 @@ private func aquiferTestSettings(
     let rule = SurfaceRuleSequence(sequence: [
         SurfaceRuleConditionRule(
             ifTrue: SurfaceRuleBiomeCondition(biomeIs: ["minecraft:desert"]),
-            thenRun: SurfaceRuleBlock(resultState: .init(name: "minecraft:sand"))
+            thenRun: SurfaceRuleBlock(resultState: .init(id: "minecraft:sand"))
         ),
         SurfaceRuleConditionRule(
             ifTrue: SurfaceRuleStoneDepthCondition(offset: 0, surfaceType: .floor, addSurfaceDepth: false),
-            thenRun: SurfaceRuleBlock(resultState: .init(name: "minecraft:grass_block"))
+            thenRun: SurfaceRuleBlock(resultState: .init(id: "minecraft:grass_block"))
         )
     ])
     let context = SurfaceRuleEvaluationContext(
@@ -102,7 +102,7 @@ private func aquiferTestSettings(
         biomeTemperature: 0.8
     )
 
-    #expect(evaluator.evaluate(rule: rule, context: context)?.type.id == "minecraft:grass_block")
+    #expect(evaluator.evaluate(rule: rule, context: context)?.id == "minecraft:grass_block")
 }
 
 @Test func testConfiguredVanillaCarversDecode() throws {
@@ -136,8 +136,8 @@ private func aquiferTestSettings(
         aquifer: aquifer
     )
 
-    #expect(chunk.block(atLocal: PosInt3D(x: 4, y: 7, z: 9)).type.id == "minecraft:water")
-    #expect(chunk.block(atLocal: PosInt3D(x: 4, y: 8, z: 9)).type.id == "minecraft:air")
+    #expect(chunk.block(atLocal: PosInt3D(x: 4, y: 7, z: 9)).id == "minecraft:water")
+    #expect(chunk.block(atLocal: PosInt3D(x: 4, y: 8, z: 9)).id == "minecraft:air")
     #expect(!chunk.isTerrain(atLocal: PosInt3D(x: 4, y: 7, z: 9)))
 }
 
@@ -151,17 +151,17 @@ private func aquiferTestSettings(
     let dry = AquiferSampler(settings: drySettings, chunkPos: PosInt2D(x: 0, z: 0), worldSeed: 99)
     let lava = AquiferSampler(settings: lavaSettings, chunkPos: PosInt2D(x: 0, z: 0), worldSeed: 99)
 
-    #expect(firstWet.apply(at: position, density: -1)?.type.id == "minecraft:water")
+    #expect(firstWet.apply(at: position, density: -1)?.id == "minecraft:water")
     #expect(secondWet.apply(at: position, density: -1) == firstWet.apply(at: position, density: -1))
-    #expect(dry.apply(at: position, density: -1)?.type.id == "minecraft:air")
-    #expect(lava.apply(at: PosInt3D(x: 3, y: -21, z: 7), density: -1)?.type.id == "minecraft:lava")
+    #expect(dry.apply(at: position, density: -1)?.id == "minecraft:air")
+    #expect(lava.apply(at: PosInt3D(x: 3, y: -21, z: 7), density: -1)?.id == "minecraft:lava")
     #expect(firstWet.apply(at: position, density: 0.1) == nil)
 }
 
 @Test func testSurfaceRulesApplyToGeneratedColumn() throws {
     let rule = SurfaceRuleConditionRule(
         ifTrue: SurfaceRuleStoneDepthCondition(offset: 0, surfaceType: .floor, addSurfaceDepth: false),
-        thenRun: SurfaceRuleBlock(resultState: .init(name: "minecraft:grass_block"))
+        thenRun: SurfaceRuleBlock(resultState: .init(id: "minecraft:grass_block"))
     )
     let settings = NoiseSettings(
         legacyRandomSource: false,
@@ -187,8 +187,8 @@ private func aquiferTestSettings(
         worldSeed: 1
     ).apply(to: chunk, at: PosInt2D(x: 0, z: 0))
 
-    #expect(chunk.block(atLocal: PosInt3D(x: 3, y: 10, z: 7)).type.id == "minecraft:grass_block")
-    #expect(chunk.block(atLocal: PosInt3D(x: 3, y: 9, z: 7)).type.id == "minecraft:stone")
+    #expect(chunk.block(atLocal: PosInt3D(x: 3, y: 10, z: 7)).id == "minecraft:grass_block")
+    #expect(chunk.block(atLocal: PosInt3D(x: 3, y: 9, z: 7)).id == "minecraft:stone")
 }
 
 @Test func testRavineCarverUsesAquiferFluid() throws {
@@ -239,7 +239,7 @@ private func aquiferTestSettings(
     var carved = 0
     for y in Int32(0)..<64 {
         for z in Int32(0)..<16 {
-            for x in Int32(0)..<16 where chunk.block(atLocal: PosInt3D(x: x, y: y, z: z)).type.id == "minecraft:water" {
+            for x in Int32(0)..<16 where chunk.block(atLocal: PosInt3D(x: x, y: y, z: z)).id == "minecraft:water" {
                 carved += 1
             }
         }

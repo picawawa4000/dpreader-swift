@@ -48,6 +48,13 @@ public struct DataPackRegistryLoadingOptions: OptionSet, Sendable {
 public final class DataPack {
     public let rootPath: URL
     public let densityFunctionRegistry = Registry<DensityFunction>()
+    /// Compiled density functions, when compilation was requested while loading this pack.
+    ///
+    /// These programs are useful for density functions which do not need seed-dependent baking.
+    /// World generation rebuilds its own equivalent registry after it has baked seeded noises.
+    public private(set) var compiledDensityFunctionRegistry: Registry<CompiledDensityFunction>?
+    /// The optional backend used to populate ``compiledDensityFunctionRegistry``.
+    public let densityFunctionCompilationStrategy: CompilationBackend?
     public let noiseRegistry = Registry<NoiseDefinition>()
     public let noiseSettingsRegistry = Registry<NoiseSettings>()
     public let dimensionsRegistry = Registry<Dimension>()
@@ -57,6 +64,8 @@ public final class DataPack {
     public let structureRegistry = Registry<Structure>()
     public let structureSetRegistry = Registry<StructureSet>()
     public let structureTemplateRegistry = Registry<StructureTemplate>()
+    public let structureTemplatePoolRegistry = Registry<StructureTemplatePool>()
+    public let structureProcessorListRegistry = Registry<StructureProcessorList>()
     public let configuredCarverRegistry = Registry<ConfiguredCarver>()
     public let versioning: PackVersioning
     public var packFormat: Version { versioning.selectedVersion }
@@ -90,6 +99,19 @@ public final class DataPack {
         try self.init(fromRootPath: rootPath, loadingOptions: options, decodingVersion: nil)
     }
 
+    /// Loads a data pack and compiles its density-function registry using `strategy`.
+    public convenience init(
+        fromRootPath rootPath: URL,
+        densityFunctionCompilationStrategy strategy: CompilationBackend
+    ) throws {
+        try self.init(
+            fromRootPath: rootPath,
+            loadingOptions: DataPackRegistryLoadingOptions(rawValue: 0),
+            decodingVersion: nil,
+            densityFunctionCompilationStrategy: strategy
+        )
+    }
+
     /// Loads a data pack from the given path with the given options and decoding version.
     /// - Parameters:
     ///   - rootPath: The path to load the data pack from (i.e. the path containing the `pack.mcmeta` file).
@@ -98,9 +120,11 @@ public final class DataPack {
     public init(
         fromRootPath rootPath: URL,
         loadingOptions options: DataPackRegistryLoadingOptions,
-        decodingVersion: Version?
+        decodingVersion: Version?,
+        densityFunctionCompilationStrategy: CompilationBackend? = nil
     ) throws {
         self.rootPath = rootPath
+        self.densityFunctionCompilationStrategy = densityFunctionCompilationStrategy
         self.versioning = try Self.loadVersioning(fromRootPath: rootPath, decodingVersion: decodingVersion)
         let namespacesPath = rootPath.appendingDirectory(path: "data")
         for namespaceURL in try FileManager.default.contentsOfDirectory(at: namespacesPath, includingPropertiesForKeys: []) {
@@ -113,6 +137,9 @@ public final class DataPack {
 
             let worldgenURL = namespaceURL.appendingDirectory(path: "worldgen")
 
+            try self.loadStructureTemplatePools(fromWorldgenURL: worldgenURL, withNamespace: namespace)
+            try self.loadStructureProcessorLists(fromWorldgenURL: worldgenURL, withNamespace: namespace)
+
             if !options.contains(.noDensityFunctions) { try self.loadDensityFunctions(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoises) { try self.loadNoises(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noNoiseSettings) { try self.loadNoiseSettings(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
@@ -121,6 +148,25 @@ public final class DataPack {
             if !options.contains(.noStructures) { try self.loadStructures(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
             if !options.contains(.noStructureSets) { try self.loadStructureSets(fromWorldgenURL: worldgenURL, withNamespace: namespace) }
         }
+
+        if let densityFunctionCompilationStrategy {
+            try self.populateCompiledDensityFunctionRegistry(using: densityFunctionCompilationStrategy)
+        }
+    }
+
+    private func populateCompiledDensityFunctionRegistry(using strategy: CompilationBackend) throws {
+        let compiled = Registry<CompiledDensityFunction>()
+        try self.densityFunctionRegistry.forEach { key, densityFunction in
+            compiled.register(
+                try compile(
+                    densityFunction: densityFunction,
+                    strategy: strategy,
+                    registry: self.densityFunctionRegistry
+                ),
+                forKey: key.convertType()
+            )
+        }
+        self.compiledDensityFunctionRegistry = compiled
     }
 
     public func makeDecoder() -> JSONDecoder {
@@ -351,6 +397,32 @@ public final class DataPack {
             }
         } else {
             throw LoadingErrors.failedToEnumerateDirectory("structure")
+        }
+    }
+
+    private func loadStructureTemplatePools(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "template_pool")
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        let decoder = makeDecoder()
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) else {
+            throw LoadingErrors.failedToEnumerateDirectory("template_pool")
+        }
+        for case let filepath as URL in enumerator where Self.shouldDecodeFile(at: filepath) {
+            let pool = try decoder.decode(StructureTemplatePool.self, from: Data(contentsOf: filepath))
+            self.structureTemplatePoolRegistry.register(pool, forKey: RegistryKey(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath)))
+        }
+    }
+
+    private func loadStructureProcessorLists(fromWorldgenURL worldgenURL: URL, withNamespace namespace: String) throws {
+        let root = worldgenURL.appendingDirectory(path: "processor_list")
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        let decoder = makeDecoder()
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) else {
+            throw LoadingErrors.failedToEnumerateDirectory("processor_list")
+        }
+        for case let filepath as URL in enumerator where Self.shouldDecodeFile(at: filepath) {
+            let value = try decoder.decode(StructureProcessorList.self, from: Data(contentsOf: filepath))
+            self.structureProcessorListRegistry.register(value, forKey: RegistryKey(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath)))
         }
     }
 

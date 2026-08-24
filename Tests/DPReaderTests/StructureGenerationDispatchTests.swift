@@ -106,9 +106,9 @@ private func repositoryRootURL(from filePath: StaticString = #file) -> URL {
 private func structureDispatchContext() -> StructureGenerationContext {
     StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
         if pos.y <= 63 {
-            return BlockState(type: Block(withID: "minecraft:sand"))
+            return BlockState(id: "minecraft:sand")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 }
 
@@ -131,9 +131,9 @@ private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGene
         usingDataPacks: [pack]
     ) { pos in
         if pos.y <= terrainTopY {
-            return BlockState(type: Block(withID: "minecraft:stone"))
+            return BlockState(id: "minecraft:stone")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 }
 
@@ -354,7 +354,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
         step: "surface_structures"
     )
     let context = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { _ in
-        BlockState(type: Block(withID: "minecraft:water"))
+        BlockState(id: "minecraft:water")
     }
 
     let graph = try structure.generatePieceGraph(
@@ -499,7 +499,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
 
     for marker in generatedResult.chestLootMarkers {
         #expect(marker.lootTable == "minecraft:chests/woodland_mansion")
-        #expect(generatedResult.blocks.block(at: marker.pos).type.id == "minecraft:chest")
+        #expect(generatedResult.blocks.block(at: marker.pos).id == "minecraft:chest")
     }
 }
 
@@ -686,7 +686,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
     )
     let context = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
         // Heightmaps return the first air block; the real fixture has heightmap Y=95.
-        BlockState(type: Block(withID: pos.y <= 94 ? "minecraft:stone" : "minecraft:air"))
+        BlockState(id: pos.y <= 94 ? "minecraft:stone" : "minecraft:air")
     }
     let containers = try #require(try structure.generateLoot(
         worldSeed: 123_458,

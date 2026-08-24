@@ -208,7 +208,7 @@ private final class JungleTemplePiece: StructurePiece {
     private func placeContainer<R: Random>(_ world: StructureWorldView, _ chunkBox: BoundingBox, _ x: Int32, _ y: Int32, _ z: Int32, block: String, table: String, random: inout R) {
         let pos = self.getWorldPos(x, y, z)
         guard chunkBox.contains(pos) else { return }
-        let state = BlockState(type: Block(withID: block))
+        let state = BlockState(id: block)
         self.placeBlock(world, state, x, y, z, chunkBox)
         self.lootContainers.append(StructureLootContainer(block: block, pos: pos, lootTable: table, lootSeed: Int64(bitPattern: random.nextLong())))
     }

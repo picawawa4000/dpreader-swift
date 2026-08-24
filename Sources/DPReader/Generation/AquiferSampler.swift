@@ -50,8 +50,8 @@ final class AquiferSampler {
     private let fluidLevelSampler: (Int32, Int32, Int32) -> AquiferFluidLevel
 
     init(settings: NoiseSettings, chunkPos: PosInt2D, worldSeed: WorldSeed) {
-        let defaultFluid = settings.defaultFluid.blockState
-        let lava = BlockState(type: Block(withID: "minecraft:lava"))
+        let defaultFluid = settings.defaultFluid
+        let lava = BlockState(id: "minecraft:lava")
         let seaLevel = Int32(settings.seaLevel)
         self.fluidLevelSampler = { _, y, _ in
             y < min(-54, seaLevel)
@@ -195,7 +195,7 @@ final class AquiferSampler {
                 self.needsFluidTick = false
                 return defaultLevel.blockState(at: position.y)
             }
-            if defaultLevel.blockState(at: position.y).type.id == "minecraft:lava" {
+            if defaultLevel.blockState(at: position.y).id == "minecraft:lava" {
                 self.needsFluidTick = false
                 return defaultLevel.blockState(at: position.y)
             }
@@ -258,9 +258,9 @@ final class AquiferSampler {
                 return result
             }
 
-            if result.type.id == "minecraft:water",
+            if result.id == "minecraft:water",
                self.fluidLevelSampler(position.x, position.y - 1, position.z)
-                .blockState(at: position.y - 1).type.id == "minecraft:lava" {
+                .blockState(at: position.y - 1).id == "minecraft:lava" {
                 self.needsFluidTick = true
                 return result
             }
@@ -358,8 +358,8 @@ final class AquiferSampler {
             first: AquiferFluidLevel,
             second: AquiferFluidLevel
         ) -> Double {
-            let firstState = first.blockState(at: position.y).type.id
-            let secondState = second.blockState(at: position.y).type.id
+            let firstState = first.blockState(at: position.y).id
+            let secondState = second.blockState(at: position.y).id
             if (firstState == "minecraft:lava" && secondState == "minecraft:water")
                 || (firstState == "minecraft:water" && secondState == "minecraft:lava") {
                 return 2
@@ -408,7 +408,7 @@ final class AquiferSampler {
                 let reachesSurface = upperY > raisedSurface
                 if reachesSurface || isCenter {
                     let surfaceLevel = self.fluidLevelSampler(x, raisedSurface, z)
-                    if !surfaceLevel.blockState(at: raisedSurface).type.isAir {
+                    if !surfaceLevel.blockState(at: raisedSurface).isAir {
                         if isCenter { hasSurfaceFluid = true }
                         if reachesSurface { return surfaceLevel }
                     }
@@ -472,14 +472,14 @@ final class AquiferSampler {
             fluidY: Int32
         ) -> BlockState {
             var state = defaultLevel.state
-            if fluidY <= -10, fluidY != Self.noFluidLevel, defaultLevel.state.type.id != "minecraft:lava" {
+            if fluidY <= -10, fluidY != Self.noFluidLevel, defaultLevel.state.id != "minecraft:lava" {
                 let cell = PosInt3D(
                     x: floorDiv(position.x, by: 64),
                     y: floorDiv(position.y, by: 40),
                     z: floorDiv(position.z, by: 64)
                 )
                 if abs(self.fluidTypeNoise.sample(at: cell)) > 0.3 {
-                    state = BlockState(type: Block(withID: "minecraft:lava"))
+                    state = BlockState(id: "minecraft:lava")
                 }
             }
             return state

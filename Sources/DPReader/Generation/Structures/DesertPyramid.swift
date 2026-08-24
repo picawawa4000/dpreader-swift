@@ -171,7 +171,7 @@ public enum DesertPyramid {
         let maxSearchY = max(Int32(319), context.seaLevel + 64)
         for y in stride(from: maxSearchY, through: context.minimumWorldY, by: -1) {
             let state = context.blockSampler(PosInt3D(x: x, y: y, z: z))
-            if !state.type.isAir {
+            if !state.isAir {
                 return y
             }
         }
@@ -190,17 +190,17 @@ private final class DesertPyramidPiece: StructurePiece {
     static let archaeologyLootTable = "minecraft:archaeology/desert_pyramid"
 
     static let air = Blocks.airState
-    static let sandstone = BlockState(type: Block(withID: "minecraft:sandstone"))
-    static let cutSandstone = BlockState(type: Block(withID: "minecraft:cut_sandstone"))
-    static let chiseledSandstone = BlockState(type: Block(withID: "minecraft:chiseled_sandstone"))
-    static let sandstoneSlab = BlockState(type: Block(withID: "minecraft:sandstone_slab"))
-    static let orangeTerracotta = BlockState(type: Block(withID: "minecraft:orange_terracotta"))
-    static let blueTerracotta = BlockState(type: Block(withID: "minecraft:blue_terracotta"))
-    static let tnt = BlockState(type: Block(withID: "minecraft:tnt"))
-    static let sand = BlockState(type: Block(withID: "minecraft:sand"))
-    static let suspiciousSand = BlockState(type: Block(withID: "minecraft:suspicious_sand"))
-    static let chest = BlockState(type: Block(withID: "minecraft:chest"))
-    static let stonePressurePlate = BlockState(type: Block(withID: "minecraft:stone_pressure_plate"))
+    static let sandstone = BlockState(id: "minecraft:sandstone")
+    static let cutSandstone = BlockState(id: "minecraft:cut_sandstone")
+    static let chiseledSandstone = BlockState(id: "minecraft:chiseled_sandstone")
+    static let sandstoneSlab = BlockState(id: "minecraft:sandstone_slab")
+    static let orangeTerracotta = BlockState(id: "minecraft:orange_terracotta")
+    static let blueTerracotta = BlockState(id: "minecraft:blue_terracotta")
+    static let tnt = BlockState(id: "minecraft:tnt")
+    static let sand = BlockState(id: "minecraft:sand")
+    static let suspiciousSand = BlockState(id: "minecraft:suspicious_sand")
+    static let chest = BlockState(id: "minecraft:chest")
+    static let stonePressurePlate = BlockState(id: "minecraft:stone_pressure_plate")
 
     private let worldSeed: WorldSeed
     private(set) var chestLootMarkers: [DesertPyramidLootMarker] = []
@@ -251,7 +251,7 @@ private final class DesertPyramidPiece: StructurePiece {
         ]
         var containers = chestPositions.map { pos in
             StructureLootContainer(
-                block: Self.chest.type.id,
+                block: Self.chest.id,
                 pos: pos,
                 lootTable: Self.chestLootTable,
                 lootSeed: Int64(bitPattern: random.nextLong())
@@ -581,7 +581,7 @@ private final class DesertPyramidPiece: StructurePiece {
     ) {
         let pos = self.getWorldPos(x, y, z)
         guard chunkBox.contains(pos) else { return }
-        guard world.block(at: pos).type.id != Self.chest.type.id else { return }
+        guard world.block(at: pos).id != Self.chest.id else { return }
         let lootSeed = Int64(bitPattern: random.nextLong())
         world.setBlock(Self.chest, at: pos)
         self.chestLootMarkers.append(
@@ -685,7 +685,7 @@ private final class DesertPyramidPiece: StructurePiece {
                 for z in z0...z1 {
                     let pos = self.getWorldPos(x, y, z)
                     guard chunkBox.contains(pos) else { continue }
-                    if world.block(at: pos).type.isAir {
+                    if world.block(at: pos).isAir {
                         continue
                     }
                     let state = (x == x0 || x == x1 || y == y0 || y == y1 || z == z0 || z == z1) ? boundary : interior
@@ -729,7 +729,7 @@ private final class DesertPyramidPiece: StructurePiece {
         if let basementMarkerPos = self.basementMarkerPos {
             containers.append(
                 StructureLootContainer(
-                    block: Self.suspiciousSand.type.id,
+                    block: Self.suspiciousSand.id,
                     pos: basementMarkerPos,
                     lootTable: Self.archaeologyLootTable,
                     lootSeed: Self.blockPosAsLong(basementMarkerPos)
@@ -739,7 +739,7 @@ private final class DesertPyramidPiece: StructurePiece {
         let (candidates, suspiciousCount) = self.suspiciousSandSelection()
         containers.append(contentsOf: candidates.prefix(suspiciousCount).map { pos in
             StructureLootContainer(
-                block: Self.suspiciousSand.type.id,
+                block: Self.suspiciousSand.id,
                 pos: pos,
                 lootTable: Self.archaeologyLootTable,
                 lootSeed: Self.blockPosAsLong(pos)
@@ -760,7 +760,7 @@ private final class DesertPyramidPiece: StructurePiece {
 
     private func sandstoneStairs(localFacing: CardinalDirection) -> BlockState {
         BlockState(
-            type: Block(withID: "minecraft:sandstone_stairs"),
+            id: "minecraft:sandstone_stairs",
             properties: ["facing": self.worldFacing(forLocal: localFacing).rawValue]
         )
     }

@@ -3,11 +3,20 @@ import Testing
 @testable import DPReader
 
 private func makeState(_ id: String, properties: [String: String] = [:]) -> BlockState {
-    return BlockState(type: Block(withID: id), properties: properties)
+    return BlockState(id: id, properties: properties)
 }
 
 private func sameState(_ lhs: BlockState, _ rhs: BlockState) -> Bool {
-    return lhs.type.id == rhs.type.id && lhs.properties == rhs.properties
+    return lhs.id == rhs.id && lhs.properties == rhs.properties
+}
+
+@Test func testBlockStateStoresAndCodesArbitraryNamespacedID() throws {
+    let state = BlockState(id: "example:unregistered_block", properties: ["variant": "custom"])
+    let encoded = try JSONEncoder().encode(state)
+    let decoded = try JSONDecoder().decode(BlockState.self, from: encoded)
+
+    #expect(decoded == state)
+    #expect(decoded.id == "example:unregistered_block")
 }
 
 @Test func testPalettedChunkBlockStorageDefaultFill() async throws {

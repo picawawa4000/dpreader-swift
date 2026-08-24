@@ -234,7 +234,7 @@ private func makeSurfaceNoiseSettings(
         sizeHorizontal: 1,
         sizeVertical: 2,
         noiseRouter: router,
-        surfaceRule: SurfaceRuleBlock(resultState: BlockStateDefinition(name: "minecraft:stone"))
+        surfaceRule: SurfaceRuleBlock(resultState: BlockState(id: "minecraft:stone"))
     )
 }
 

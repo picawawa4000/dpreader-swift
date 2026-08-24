@@ -28,12 +28,12 @@ private struct ScriptedRandom: Random {
 private func oceanMonumentTestContext() -> OceanMonumentGenerationContext {
     OceanMonumentGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
         if pos.y < 30 {
-            return BlockState(type: Block(withID: "minecraft:stone"))
+            return BlockState(id: "minecraft:stone")
         }
         if pos.y <= 63 {
-            return BlockState(type: Block(withID: "minecraft:water"))
+            return BlockState(id: "minecraft:water")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 }
 
@@ -286,14 +286,14 @@ private func matchingDisplayCells(
 @Test func testOceanMonumentBlockVolumeSamplerFallback() async throws {
     let bounds = BoundingBox(minX: 0, minY: 0, minZ: 0, maxX: 31, maxY: 31, maxZ: 31)
     let volume = StructureBlockVolume(bounds: bounds) { _ in
-        BlockState(type: Block(withID: "minecraft:stone"))
+        BlockState(id: "minecraft:stone")
     }
 
-    #expect(volume.block(at: PosInt3D(x: 1, y: 2, z: 3)).type.id == "minecraft:stone")
+    #expect(volume.block(at: PosInt3D(x: 1, y: 2, z: 3)).id == "minecraft:stone")
 
-    volume.setBlock(BlockState(type: Block(withID: "minecraft:water")), at: PosInt3D(x: 1, y: 2, z: 3))
-    #expect(volume.block(at: PosInt3D(x: 1, y: 2, z: 3)).type.id == "minecraft:water")
-    #expect(volume.block(at: PosInt3D(x: 2, y: 2, z: 3)).type.id == "minecraft:stone")
+    volume.setBlock(BlockState(id: "minecraft:water"), at: PosInt3D(x: 1, y: 2, z: 3))
+    #expect(volume.block(at: PosInt3D(x: 1, y: 2, z: 3)).id == "minecraft:water")
+    #expect(volume.block(at: PosInt3D(x: 2, y: 2, z: 3)).id == "minecraft:stone")
 }
 
 @Test func testOceanMonumentPieceGraphIsDeterministic() async throws {
@@ -319,7 +319,7 @@ private func matchingDisplayCells(
     )
 
     let counts = result.blocks.allTouchedBlocks().reduce(into: [String: Int]()) { partialResult, entry in
-        partialResult[entry.1.type.id, default: 0] += 1
+        partialResult[entry.1.id, default: 0] += 1
     }
     let hash = result.blocks.allTouchedBlocks().reduce(into: UInt64(1469598103934665603)) { partialResult, entry in
         partialResult ^= UInt64(bitPattern: Int64(entry.0.x))
@@ -328,7 +328,7 @@ private func matchingDisplayCells(
         partialResult &*= 1099511628211
         partialResult ^= UInt64(bitPattern: Int64(entry.0.z))
         partialResult &*= 1099511628211
-        for byte in entry.1.type.id.utf8 {
+        for byte in entry.1.id.utf8 {
             partialResult ^= UInt64(byte)
             partialResult &*= 1099511628211
         }
@@ -475,7 +475,7 @@ private func matchingDisplayCells(
         piece.write(in: world, chunkBox: bounds, random: &random)
 
         let centerPos = piece.getWorldPos(3, 1, 3)
-        return (OceanMonument.pieceHasCenterPillar(piece), volume.block(at: centerPos).type.id)
+        return (OceanMonument.pieceHasCenterPillar(piece), volume.block(at: centerPos).id)
     }
 
     for kind in [OceanMonumentPieceKind.simpleRoomDesign1, .simpleRoomDesign2] {

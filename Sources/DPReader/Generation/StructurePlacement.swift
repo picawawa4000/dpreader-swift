@@ -42,8 +42,16 @@ public struct ResolvedStructurePlacementSample {
 
 /// Deterministically samples and resolves structure-set placements for one world seed.
 public final class StructurePlacementSampler {
+    private struct DataPackSource {
+        let rootPath: URL
+        let packFormat: Version
+    }
+
     private let worldSeed: WorldSeed
-    private let dataPacks: [DataPack]
+    /// The sampler has already copied structures, sets, and tags from its input packs.
+    /// Retaining the full packs here would also retain their density, noise, template, and
+    /// loot registries solely to recreate the lightweight biome generator for strongholds.
+    private let dataPackSources: [DataPackSource]
     private let structureRegistry = Registry<Structure>()
     private let structureSetRegistry = Registry<StructureSet>()
     private var tagRegistry: [String: TagDefinition] = [:]
@@ -53,7 +61,9 @@ public final class StructurePlacementSampler {
 
     public init(withWorldSeed worldSeed: WorldSeed, usingDataPacks dataPacks: [DataPack]) {
         self.worldSeed = worldSeed
-        self.dataPacks = dataPacks
+        self.dataPackSources = dataPacks.map {
+            DataPackSource(rootPath: $0.rootPath, packFormat: $0.packFormat)
+        }
         for pack in dataPacks {
             self.structureRegistry.mergeDown(with: pack.structureRegistry)
             self.structureSetRegistry.mergeDown(with: pack.structureSetRegistry)
@@ -105,7 +115,17 @@ public final class StructurePlacementSampler {
     }
 
     public func resolveStructure(for sample: StructurePlacementSample, biome: RegistryKey<Biome>) throws -> RegistryKey<Structure>? {
+        if sample.structures.count == 1, let weightedStructure = sample.structures.first {
+            let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
+            guard let structure = self.structureRegistry.get(structureKey) else {
+                throw Errors.structureNotFound(weightedStructure.structure)
+            }
+            return try self.registryEntry(biome.name, matches: structure.biomes, in: "worldgen/biome")
+                ? structureKey
+                : nil
+        }
         var matchingStructures: [WeightedStructure] = []
+        matchingStructures.reserveCapacity(sample.structures.count)
         for weightedStructure in sample.structures {
             let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
             guard let structure = self.structureRegistry.get(structureKey) else {
@@ -149,7 +169,16 @@ public final class StructurePlacementSampler {
         for sample: StructurePlacementSample,
         validatingWith context: StructureStartValidationContext
     ) throws -> RegistryKey<Structure>? {
+        if sample.structures.count == 1, let weightedStructure = sample.structures.first {
+            let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
+            return try self.validateStructureStart(
+                for: structureKey,
+                atChunk: sample.chunkPos,
+                using: context
+            ) == nil ? nil : structureKey
+        }
         var matchingStructures: [WeightedStructure] = []
+        matchingStructures.reserveCapacity(sample.structures.count)
         for weightedStructure in sample.structures {
             let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
             if try self.validateStructureStart(
@@ -430,7 +459,7 @@ public final class StructurePlacementSampler {
             return overworldBiomeGenerator
         }
 
-        let reloadedDataPacks = try self.dataPacks.map {
+        let reloadedDataPacks = try self.dataPackSources.map {
             try DataPack(
                 fromRootPath: $0.rootPath,
                 loadingOptions: [.noStructures, .noStructureSets, .noEnchantments, .noStructureTemplates],

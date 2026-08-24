@@ -29,9 +29,9 @@ private let vanilla12111Root = URL(filePath: "vanilla/1.21.11")
 private func desertPyramidTestContext() -> StructureGenerationContext {
     StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
         if pos.y <= 63 {
-            return BlockState(type: Block(withID: "minecraft:sand"))
+            return BlockState(id: "minecraft:sand")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 }
 
@@ -182,10 +182,10 @@ private func makeRealTempleContext(worldSeed: WorldSeed, startChunk: PosInt2D) t
         let chunkZ = floorDiv(pos.z, by: 16)
         let key = DesertPyramidChunkKey(x: chunkX, z: chunkZ)
         guard let chunk = chunks[key] else {
-            return BlockState(type: Block(withID: "minecraft:air"))
+            return BlockState(id: "minecraft:air")
         }
         guard pos.y >= chunk.minY && pos.y < chunk.minY + chunk.height else {
-            return BlockState(type: Block(withID: "minecraft:air"))
+            return BlockState(id: "minecraft:air")
         }
 
         let localX = pos.x - chunkX * 16
@@ -193,9 +193,9 @@ private func makeRealTempleContext(worldSeed: WorldSeed, startChunk: PosInt2D) t
         let localZ = pos.z - chunkZ * 16
         let localPos = PosInt3D(x: localX, y: localY, z: localZ)
         if chunk.isTerrain(atLocal: localPos) {
-            return BlockState(type: Block(withID: "minecraft:sand"))
+            return BlockState(id: "minecraft:sand")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 }
 
@@ -498,15 +498,15 @@ private func expectedSeed123458DesertPyramidChests() -> [ExpectedDesertPyramidLo
     #expect(Set(resultA.archaeologyLootMarkers.map(\.lootTable)) == ["minecraft:archaeology/desert_pyramid"])
 
     for marker in resultA.chestLootMarkers {
-        #expect(resultA.blocks.block(at: marker.pos).type.id == "minecraft:chest")
+        #expect(resultA.blocks.block(at: marker.pos).id == "minecraft:chest")
     }
 
     for marker in resultA.archaeologyLootMarkers {
-        #expect(resultA.blocks.block(at: marker.pos).type.id == "minecraft:suspicious_sand")
+        #expect(resultA.blocks.block(at: marker.pos).id == "minecraft:suspicious_sand")
     }
 
     for pos in resultA.potentialSuspiciousSandPositions {
-        let blockID = resultA.blocks.block(at: pos).type.id
+        let blockID = resultA.blocks.block(at: pos).id
         #expect(blockID == "minecraft:sand" || blockID == "minecraft:suspicious_sand")
     }
 }
@@ -536,9 +536,9 @@ private func expectedSeed123458DesertPyramidChests() -> [ExpectedDesertPyramidLo
         let lowCorner = (pos.x == 0 && pos.z == 0)
         let surfaceY: Int32 = lowCorner ? 62 : 80
         if pos.y <= surfaceY {
-            return BlockState(type: Block(withID: "minecraft:sand"))
+            return BlockState(id: "minecraft:sand")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 
     let graph = DesertPyramid.generatePieceGraph(
@@ -581,9 +581,9 @@ private func expectedSeed123458DesertPyramidChests() -> [ExpectedDesertPyramidLo
     #expect(result.graph.boundingBox.minY + 1 == 66)
     #expect(result.basementMarkerPos == PosInt3D(x: 17, y: 65, z: -3305))
 
-    #expect(result.blocks.block(at: PosInt3D(x: 10, y: 65, z: -3302)).type.id == "minecraft:blue_terracotta")
-    #expect(result.blocks.block(at: PosInt3D(x: 10, y: 54, z: -3302)).type.id == "minecraft:stone_pressure_plate")
-    #expect(result.blocks.block(at: PosInt3D(x: 10, y: 52, z: -3302)).type.id == "minecraft:tnt")
+    #expect(result.blocks.block(at: PosInt3D(x: 10, y: 65, z: -3302)).id == "minecraft:blue_terracotta")
+    #expect(result.blocks.block(at: PosInt3D(x: 10, y: 54, z: -3302)).id == "minecraft:stone_pressure_plate")
+    #expect(result.blocks.block(at: PosInt3D(x: 10, y: 52, z: -3302)).id == "minecraft:tnt")
 
     let expectedChests = expectedRealDesertPyramidChests()
     let actualChests = sortMarkers(result.chestLootMarkers)
@@ -606,7 +606,7 @@ private func expectedSeed123458DesertPyramidChests() -> [ExpectedDesertPyramidLo
     )
 
     for marker in result.archaeologyLootMarkers {
-        #expect(result.blocks.block(at: marker.pos).type.id == "minecraft:suspicious_sand")
+        #expect(result.blocks.block(at: marker.pos).id == "minecraft:suspicious_sand")
     }
 }
 

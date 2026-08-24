@@ -10,42 +10,89 @@
 public struct StructureGenerationContext {
     public let seaLevel: Int32
     public let minimumWorldY: Int32
+    public let maximumWorldY: Int32
     public let blockSampler: (PosInt3D) -> BlockState
     public let structureTemplateProvider: (String) -> StructureTemplate?
+    public let structureTemplatePoolProvider: (String) -> StructureTemplatePool?
+    let structureProcessorListProvider: (String) -> StructureProcessorList?
+    private let blockTagMembershipProvider: (String, String) -> Bool
     private let structureDecorationParametersProvider: (String) -> StructureDecorationParameters?
+    private let jigsawDecorationParametersProvider: (String) -> StructureDecorationParameters?
 
     public init(
         seaLevel: Int32,
         minimumWorldY: Int32,
-        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) },
+        maximumWorldY: Int32? = nil,
+        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(id: "minecraft:air") },
         structureTemplateProvider: @escaping (String) -> StructureTemplate? = { _ in nil },
-        structureDecorationParametersProvider: @escaping (String) -> StructureDecorationParameters? = { _ in nil }
+        structureTemplatePoolProvider: @escaping (String) -> StructureTemplatePool? = { _ in nil },
+        structureProcessorListProvider: @escaping (String) -> StructureProcessorList? = { _ in nil },
+        blockTagMembershipProvider: @escaping (String, String) -> Bool = { _, _ in false },
+        structureDecorationParametersProvider: @escaping (String) -> StructureDecorationParameters? = { _ in nil },
+        jigsawDecorationParametersProvider: @escaping (String) -> StructureDecorationParameters? = { _ in nil }
     ) {
         self.seaLevel = seaLevel
         self.minimumWorldY = minimumWorldY
+        self.maximumWorldY = maximumWorldY ?? (minimumWorldY &+ 383)
         self.blockSampler = blockSampler
         self.structureTemplateProvider = structureTemplateProvider
+        self.structureTemplatePoolProvider = structureTemplatePoolProvider
+        self.structureProcessorListProvider = structureProcessorListProvider
+        self.blockTagMembershipProvider = blockTagMembershipProvider
         self.structureDecorationParametersProvider = structureDecorationParametersProvider
+        self.jigsawDecorationParametersProvider = jigsawDecorationParametersProvider
     }
 
     public init(
         seaLevel: Int32,
         minimumWorldY: Int32,
+        maximumWorldY: Int32? = nil,
         usingDataPacks dataPacks: [DataPack],
-        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(type: Block(withID: "minecraft:air")) }
+        blockSampler: @escaping (PosInt3D) -> BlockState = { _ in BlockState(id: "minecraft:air") }
     ) {
         let templateRegistry = Registry<StructureTemplate>()
+        let templatePoolRegistry = Registry<StructureTemplatePool>()
+        let processorListRegistry = Registry<StructureProcessorList>()
+        let tagRegistry = Registry<TagDefinition>()
         let structureRegistry = Registry<Structure>()
         for dataPack in dataPacks {
             templateRegistry.mergeDown(with: dataPack.structureTemplateRegistry)
+            templatePoolRegistry.mergeDown(with: dataPack.structureTemplatePoolRegistry)
+            processorListRegistry.mergeDown(with: dataPack.structureProcessorListRegistry)
+            tagRegistry.mergeDown(with: dataPack.tagRegistry)
             structureRegistry.mergeDown(with: dataPack.structureRegistry)
         }
         self.init(
             seaLevel: seaLevel,
             minimumWorldY: minimumWorldY,
+            maximumWorldY: maximumWorldY,
             blockSampler: blockSampler,
             structureTemplateProvider: { identifier in
                 templateRegistry.get(RegistryKey(referencing: addDefaultNamespace(identifier)))
+            },
+            structureTemplatePoolProvider: { identifier in
+                templatePoolRegistry.get(RegistryKey(referencing: addDefaultNamespace(identifier)))
+            },
+            structureProcessorListProvider: { identifier in
+                processorListRegistry.get(RegistryKey(referencing: addDefaultNamespace(identifier)))
+            },
+            blockTagMembershipProvider: { tag, blockID in
+                func contains(_ tagName: String, visited: inout Set<String>) -> Bool {
+                    let normalized = addDefaultNamespace(tagName)
+                    guard visited.insert(normalized).inserted else { return false }
+                    let parts = normalized.split(separator: ":", maxSplits: 1).map(String.init)
+                    guard parts.count == 2,
+                          let definition = tagRegistry.get(RegistryKey(referencing: "\(parts[0]):block/\(parts[1])"))
+                    else { return false }
+                    return definition.values.contains { value in
+                        switch value {
+                        case .rawID(let id): return id == blockID
+                        case .tagID(let nested): return contains(nested, visited: &visited)
+                        }
+                    }
+                }
+                var visited: Set<String> = []
+                return contains(tag, visited: &visited)
             },
             structureDecorationParametersProvider: { identifier in
                 let normalizedIdentifier = addDefaultNamespace(identifier)
@@ -64,12 +111,36 @@ public struct StructureGenerationContext {
                     return nil
                 }
                 return StructureDecorationParameters(step: step.rawIndex, index: Int32(index))
+            },
+            jigsawDecorationParametersProvider: { startPool in
+                let normalized = addDefaultNamespace(startPool)
+                guard let entry = structureRegistry.entries().first(where: {
+                    guard case .jigsaw(let settings) = $0.value.settings else { return false }
+                    return settings.startPool == normalized
+                }), let step = StructureGenerationStep(structureStep: entry.value.step) else { return nil }
+                let names = structureRegistry.entries()
+                    .filter { StructureGenerationStep(structureStep: $0.value.step) == step }
+                    .map(\.key.name).sorted()
+                guard let index = names.firstIndex(of: entry.key.name) else { return nil }
+                return StructureDecorationParameters(step: step.rawIndex, index: Int32(index))
             }
         )
     }
 
     public func structureTemplate(named identifier: String) -> StructureTemplate? {
         self.structureTemplateProvider(addDefaultNamespace(identifier))
+    }
+
+    public func structureTemplatePool(named identifier: String) -> StructureTemplatePool? {
+        self.structureTemplatePoolProvider(addDefaultNamespace(identifier))
+    }
+
+    func structureProcessorList(named identifier: String) -> StructureProcessorList? {
+        self.structureProcessorListProvider(addDefaultNamespace(identifier))
+    }
+
+    func block(_ blockID: String, isInTag tag: String) -> Bool {
+        self.blockTagMembershipProvider(addDefaultNamespace(tag), addDefaultNamespace(blockID))
     }
 
     /// Returns the decoration RNG parameters for a loaded structure registry entry.
@@ -79,6 +150,10 @@ public struct StructureGenerationContext {
     /// to the structure registry between game versions.
     public func structureDecorationParameters(forStructureID identifier: String) -> StructureDecorationParameters? {
         self.structureDecorationParametersProvider(addDefaultNamespace(identifier))
+    }
+
+    func jigsawDecorationParameters(startPool: String) -> StructureDecorationParameters? {
+        self.jigsawDecorationParametersProvider(addDefaultNamespace(startPool))
     }
 }
 
@@ -119,45 +194,21 @@ public enum StructureGenerationStep: String, CaseIterable {
 
 /// Blocks.
 public enum Blocks {
-    static let air = Block(withID: "minecraft:air")
-    static let water = Block(withID: "minecraft:water")
-    static let prismarine = Block(withID: "minecraft:prismarine")
-    static let prismarineBricks = Block(withID: "minecraft:prismarine_bricks")
-    static let darkPrismarine = Block(withID: "minecraft:dark_prismarine")
-    static let seaLantern = Block(withID: "minecraft:sea_lantern")
-    static let ice = Block(withID: "minecraft:ice")
-    static let packedIce = Block(withID: "minecraft:packed_ice")
-    static let blueIce = Block(withID: "minecraft:blue_ice")
-    static let goldBlock = Block(withID: "minecraft:gold_block")
-    static let wetSponge = Block(withID: "minecraft:wet_sponge")
-    static let kelp = Block(withID: "minecraft:kelp")
-    static let kelpPlant = Block(withID: "minecraft:kelp_plant")
-    static let seagrass = Block(withID: "minecraft:seagrass")
-    static let tallSeagrass = Block(withID: "minecraft:tall_seagrass")
-    static let stoneBricks = Block(withID: "minecraft:stone_bricks")
-    static let crackedStoneBricks = Block(withID: "minecraft:cracked_stone_bricks")
-    static let mossyStoneBricks = Block(withID: "minecraft:mossy_stone_bricks")
-    static let infestedStoneBricks = Block(withID: "minecraft:infested_stone_bricks")
-    static let caveAir = Block(withID: "minecraft:cave_air")
-    static let wallTorch = Block(withID: "minecraft:wall_torch")
-    static let cobblestone = Block(withID: "minecraft:cobblestone")
-    static let mossyCobblestone = Block(withID: "minecraft:mossy_cobblestone")
-
-    static let airState = BlockState(type: air)
-    static let waterState = BlockState(type: water)
-    static let prismarineState = BlockState(type: prismarine)
-    static let prismarineBricksState = BlockState(type: prismarineBricks)
-    static let darkPrismarineState = BlockState(type: darkPrismarine)
-    static let seaLanternState = BlockState(type: seaLantern)
-    static let goldBlockState = BlockState(type: goldBlock)
-    static let wetSpongeState = BlockState(type: wetSponge)
-    static let stoneBricksState = BlockState(type: stoneBricks)
-    static let crackedStoneBricksState = BlockState(type: crackedStoneBricks)
-    static let mossyStoneBricksState = BlockState(type: mossyStoneBricks)
-    static let infestedStoneBricksState = BlockState(type: infestedStoneBricks)
-    static let caveAirState = BlockState(type: caveAir)
-    static let cobblestoneState = BlockState(type: cobblestone)
-    static let mossyCobblestoneState = BlockState(type: mossyCobblestone)
+    static let airState = BlockState(id: "minecraft:air")
+    static let waterState = BlockState(id: "minecraft:water")
+    static let prismarineState = BlockState(id: "minecraft:prismarine")
+    static let prismarineBricksState = BlockState(id: "minecraft:prismarine_bricks")
+    static let darkPrismarineState = BlockState(id: "minecraft:dark_prismarine")
+    static let seaLanternState = BlockState(id: "minecraft:sea_lantern")
+    static let goldBlockState = BlockState(id: "minecraft:gold_block")
+    static let wetSpongeState = BlockState(id: "minecraft:wet_sponge")
+    static let stoneBricksState = BlockState(id: "minecraft:stone_bricks")
+    static let crackedStoneBricksState = BlockState(id: "minecraft:cracked_stone_bricks")
+    static let mossyStoneBricksState = BlockState(id: "minecraft:mossy_stone_bricks")
+    static let infestedStoneBricksState = BlockState(id: "minecraft:infested_stone_bricks")
+    static let caveAirState = BlockState(id: "minecraft:cave_air")
+    static let cobblestoneState = BlockState(id: "minecraft:cobblestone")
+    static let mossyCobblestoneState = BlockState(id: "minecraft:mossy_cobblestone")
 }
 
 /// A cardinal direction in world space.
@@ -680,7 +731,7 @@ public class StructurePiece {
             for x in x0...x1 {
                 for z in z0...z1 {
                     let block = self.getBlock(world, x, y, z, chunkBox)
-                    if !Self.fillKeep.contains(block.type.id) {
+                    if !Self.fillKeep.contains(block.id) {
                         if self.getWorldY(y) >= world.seaLevel && block != Self.fillBlock {
                             self.applyBlock(world, Blocks.airState, x, y, z, chunkBox)
                         } else {
@@ -882,8 +933,8 @@ final class StructureWorldView {
     }
 
     func isReplaceableForStructure(_ state: BlockState) -> Bool {
-        let id = state.type.id
-        return state.type.isAir
+        let id = state.id
+        return state.isAir
             || id == "minecraft:water"
             || id == "minecraft:lava"
             || id == "minecraft:kelp"
@@ -956,10 +1007,10 @@ func averageSurfaceY(in boundingBox: BoundingBox, context: StructureGenerationCo
 }
 
 func surfaceY(atX x: Int32, z: Int32, context: StructureGenerationContext) -> Int32? {
-    let maxSearchY = max(Int32(319), context.seaLevel + 64)
+    let maxSearchY = context.maximumWorldY
     for y in stride(from: maxSearchY, through: context.minimumWorldY, by: -1) {
         let state = context.blockSampler(PosInt3D(x: x, y: y, z: z))
-        if !state.type.isAir {
+        if !state.isAir {
             return y + 1
         }
     }

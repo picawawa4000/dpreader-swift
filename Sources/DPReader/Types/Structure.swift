@@ -5,6 +5,7 @@ public enum StructureGeneratedResult {
     case oceanMonument(OceanMonumentGenerationResult)
     case stronghold(StrongholdGenerationResult)
     case woodlandMansion(WoodlandMansionGenerationResult)
+    case jigsaw(JigsawStructureGenerationResult)
 }
 
 /// Errors raised when a structure type or required template cannot be generated.
@@ -122,6 +123,9 @@ public final class Structure: Codable {
         context: StructureGenerationContext
     ) throws -> PieceGraph? {
         switch self.type {
+        case "minecraft:jigsaw":
+            guard case .jigsaw(let settings) = self.settings else { return nil }
+            return JigsawStructure.generatePieceGraph(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generatePieceGraph(
                 worldSeed: worldSeed,
@@ -162,6 +166,11 @@ public final class Structure: Codable {
         context: StructureGenerationContext
     ) throws -> StructureGeneratedResult? {
         switch self.type {
+        case "minecraft:jigsaw":
+            guard case .jigsaw(let settings) = self.settings,
+                  let result = JigsawStructure.generate(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
+            else { return nil }
+            return .jigsaw(result)
         case "minecraft:desert_pyramid":
             guard let result = DesertPyramid.generate(
                 worldSeed: worldSeed,
@@ -211,6 +220,9 @@ public final class Structure: Codable {
         context: StructureGenerationContext
     ) throws -> [StructureLootContainer]? {
         switch self.type {
+        case "minecraft:jigsaw":
+            guard case .jigsaw(let settings) = self.settings else { return nil }
+            return JigsawStructure.generate(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)?.lootContainers
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
                 worldSeed: worldSeed,
@@ -304,19 +316,22 @@ public enum StructureTerrainAdaptation: String, Codable {
 
 /// Generation settings for a pool-based jigsaw structure.
 public struct JigsawStructureSettings: Codable {
-    let maxDistanceFromCenter: Int
-    let size: Int
-    let startHeight: StructureHeightProvider
-    let startJigsawName: String?
-    let startPool: String
-    let useExpansionHack: Bool
-    let projectStartToHeightmap: String?
-    let poolAliases: [StructurePoolAlias]?
-    let dimensionPadding: Int?
-    let liquidSettings: String?
+    public let maxDistanceFromCenter: Int
+    public let maxVerticalDistanceFromCenter: Int
+    public let size: Int
+    public let startHeight: StructureHeightProvider
+    public let startJigsawName: String?
+    public let startPool: String
+    public let useExpansionHack: Bool
+    public let projectStartToHeightmap: String?
+    public let poolAliases: [StructurePoolAlias]?
+    public let dimensionPadding: Int?
+    public let dimensionTopPadding: Int?
+    public let liquidSettings: String?
 
     public init(
         maxDistanceFromCenter: Int,
+        maxVerticalDistanceFromCenter: Int? = nil,
         size: Int,
         startHeight: StructureHeightProvider,
         startJigsawName: String? = nil,
@@ -325,9 +340,11 @@ public struct JigsawStructureSettings: Codable {
         projectStartToHeightmap: String? = nil,
         poolAliases: [StructurePoolAlias]? = nil,
         dimensionPadding: Int? = nil,
+        dimensionTopPadding: Int? = nil,
         liquidSettings: String? = nil
     ) {
         self.maxDistanceFromCenter = maxDistanceFromCenter
+        self.maxVerticalDistanceFromCenter = maxVerticalDistanceFromCenter ?? maxDistanceFromCenter
         self.size = size
         self.startHeight = startHeight
         self.startJigsawName = startJigsawName.map(addDefaultNamespace)
@@ -336,12 +353,20 @@ public struct JigsawStructureSettings: Codable {
         self.projectStartToHeightmap = projectStartToHeightmap
         self.poolAliases = poolAliases
         self.dimensionPadding = dimensionPadding
+        self.dimensionTopPadding = dimensionTopPadding ?? dimensionPadding
         self.liquidSettings = liquidSettings
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.maxDistanceFromCenter = try container.decode(Int.self, forKey: .maxDistanceFromCenter)
+        if let distance = try? container.decode(Int.self, forKey: .maxDistanceFromCenter) {
+            self.maxDistanceFromCenter = distance
+            self.maxVerticalDistanceFromCenter = distance
+        } else {
+            let distance = try container.nestedContainer(keyedBy: DistanceCodingKeys.self, forKey: .maxDistanceFromCenter)
+            self.maxDistanceFromCenter = try distance.decode(Int.self, forKey: .horizontal)
+            self.maxVerticalDistanceFromCenter = try distance.decodeIfPresent(Int.self, forKey: .vertical) ?? 4_064
+        }
         self.size = try container.decode(Int.self, forKey: .size)
         self.startHeight = try container.decode(StructureHeightProvider.self, forKey: .startHeight)
         self.startJigsawName = try container.decodeIfPresent(String.self, forKey: .startJigsawName).map(addDefaultNamespace)
@@ -349,13 +374,29 @@ public struct JigsawStructureSettings: Codable {
         self.useExpansionHack = try container.decodeIfPresent(Bool.self, forKey: .useExpansionHack) ?? false
         self.projectStartToHeightmap = try container.decodeIfPresent(String.self, forKey: .projectStartToHeightmap)
         self.poolAliases = try container.decodeIfPresent([StructurePoolAlias].self, forKey: .poolAliases)
-        self.dimensionPadding = try container.decodeIfPresent(Int.self, forKey: .dimensionPadding)
+        if !container.contains(.dimensionPadding) {
+            self.dimensionPadding = nil
+            self.dimensionTopPadding = nil
+        } else if let padding = try? container.decode(Int.self, forKey: .dimensionPadding) {
+            self.dimensionPadding = padding
+            self.dimensionTopPadding = padding
+        } else {
+            let padding = try container.nestedContainer(keyedBy: PaddingCodingKeys.self, forKey: .dimensionPadding)
+            self.dimensionPadding = try padding.decodeIfPresent(Int.self, forKey: .bottom) ?? 0
+            self.dimensionTopPadding = try padding.decodeIfPresent(Int.self, forKey: .top) ?? 0
+        }
         self.liquidSettings = try container.decodeIfPresent(String.self, forKey: .liquidSettings)
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.maxDistanceFromCenter, forKey: .maxDistanceFromCenter)
+        if self.maxDistanceFromCenter == self.maxVerticalDistanceFromCenter {
+            try container.encode(self.maxDistanceFromCenter, forKey: .maxDistanceFromCenter)
+        } else {
+            var distance = container.nestedContainer(keyedBy: DistanceCodingKeys.self, forKey: .maxDistanceFromCenter)
+            try distance.encode(self.maxDistanceFromCenter, forKey: .horizontal)
+            try distance.encode(self.maxVerticalDistanceFromCenter, forKey: .vertical)
+        }
         try container.encode(self.size, forKey: .size)
         try container.encode(self.startHeight, forKey: .startHeight)
         try container.encodeIfPresent(self.startJigsawName, forKey: .startJigsawName)
@@ -363,7 +404,13 @@ public struct JigsawStructureSettings: Codable {
         try container.encode(self.useExpansionHack, forKey: .useExpansionHack)
         try container.encodeIfPresent(self.projectStartToHeightmap, forKey: .projectStartToHeightmap)
         try container.encodeIfPresent(self.poolAliases, forKey: .poolAliases)
-        try container.encodeIfPresent(self.dimensionPadding, forKey: .dimensionPadding)
+        if self.dimensionPadding == self.dimensionTopPadding {
+            try container.encodeIfPresent(self.dimensionPadding, forKey: .dimensionPadding)
+        } else if self.dimensionPadding != nil || self.dimensionTopPadding != nil {
+            var padding = container.nestedContainer(keyedBy: PaddingCodingKeys.self, forKey: .dimensionPadding)
+            try padding.encode(self.dimensionPadding ?? 0, forKey: .bottom)
+            try padding.encode(self.dimensionTopPadding ?? 0, forKey: .top)
+        }
         try container.encodeIfPresent(self.liquidSettings, forKey: .liquidSettings)
     }
 
@@ -379,6 +426,8 @@ public struct JigsawStructureSettings: Codable {
         case dimensionPadding = "dimension_padding"
         case liquidSettings = "liquid_settings"
     }
+    private enum DistanceCodingKeys: String, CodingKey { case horizontal, vertical }
+    private enum PaddingCodingKeys: String, CodingKey { case bottom, top }
 }
 
 /// Generation settings specific to mineshaft structures.
@@ -540,8 +589,8 @@ public enum StructurePoolAlias: Codable {
 
 /// A pool alias that always replaces one pool ID with another.
 public struct DirectStructurePoolAlias: Codable {
-    let alias: String
-    let target: String
+    public let alias: String
+    public let target: String
 
     public init(alias: String, target: String) {
         self.alias = addDefaultNamespace(alias)
@@ -571,8 +620,8 @@ public struct DirectStructurePoolAlias: Codable {
 
 /// A pool alias that selects one weighted target pool.
 public struct RandomStructurePoolAlias: Codable {
-    let alias: String
-    let targets: [WeightedStructurePoolAliasTarget]
+    public let alias: String
+    public let targets: [WeightedStructurePoolAliasTarget]
 
     public init(alias: String, targets: [WeightedStructurePoolAliasTarget]) {
         self.alias = addDefaultNamespace(alias)
@@ -602,8 +651,8 @@ public struct RandomStructurePoolAlias: Codable {
 
 /// One weighted target in a random pool alias.
 public struct WeightedStructurePoolAliasTarget: Codable {
-    let data: String
-    let weight: Int
+    public let data: String
+    public let weight: Int
 
     public init(data: String, weight: Int) {
         self.data = addDefaultNamespace(data)
@@ -619,7 +668,7 @@ public struct WeightedStructurePoolAliasTarget: Codable {
 
 /// A pool alias that randomly selects a group of direct aliases.
 public struct RandomGroupStructurePoolAlias: Codable {
-    let groups: [WeightedDirectStructurePoolAliasGroup]
+    public let groups: [WeightedDirectStructurePoolAliasGroup]
 
     public init(groups: [WeightedDirectStructurePoolAliasGroup]) {
         self.groups = groups
@@ -645,8 +694,8 @@ public struct RandomGroupStructurePoolAlias: Codable {
 
 /// One weighted collection of direct aliases in a random-group alias.
 public struct WeightedDirectStructurePoolAliasGroup: Codable {
-    let data: [DirectStructurePoolAlias]
-    let weight: Int
+    public let data: [DirectStructurePoolAlias]
+    public let weight: Int
 }
 
 /// Weighted structures paired with the rule that places their candidate starts.

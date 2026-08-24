@@ -1,41 +1,33 @@
-/// TODO: should this be a struct or a class?
-public final class Block: @unchecked Sendable, Equatable {
-    /// Equality testing via block ID.
-    /// In reality, there should only be one instance of `Block` with a given `id` anyways.
-    /// TODO: make it like that
-    public static func == (lhs: Block, rhs: Block) -> Bool {
-        lhs.id == rhs.id
+/// A block identifier and its optional state properties.
+///
+/// IDs are stored directly rather than resolved through a block registry, so data packs may use
+/// arbitrary namespaced block IDs.
+public struct BlockState: Sendable, Equatable, Codable {
+    public let id: String
+    public var properties: [String: String]? = nil
+
+    public init(id: String) {
+        self.id = addDefaultNamespace(id)
     }
 
-    public let id: String
-
-    /// It is recommended to use the `Blocks` interface to get vanilla block references,
-    /// as opposed to creating them this way, as that way object equality works as a more efficient
-    /// method of block comparison.
-    /// - Parameter id: The namespaced block ID.
-    public init(withID id: String) {
-        self.id = id
+    public init(id: String, properties: [String: String]) {
+        self.id = addDefaultNamespace(id)
+        self.properties = properties
     }
 
     public var isAir: Bool {
-        get {
-            return ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"].contains(self.id)
-        }
-    }
-}
-
-/// TODO: should this be a struct or a class?
-public struct BlockState: Sendable, Equatable {
-    public let type: Block
-    public var properties: [String: String]? = nil
-
-    public init(type: Block) {
-        self.type = type
+        ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"].contains(self.id)
     }
 
-    public init(type: Block, properties: [String: String]) {
-        self.type = type
-        self.properties = properties
+    private enum CodingKeys: String, CodingKey {
+        case id = "Name"
+        case properties = "Properties"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = addDefaultNamespace(try container.decode(String.self, forKey: .id))
+        self.properties = try container.decodeIfPresent([String: String].self, forKey: .properties)
     }
 }
 
@@ -68,14 +60,13 @@ public protocol Chunk {
 
 public extension Chunk {
     func setTerrain(at pos: PosInt3D) {
-        let stoneBlock = Block(withID: "minecraft:stone")
-        let stoneState = BlockState(type: stoneBlock, properties: [:])
+        let stoneState = BlockState(id: "minecraft:stone", properties: [:])
         self.setBlock(stoneState, at: pos)
     }
 
     func isTerrain(at pos: PosInt3D) -> Bool {
         let blockState = self.getBlock(at: pos)
-        return !blockState.type.isAir
+        return !blockState.isAir
     }
 }
 */
@@ -161,7 +152,7 @@ public final class PalettedChunkBlockStorage {
 
     private func paletteIndex(of state: BlockState) -> Int? {
         for (index, entry) in self.palette.enumerated() {
-            if entry.type.id == state.type.id && entry.properties == state.properties {
+            if entry.id == state.id && entry.properties == state.properties {
                 return index
             }
         }

@@ -5,8 +5,8 @@ public final class NoiseSettings: Codable {
     public let oreVeinsEnabled: Bool
     public let aquifersEnabled: Bool
     let legacyRandomSource: Bool
-    public let defaultBlock: BlockStateDefinition
-    public let defaultFluid: BlockStateDefinition
+    public let defaultBlock: BlockState
+    public let defaultFluid: BlockState
     private var includesExtendedGeneratorSettings: Bool
     // let spawnTarget: [NoiseParameter]
     let minY: Int, height: Int, sizeHorizontal: Int, sizeVertical: Int
@@ -19,8 +19,8 @@ public final class NoiseSettings: Codable {
         disableMobGeneration: Bool? = nil,
         oreVeinsEnabled: Bool? = nil,
         aquifersEnabled: Bool? = nil,
-        defaultBlock: BlockStateDefinition? = nil,
-        defaultFluid: BlockStateDefinition? = nil,
+        defaultBlock: BlockState? = nil,
+        defaultFluid: BlockState? = nil,
         minY: Int,
         height: Int,
         sizeHorizontal: Int,
@@ -32,8 +32,8 @@ public final class NoiseSettings: Codable {
         self.disableMobGeneration = disableMobGeneration ?? false
         self.oreVeinsEnabled = oreVeinsEnabled ?? false
         self.aquifersEnabled = aquifersEnabled ?? false
-        self.defaultBlock = defaultBlock ?? BlockStateDefinition(name: "minecraft:stone")
-        self.defaultFluid = defaultFluid ?? BlockStateDefinition(name: "minecraft:water", properties: ["level": "0"])
+        self.defaultBlock = defaultBlock ?? BlockState(id: "minecraft:stone")
+        self.defaultFluid = defaultFluid ?? BlockState(id: "minecraft:water", properties: ["level": "0"])
         self.includesExtendedGeneratorSettings = seaLevel != nil || disableMobGeneration != nil
             || oreVeinsEnabled != nil || aquifersEnabled != nil || defaultBlock != nil || defaultFluid != nil
         self.legacyRandomSource = legacyRandomSource
@@ -54,10 +54,10 @@ public final class NoiseSettings: Codable {
         self.disableMobGeneration = try container.decodeIfPresent(Bool.self, forKey: .disableMobGeneration) ?? false
         self.oreVeinsEnabled = try container.decodeIfPresent(Bool.self, forKey: .oreVeinsEnabled) ?? false
         self.aquifersEnabled = try container.decodeIfPresent(Bool.self, forKey: .aquifersEnabled) ?? false
-        self.defaultBlock = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .defaultBlock)
-            ?? BlockStateDefinition(name: "minecraft:stone")
-        self.defaultFluid = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .defaultFluid)
-            ?? BlockStateDefinition(name: "minecraft:water", properties: ["level": "0"])
+        self.defaultBlock = try container.decodeIfPresent(BlockState.self, forKey: .defaultBlock)
+            ?? BlockState(id: "minecraft:stone")
+        self.defaultFluid = try container.decodeIfPresent(BlockState.self, forKey: .defaultFluid)
+            ?? BlockState(id: "minecraft:water", properties: ["level": "0"])
         self.legacyRandomSource = try container.decode(Bool.self, forKey: .legacyRandomSource)
         self.noiseRouter = try container.decode(NoiseRouter.self, forKey: .noiseRouter)
         self.surfaceRule = try container.decode(SurfaceRuleInitializer.self, forKey: .surfaceRule).value
@@ -307,28 +307,6 @@ private struct DensityFunctionEncoder: Encodable {
     }
 }
 
-/// The JSON representation of a namespaced block ID and optional state properties.
-public struct BlockStateDefinition: Codable, Equatable, Sendable {
-    public let name: String
-    public let properties: [String: String]?
-
-    public init(name: String, properties: [String: String]? = nil) {
-        self.name = addDefaultNamespace(name)
-        self.properties = properties
-    }
-
-    public var blockState: BlockState {
-        let block = Block(withID: addDefaultNamespace(self.name))
-        if let properties { return BlockState(type: block, properties: properties) }
-        return BlockState(type: block)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case name = "Name"
-        case properties = "Properties"
-    }
-}
-
 /// A vertical coordinate relative to the world bottom, top, or absolute zero.
 public enum VerticalAnchor: Codable, Equatable {
     case absolute(Int)
@@ -443,15 +421,15 @@ public struct SurfaceRuleConditionRule: SurfaceRule, Codable {
 
 /// A terminal surface rule that places one block state.
 public struct SurfaceRuleBlock: SurfaceRule, Codable {
-    public let resultState: BlockStateDefinition
+    public let resultState: BlockState
 
-    public init(resultState: BlockStateDefinition) {
+    public init(resultState: BlockState) {
         self.resultState = resultState
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.resultState = try container.decode(BlockStateDefinition.self, forKey: .resultState)
+        self.resultState = try container.decode(BlockState.self, forKey: .resultState)
     }
 
     public func encode(to encoder: Encoder) throws {

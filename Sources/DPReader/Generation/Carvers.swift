@@ -220,17 +220,17 @@ public indirect enum CarverHeightProvider: Codable, Equatable {
 /// Debug block substitutions for visualizing carved volumes.
 public struct CarverDebugSettings: Codable, Equatable {
     public let debugMode: Bool
-    public let airState: BlockStateDefinition
-    public let waterState: BlockStateDefinition
-    public let lavaState: BlockStateDefinition
-    public let barrierState: BlockStateDefinition
+    public let airState: BlockState
+    public let waterState: BlockState
+    public let lavaState: BlockState
+    public let barrierState: BlockState
 
     public init(
         debugMode: Bool = false,
-        airState: BlockStateDefinition = .init(name: "minecraft:acacia_button"),
-        waterState: BlockStateDefinition = .init(name: "minecraft:candle"),
-        lavaState: BlockStateDefinition = .init(name: "minecraft:orange_stained_glass"),
-        barrierState: BlockStateDefinition = .init(name: "minecraft:glass")
+        airState: BlockState = .init(id: "minecraft:acacia_button"),
+        waterState: BlockState = .init(id: "minecraft:candle"),
+        lavaState: BlockState = .init(id: "minecraft:orange_stained_glass"),
+        barrierState: BlockState = .init(id: "minecraft:glass")
     ) {
         self.debugMode = debugMode; self.airState = airState; self.waterState = waterState
         self.lavaState = lavaState; self.barrierState = barrierState
@@ -239,10 +239,10 @@ public struct CarverDebugSettings: Codable, Equatable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.debugMode = try container.decodeIfPresent(Bool.self, forKey: .debugMode) ?? false
-        self.airState = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .airState) ?? .init(name: "minecraft:acacia_button")
-        self.waterState = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .waterState) ?? .init(name: "minecraft:candle")
-        self.lavaState = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .lavaState) ?? .init(name: "minecraft:orange_stained_glass")
-        self.barrierState = try container.decodeIfPresent(BlockStateDefinition.self, forKey: .barrierState) ?? .init(name: "minecraft:glass")
+        self.airState = try container.decodeIfPresent(BlockState.self, forKey: .airState) ?? .init(id: "minecraft:acacia_button")
+        self.waterState = try container.decodeIfPresent(BlockState.self, forKey: .waterState) ?? .init(id: "minecraft:candle")
+        self.lavaState = try container.decodeIfPresent(BlockState.self, forKey: .lavaState) ?? .init(id: "minecraft:orange_stained_glass")
+        self.barrierState = try container.decodeIfPresent(BlockState.self, forKey: .barrierState) ?? .init(id: "minecraft:glass")
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -583,7 +583,7 @@ final class CarverApplicator {
                     if !excluded && mask.insert(x: localX, y: worldY, z: localZ) {
                         let local = PosInt3D(x: localX, y: worldY - chunk.minY, z: localZ)
                         let current = chunk.block(atLocal: local)
-                        if self.replaceable(config.replaceable, current.type.id) {
+                        if self.replaceable(config.replaceable, current.id) {
                             if let replacement = self.carvedState(
                                 config: config,
                                 nether: nether,
@@ -610,22 +610,22 @@ final class CarverApplicator {
         lavaY: Int32,
         aquifer: AquiferSampler?
     ) -> BlockState? {
-        let lava = BlockState(type: Block(withID: "minecraft:lava"))
+        let lava = BlockState(id: "minecraft:lava")
         if nether { return position.y <= minimumY + 31 ? lava : Blocks.caveAirState }
         if position.y <= lavaY {
-            return config.debugSettings.debugMode ? config.debugSettings.lavaState.blockState : lava
+            return config.debugSettings.debugMode ? config.debugSettings.lavaState : lava
         }
         guard let aquifer else {
-            return config.debugSettings.debugMode ? config.debugSettings.airState.blockState : Blocks.caveAirState
+            return config.debugSettings.debugMode ? config.debugSettings.airState : Blocks.caveAirState
         }
         guard let sampled = aquifer.apply(at: position, density: 0) else {
-            return config.debugSettings.debugMode ? config.debugSettings.barrierState.blockState : nil
+            return config.debugSettings.debugMode ? config.debugSettings.barrierState : nil
         }
         guard config.debugSettings.debugMode else { return sampled }
-        switch sampled.type.id {
-        case "minecraft:water": return config.debugSettings.waterState.blockState
-        case "minecraft:lava": return config.debugSettings.lavaState.blockState
-        default: return config.debugSettings.airState.blockState
+        switch sampled.id {
+        case "minecraft:water": return config.debugSettings.waterState
+        case "minecraft:lava": return config.debugSettings.lavaState
+        default: return config.debugSettings.airState
         }
     }
 

@@ -605,7 +605,7 @@ private class StrongholdPiece: StructurePiece {
         for y in y0...y1 {
             for x in x0...x1 {
                 for z in z0...z1 {
-                    if boundaryOnly && self.getBlock(world, x, y, z, chunkBox).type.isAir {
+                    if boundaryOnly && self.getBlock(world, x, y, z, chunkBox).isAir {
                         continue
                     }
                     let isBoundary = x == x0 || x == x1 || y == y0 || y == y1 || z == z0 || z == z1
@@ -812,7 +812,7 @@ private class StrongholdPiece: StructurePiece {
             }
         }
 
-        return BlockState(type: state.type, properties: transformed)
+        return BlockState(id: state.id, properties: transformed)
     }
 
     class func isInBounds(_ boundingBox: BoundingBox) -> Bool {
@@ -1950,9 +1950,9 @@ private func shiftPiecesIntoWorld<R: Random>(
 
 private func strongholdState(_ id: String, _ properties: [String: String] = [:]) -> BlockState {
     if properties.isEmpty {
-        return BlockState(type: Block(withID: id))
+        return BlockState(id: id)
     }
-    return BlockState(type: Block(withID: id), properties: properties)
+    return BlockState(id: id, properties: properties)
 }
 
 private func strongholdDirectionalState(
@@ -1968,7 +1968,7 @@ private func strongholdDirectionalState(
 private func withEye(_ state: BlockState, _ hasEye: Bool) -> BlockState {
     var properties = state.properties ?? [:]
     properties["eye"] = hasEye ? "true" : "false"
-    return BlockState(type: state.type, properties: properties)
+    return BlockState(id: state.id, properties: properties)
 }
 
 private func cardinalDirection(from value: String) -> CardinalDirection? {

@@ -53,7 +53,7 @@ public struct WoodlandMansionGenerationResult {
 /// Entry points for deterministic vanilla woodland-mansion generation.
 public enum WoodlandMansion {
     static let chestLootTable = "minecraft:chests/woodland_mansion"
-    private static let foundationState = BlockState(type: Block(withID: "minecraft:cobblestone"))
+    private static let foundationState = BlockState(id: "minecraft:cobblestone")
 
     /// Generates loot chests from the selected mansion templates without placing their blocks.
     public static func generateLoot(
@@ -227,7 +227,7 @@ public enum WoodlandMansion {
         let maxSearchY = max(Int32(319), context.seaLevel + 96)
         for y in stride(from: maxSearchY, through: context.minimumWorldY, by: -1) {
             let state = context.blockSampler(PosInt3D(x: x, y: y, z: z))
-            if !state.type.isAir {
+            if !state.isAir {
                 return y + 1
             }
         }
@@ -251,7 +251,7 @@ public enum WoodlandMansion {
         for x in overall.minX...overall.maxX {
             for z in overall.minZ...overall.maxZ {
                 let basePos = PosInt3D(x: x, y: baseY, z: z)
-                guard !world.block(at: basePos).type.isAir else { continue }
+                guard !world.block(at: basePos).isAir else { continue }
                 guard graph.pieces.contains(where: { $0.boundingBox.contains(basePos) }) else { continue }
 
                 var y = baseY - 1
@@ -509,7 +509,7 @@ private final class WoodlandMansionPiece: StructurePiece {
             let localY = transformedPos.y - self.boundingBox.minY
             let localZ = transformedPos.z - self.boundingBox.minZ
 
-            if templateState.type.id == "minecraft:structure_block" {
+            if templateState.id == "minecraft:structure_block" {
                 self.handleStructureMetadata(block.nbt, world: world, chunkBox: chunkBox, x: localX, y: localY, z: localZ, random: &random)
                 continue
             }
@@ -527,7 +527,7 @@ private final class WoodlandMansionPiece: StructurePiece {
         for block in self.template.blocks {
             guard block.state >= 0 && block.state < self.template.palette.count,
                   block.nbt != nil,
-                  self.template.palette[block.state].type.id == "minecraft:chest"
+                  self.template.palette[block.state].id == "minecraft:chest"
             else {
                 continue
             }
@@ -548,7 +548,7 @@ private final class WoodlandMansionPiece: StructurePiece {
                 continue
             }
             let templateState = self.template.palette[block.state]
-            guard templateState.type.id == "minecraft:structure_block",
+            guard templateState.id == "minecraft:structure_block",
                   let metadata = Self.structureMetadata(from: block.nbt)
             else {
                 continue
@@ -606,7 +606,7 @@ private final class WoodlandMansionPiece: StructurePiece {
             let transformedFacing = Self.transformDirection(chestFacing, mirror: self.mirror, rotation: self.rotation)
             let lootSeed = Int64(bitPattern: random.nextLong())
             let state = BlockState(
-                type: Block(withID: "minecraft:chest"),
+                id: "minecraft:chest",
                 properties: ["facing": transformedFacing.rawValue]
             )
             self.placeBlock(world, state, x, y, z, chunkBox)
@@ -766,14 +766,14 @@ private final class WoodlandMansionPiece: StructurePiece {
             properties["rotation"] = String(transformRotationValue(intValue, mirror: mirror, rotation: rotation))
         }
         if let shape = properties["shape"] {
-            properties["shape"] = transformShapeValue(shape, blockID: state.type.id, mirror: mirror, rotation: rotation)
+            properties["shape"] = transformShapeValue(shape, blockID: state.id, mirror: mirror, rotation: rotation)
         }
         if let hinge = properties["hinge"], mirror != .none {
             properties["hinge"] = hinge == "left" ? "right" : hinge == "right" ? "left" : hinge
         }
         properties = transformDirectionalProperties(properties, mirror: mirror, rotation: rotation)
 
-        return BlockState(type: state.type, properties: properties)
+        return BlockState(id: state.id, properties: properties)
     }
 
     private static func transformFacingValue(_ value: String, mirror: MansionMirror, rotation: MansionRotation) -> String? {

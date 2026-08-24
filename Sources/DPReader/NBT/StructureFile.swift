@@ -57,6 +57,22 @@ public struct StructureTemplate {
         self.palettes[0]
     }
 
+    /// Selects the palette vanilla associates with this placement position.
+    func palette(at position: PosInt3D) -> [BlockState] {
+        guard self.palettes.count > 1 else { return self.palette }
+        var random = CheckedRandom(seed: UInt64(bitPattern: Self.paletteSeed(at: position)))
+        return self.palettes[Int(random.next(bound: UInt32(self.palettes.count)))]
+    }
+
+    private static func paletteSeed(at position: PosInt3D) -> Int64 {
+        // MathHelper.hashCode(BlockPos): the x product is intentionally 32-bit,
+        // while the remaining arithmetic uses wrapping Java longs.
+        let xProduct = position.x &* 3_129_871
+        var value = Int64(xProduct) ^ (Int64(position.z) &* 116_129_781) ^ Int64(position.y)
+        value = value &* value &* 42_317_861 &+ value &* 11
+        return value >> 16
+    }
+
     public init(fromFileAt url: URL) throws {
         let root = try NBTDecoder().decodeRoot(fromFileAt: url)
         try self.init(fromRootTag: root)
@@ -109,9 +125,9 @@ public struct StructureTemplate {
             let name = addDefaultNamespace(rawName)
             let properties = try decodeStringMap(values["Properties"], fieldName: "\(fieldName)[\(index)].Properties")
             if let properties {
-                return BlockState(type: Block(withID: name), properties: properties)
+                return BlockState(id: name, properties: properties)
             }
-            return BlockState(type: Block(withID: name))
+            return BlockState(id: name)
         }
     }
 

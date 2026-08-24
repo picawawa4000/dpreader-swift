@@ -126,8 +126,8 @@ import Testing
         SurfaceRuleConditionRule(
             ifTrue: SurfaceRuleBiomeCondition(biomeIs: ["minecraft:plains", "minecraft:forest"]),
             thenRun: SurfaceRuleBlock(
-                resultState: BlockStateDefinition(
-                    name: "minecraft:stone",
+                resultState: BlockState(
+                    id: "minecraft:stone",
                     properties: ["axis": "y"]
                 )
             )
@@ -293,8 +293,8 @@ import Testing
         SurfaceRuleConditionRule(
             ifTrue: SurfaceRuleBiomeCondition(biomeIs: ["minecraft:plains", "minecraft:forest"]),
             thenRun: SurfaceRuleBlock(
-                resultState: BlockStateDefinition(
-                    name: "minecraft:stone",
+                resultState: BlockState(
+                    id: "minecraft:stone",
                     properties: ["axis": "y"]
                 )
             )
@@ -403,7 +403,7 @@ import Testing
     guard let firstBlock = sequence.sequence[0] as? SurfaceRuleBlock else {
         throw Errors.surfaceRuleWrongType("surface_rule.sequence[0] did not decode as SurfaceRuleBlock")
     }
-    #expect(firstBlock.resultState.name == "minecraft:stone")
+    #expect(firstBlock.resultState.id == "minecraft:stone")
     #expect(firstBlock.resultState.properties == nil)
 
     guard let secondCondition = sequence.sequence[1] as? SurfaceRuleConditionRule else {
@@ -419,7 +419,7 @@ import Testing
     guard let secondBlock = secondCondition.thenRun as? SurfaceRuleBlock else {
         throw Errors.surfaceRuleWrongType("surface_rule.sequence[1].then_run did not decode as SurfaceRuleBlock")
     }
-    #expect(secondBlock.resultState.name == "minecraft:dirt")
+    #expect(secondBlock.resultState.id == "minecraft:dirt")
     #expect(secondBlock.resultState.properties == ["snowy": "false"])
 }
 

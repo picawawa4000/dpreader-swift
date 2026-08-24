@@ -24,11 +24,9 @@ Chunks are 16-by-16 columns of the world and are the fundamental units of full-r
 
 ### Blocks
 
-``Block`` and ``BlockState`` represent namespaced block IDs and their properties. ``Blocks`` provides shared constants used by the built-in structure generators; it is not a complete block registry.
+``BlockState`` stores an arbitrary namespaced block ID directly alongside its properties. ``Blocks`` provides shared states used by the built-in structure generators; it is not a block registry.
 
-- ``Block``
 - ``BlockState``
-- ``BlockStateDefinition``
 - ``Blocks``
 
 ### Positions and Volumes

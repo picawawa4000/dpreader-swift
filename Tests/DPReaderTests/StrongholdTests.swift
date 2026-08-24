@@ -5,9 +5,9 @@ import Testing
 private func strongholdTestContext() -> StructureGenerationContext {
     StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
         if pos.y <= 63 {
-            return BlockState(type: Block(withID: "minecraft:stone"))
+            return BlockState(id: "minecraft:stone")
         }
-        return BlockState(type: Block(withID: "minecraft:air"))
+        return BlockState(id: "minecraft:air")
     }
 }
 
@@ -47,7 +47,7 @@ private func strongholdChestMarker(
     #expect(libraryChest.lootTable == "minecraft:chests/stronghold_library")
 
     let portalCenter = PosInt3D(x: -310, y: -13, z: 1348)
-    #expect(result.blocks.block(at: portalCenter).type.id == "minecraft:lava")
+    #expect(result.blocks.block(at: portalCenter).id == "minecraft:lava")
     #expect(!result.markers.contains { $0.represents == "minecraft:end_portal" })
 
     let portalFramePositions = [
@@ -66,7 +66,7 @@ private func strongholdChestMarker(
     ]
     for pos in portalFramePositions {
         let state = result.blocks.block(at: pos)
-        #expect(state.type.id == "minecraft:end_portal_frame")
+        #expect(state.id == "minecraft:end_portal_frame")
     }
 }
 
@@ -150,7 +150,7 @@ private func strongholdChestMarker(
         if caveAir.count == 5 { break }
     }
     let secondContext = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { pos in
-        BlockState(type: Block(withID: caveAir.contains(pos) ? "minecraft:air" : "minecraft:stone"))
+        BlockState(id: caveAir.contains(pos) ? "minecraft:air" : "minecraft:stone")
     }
     let secondStronghold = Stronghold.generateLoot(
         worldSeed: 123_458,

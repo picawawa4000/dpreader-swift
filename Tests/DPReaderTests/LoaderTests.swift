@@ -65,6 +65,37 @@ private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: St
     #expect(noise.testingAttributes.amplitudes == [1.0, 0.25, 0.0, 0.5])
 }
 
+@Test func testDataPackCanPopulateCompiledDensityFunctionRegistry() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/unary")
+    let dataPack = try DataPack(
+        fromRootPath: packURL,
+        densityFunctionCompilationStrategy: .wasm
+    )
+
+    let key = RegistryKey<DensityFunction>(referencing: "test:square")
+    let raw = try #require(dataPack.densityFunctionRegistry.get(key))
+    let compiled = try #require(dataPack.compiledDensityFunctionRegistry?.get(key.convertType()))
+    let position = PosInt3D(x: 17, y: -32, z: 91)
+    #expect(compiled(position.x, position.y, position.z) == raw.sample(at: position))
+}
+
+@Test func testWorldGeneratorRebuildsCompiledDensityFunctionRegistryAfterBaking() async throws {
+    let packURL = URL(filePath: "Tests/Resources/Datapacks/DensityFunctions/unary")
+    let dataPack = try DataPack(fromRootPath: packURL)
+    let generator = try WorldGenerator(
+        withWorldSeed: 123458,
+        usingDataPacks: [dataPack],
+        buildSearchTrees: false,
+        compilationBackend: .wasm
+    )
+
+    let key = RegistryKey<DensityFunction>(referencing: "test:square")
+    let baked = try #require(generator.densityFunctionRegistryForTesting().get(key))
+    let compiled = try #require(generator.compiledDensityFunctionRegistryForTesting()?.get(key.convertType()))
+    let position = PosInt3D(x: 17, y: -32, z: 91)
+    #expect(compiled(position.x, position.y, position.z) == baked.sample(at: position))
+}
+
 @Test func testLoadingForNoisesInPackFormat113() async throws {
     let packURL = try makeTemporaryNoisePackRoot(
         packFormatLiteral: "113",
@@ -332,7 +363,7 @@ private func makeTemporaryNoisePackRoot(packFormatLiteral: String, noiseJSON: St
     #expect(entrance.size.y > 0)
     #expect(entrance.size.z > 0)
     #expect(!entrance.blocks.isEmpty)
-    #expect(entrance.palette.contains { !$0.type.isAir })
+    #expect(entrance.palette.contains { !$0.isAir })
 }
 
 @Test func testLoadingForTerralith26() async throws {

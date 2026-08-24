@@ -54,7 +54,7 @@ public struct StructureStartValidationContext {
             maximumWorldY: maximumWorldY,
             heightmapSampler: { heightmap, x, z in
                 for y in stride(from: maximumWorldY, through: generationContext.minimumWorldY, by: -1) {
-                    let block = generationContext.blockSampler(PosInt3D(x: x, y: y, z: z)).type
+                    let block = generationContext.blockSampler(PosInt3D(x: x, y: y, z: z))
                     guard !block.isAir else { continue }
                     if heightmap == .oceanFloorWG && block.isStructureValidationFluid {
                         continue
@@ -478,7 +478,7 @@ extension Structure {
     }
 }
 
-private extension StructureHeightProvider {
+extension StructureHeightProvider {
     func sample<R: Random>(
         random: inout R,
         minimumWorldY: Int32,
@@ -496,7 +496,7 @@ private extension StructureHeightProvider {
     }
 }
 
-private extension VerticalAnchor {
+extension VerticalAnchor {
     func resolve(minimumWorldY: Int32, maximumWorldY: Int32) -> Int32 {
         switch self {
         case .absolute(let value): return Int32(value)
@@ -506,7 +506,7 @@ private extension VerticalAnchor {
     }
 }
 
-private extension Block {
+private extension BlockState {
     var isStructureValidationFluid: Bool {
         self.id == "minecraft:water" || self.id == "minecraft:lava"
     }

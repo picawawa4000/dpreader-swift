@@ -4,6 +4,8 @@ import TestVisible
 /// Stores all of the registries needed for world generation.
 final class WorldGenerationRegistries {
     var densityFunctionRegistry = Registry<DensityFunction>()
+    /// Seed-baked compiled density functions, keyed exactly like `densityFunctionRegistry`.
+    var compiledDensityFunctionRegistry: Registry<CompiledDensityFunction>?
     var bakedNoiseRegistry = Registry<DoublePerlinNoise>()
     var biomeRegistry = Registry<Biome>()
     var dimensionRegistry = Registry<Dimension>()
@@ -1399,7 +1401,7 @@ public final class ProtoChunkSection {
 
     /// Creates an empty section with no terrain bits and no assigned biomes.
     /// Not concurrency-safe.
-    public init(defaultTerrainState: BlockState = BlockState(type: Block(withID: "minecraft:stone"))) {
+    public init(defaultTerrainState: BlockState = BlockState(id: "minecraft:stone")) {
         self.defaultTerrainState = defaultTerrainState
     }
 
@@ -1519,7 +1521,7 @@ public final class ProtoChunkSection {
     }
 
     @inline(__always) private static func isSolid(_ state: BlockState) -> Bool {
-        !state.type.isAir && state.type.id != "minecraft:water" && state.type.id != "minecraft:lava"
+        !state.isAir && state.id != "minecraft:water" && state.id != "minecraft:lava"
     }
 
     @inline(__always) private static func blockIndex(_ pos: PosInt3D) -> Int {
@@ -1607,7 +1609,7 @@ public final class ProtoChunk {
     public private(set) var minY: Int32 = 0
     public private(set) var height: Int32 = 0
     private var sections: [ProtoChunkSection] = []
-    private var defaultTerrainState = BlockState(type: Block(withID: "minecraft:stone"))
+    private var defaultTerrainState = BlockState(id: "minecraft:stone")
     var aquiferSampler: AquiferSampler?
 
     /// Creates an empty proto-chunk with no configured vertical range.
@@ -1638,7 +1640,7 @@ public final class ProtoChunk {
     public func configure(
         minY: Int32,
         height: Int32,
-        defaultTerrainState: BlockState = BlockState(type: Block(withID: "minecraft:stone"))
+        defaultTerrainState: BlockState = BlockState(id: "minecraft:stone")
     ) throws {
         guard height > 0 && height % Int32(Self.sectionHeight) == 0 else {
             throw WorldGenerationErrors.invalidProtoChunkHeight(Int(height))
@@ -2397,6 +2399,7 @@ public final class WorldGenerator {
         self.worldSeed = seed
         self.voronoiSHA = VoronoiBiomeSubsampler.makeVoronoiSHA(seed)
         self.registries.densityFunctionRegistry = Registry()
+        self.registries.compiledDensityFunctionRegistry = nil
         self.registries.bakedNoiseRegistry = Registry()
         self.directPointSamplingDensityFunctions = nil
         self.compiledBiomeDensityFunctions = nil
@@ -2418,6 +2421,7 @@ public final class WorldGenerator {
         }
 
         try self.bakeDensityFunctions()
+        try self.populateCompiledDensityFunctionRegistry()
         try self.compileConfiguredFunctions()
         try self.refreshFinalDensityBulkSamplers()
         try self.refreshClimateBiomeBulkSamplers()
@@ -2455,6 +2459,12 @@ public final class WorldGenerator {
 
         for datapack in datapacks {
             self.registries.densityFunctionRegistry.mergeDown(with: datapack.densityFunctionRegistry)
+            if let compiled = datapack.compiledDensityFunctionRegistry {
+                if self.registries.compiledDensityFunctionRegistry == nil {
+                    self.registries.compiledDensityFunctionRegistry = Registry()
+                }
+                self.registries.compiledDensityFunctionRegistry!.mergeDown(with: compiled)
+            }
             self.registries.biomeRegistry.mergeDown(with: datapack.biomeRegistry)
             self.registries.dimensionRegistry.mergeDown(with: datapack.dimensionsRegistry)
             self.registries.configuredCarverRegistry.mergeDown(with: datapack.configuredCarverRegistry)
@@ -2519,9 +2529,40 @@ public final class WorldGenerator {
 
     }
 
-    private func compileConfiguredFunctions() throws {
-        guard let compilationBackend else { return }
+    private var densityFunctionCompilationStrategy: CompilationBackend? {
+        self.compilationBackend ?? self.datapacks.reversed().compactMap(\.densityFunctionCompilationStrategy).first
+    }
 
+    private func populateCompiledDensityFunctionRegistry() throws {
+        guard let strategy = self.densityFunctionCompilationStrategy else { return }
+
+        let compiled = Registry<CompiledDensityFunction>()
+        try self.registries.densityFunctionRegistry.forEach { key, densityFunction in
+            compiled.register(
+                try compile(
+                    densityFunction: densityFunction,
+                    strategy: strategy,
+                    registry: self.registries.densityFunctionRegistry,
+                    runtime: self.wasmRuntime
+                ),
+                forKey: key.convertType()
+            )
+        }
+        self.registries.compiledDensityFunctionRegistry = compiled
+    }
+
+    private func compiledDensityFunction(for densityFunction: any DensityFunction) -> CompiledDensityFunction? {
+        guard let compiledRegistry = self.registries.compiledDensityFunctionRegistry else { return nil }
+        let identity = ObjectIdentifier(densityFunction as AnyObject)
+        for entry in self.registries.densityFunctionRegistry.entries() {
+            guard ObjectIdentifier(entry.value as AnyObject) == identity else { continue }
+            return compiledRegistry.get(entry.key.convertType())
+        }
+        return nil
+    }
+
+    private func compileConfiguredFunctions() throws {
+        if let compilationBackend {
         var compiledSearchTrees: [RegistryKey<Dimension>: CompiledBiomeSearchTree] = [:]
         var compiledSearchTreesByIdentity: [ObjectIdentifier: CompiledBiomeSearchTree] = [:]
         for (key, tree) in self.searchTrees {
@@ -2540,6 +2581,7 @@ public final class WorldGenerator {
             compiledSearchTrees[key] = compiled
         }
         self.compiledSearchTrees = compiledSearchTrees
+        }
 
         guard let config = self.config else { return }
         let router = config.noiseRouter
@@ -2552,7 +2594,25 @@ public final class WorldGenerator {
             router.weirdness,
             router.depth
         ]
-        if compilationBackend == .wasm, let wasmRuntime, wasmRuntime.supportsClimateFunctions {
+        if let temperature = self.compiledDensityFunction(for: router.temperature),
+           let humidity = self.compiledDensityFunction(for: router.humidity),
+           let continentalness = self.compiledDensityFunction(for: router.continents),
+           let erosion = self.compiledDensityFunction(for: router.erosion),
+           let weirdness = self.compiledDensityFunction(for: router.weirdness),
+           let depth = self.compiledDensityFunction(for: router.depth) {
+            self.compiledBiomeDensityFunctions = .scalar(
+                temperature: temperature,
+                humidity: humidity,
+                continentalness: continentalness,
+                erosion: erosion,
+                weirdness: weirdness,
+                depth: depth
+            )
+            return
+        }
+
+        guard let densityFunctionCompilationStrategy else { return }
+        if densityFunctionCompilationStrategy == .wasm, let wasmRuntime, wasmRuntime.supportsClimateFunctions {
             self.compiledBiomeDensityFunctions = .wasm(try compileWASMClimateFunctions(
                 climateFunctions,
                 registry: registry,
@@ -2563,37 +2623,37 @@ public final class WorldGenerator {
         self.compiledBiomeDensityFunctions = try .scalar(
             temperature: compile(
                 densityFunction: router.temperature,
-                strategy: compilationBackend,
+                strategy: densityFunctionCompilationStrategy,
                 registry: registry,
                 runtime: self.wasmRuntime
             ),
             humidity: compile(
                 densityFunction: router.humidity,
-                strategy: compilationBackend,
+                strategy: densityFunctionCompilationStrategy,
                 registry: registry,
                 runtime: self.wasmRuntime
             ),
             continentalness: compile(
                 densityFunction: router.continents,
-                strategy: compilationBackend,
+                strategy: densityFunctionCompilationStrategy,
                 registry: registry,
                 runtime: self.wasmRuntime
             ),
             erosion: compile(
                 densityFunction: router.erosion,
-                strategy: compilationBackend,
+                strategy: densityFunctionCompilationStrategy,
                 registry: registry,
                 runtime: self.wasmRuntime
             ),
             weirdness: compile(
                 densityFunction: router.weirdness,
-                strategy: compilationBackend,
+                strategy: densityFunctionCompilationStrategy,
                 registry: registry,
                 runtime: self.wasmRuntime
             ),
             depth: compile(
                 densityFunction: router.depth,
-                strategy: compilationBackend,
+                strategy: densityFunctionCompilationStrategy,
                 registry: registry,
                 runtime: self.wasmRuntime
             )
@@ -3176,7 +3236,7 @@ public final class WorldGenerator {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
+        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock)
 
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
@@ -3198,7 +3258,7 @@ public final class WorldGenerator {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
+        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock)
 
         if let biomeSampler = self.configuredChunkBiomeSampler() {
             switch biomeSampler {
@@ -3795,7 +3855,7 @@ public final class WorldGenerator {
 
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
+        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock)
 
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
@@ -3955,7 +4015,7 @@ public final class WorldGenerator {
         func makeContext() throws -> (ProtoChunk, VanillaChunkTerrainSampler, ChunkGenerationDensityFunctions, UInt64, UInt64, UInt64) {
             let chunk = ProtoChunk()
             let configureStart = DispatchTime.now().uptimeNanoseconds
-            try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
+            try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock)
             let configureEnd = DispatchTime.now().uptimeNanoseconds
 
             let samplerInitStart = DispatchTime.now().uptimeNanoseconds
@@ -4095,7 +4155,7 @@ public final class WorldGenerator {
         func makeContext() throws -> (ProtoChunk, VanillaChunkTerrainSampler, ChunkGenerationDensityFunctions, UInt64, UInt64, UInt64) {
             let chunk = ProtoChunk()
             let configureStart = DispatchTime.now().uptimeNanoseconds
-            try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock.blockState)
+            try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock)
             let configureEnd = DispatchTime.now().uptimeNanoseconds
 
             let samplerInitStart = DispatchTime.now().uptimeNanoseconds
@@ -4286,6 +4346,11 @@ public final class WorldGenerator {
     // Currently visible for testing only.
     func densityFunctionRegistryForTesting() -> Registry<DensityFunction> {
         self.registries.densityFunctionRegistry
+    }
+
+    // Currently visible for testing only.
+    func compiledDensityFunctionRegistryForTesting() -> Registry<CompiledDensityFunction>? {
+        self.registries.compiledDensityFunctionRegistry
     }
 
     /// Returns a compiled sampler for a fixed z/x/y-ordered volume of the configured final density.
