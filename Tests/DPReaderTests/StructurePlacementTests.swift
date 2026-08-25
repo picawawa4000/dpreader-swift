@@ -201,6 +201,10 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     #expect(buriedTreasures != nil)
     #expect(buriedTreasures!.chunkPos == PosInt2D(x: -19, z: 9))
     #expect(buriedTreasures!.blockPos == PosInt2D(x: -295, z: 153))
+    #expect(try sampler.sampleStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        for: RegistryKey(referencing: "minecraft:buried_treasures")
+    ) == nil)
 
     let mineshafts = try sampler.sampleStructureSet(
         inRegion: PosInt2D(x: -14, z: 7),
@@ -209,6 +213,10 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     #expect(mineshafts != nil)
     #expect(mineshafts!.chunkPos == PosInt2D(x: -14, z: 7))
     #expect(mineshafts!.blockPos == PosInt2D(x: -224, z: 112))
+    #expect(try sampler.sampleStructureSet(
+        inRegion: PosInt2D(x: 0, z: 0),
+        for: RegistryKey(referencing: "minecraft:mineshafts")
+    ) == nil)
 }
 
 @Test func testVanillaOutpostPlacementRespectsExclusionZone() async throws {

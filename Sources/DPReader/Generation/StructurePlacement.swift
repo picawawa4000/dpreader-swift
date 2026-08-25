@@ -852,7 +852,7 @@ public final class StructurePlacementSampler {
         var random = CheckedRandom(
             seed: structurePlacementRandomSeed(
                 worldSeed: self.worldSeed,
-                salt: salt,
+                salt: 10387320,
                 regionX: chunkPos.x,
                 regionZ: chunkPos.z
             )
