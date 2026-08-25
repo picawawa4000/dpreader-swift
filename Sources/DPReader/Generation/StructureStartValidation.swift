@@ -516,7 +516,7 @@ private extension BlockState {
     }
 }
 
-private final class GeneratedStructureHeightmapSampler {
+public final class GeneratedStructureHeightmapSampler {
     private struct ColumnKey: Hashable {
         let x: Int32
         let z: Int32
@@ -529,7 +529,7 @@ private final class GeneratedStructureHeightmapSampler {
     private let hasSeaLevelFluid: Bool
     private var terrainHeights: [ColumnKey: Int32] = [:]
 
-    init(
+    public init(
         worldGenerator: WorldGenerator,
         seaLevel: Int32,
         minimumWorldY: Int32,
@@ -543,7 +543,7 @@ private final class GeneratedStructureHeightmapSampler {
         self.hasSeaLevelFluid = dimension.name != "minecraft:end" && dimension.name != "minecraft:the_end"
     }
 
-    func height(_ heightmap: StructureStartHeightmap, _ x: Int32, _ z: Int32) throws -> Int32 {
+    public func height(_ heightmap: StructureStartHeightmap, _ x: Int32, _ z: Int32) throws -> Int32 {
         let key = ColumnKey(x: x, z: z)
         let terrainHeight: Int32
         if let cached = self.terrainHeights[key] {
