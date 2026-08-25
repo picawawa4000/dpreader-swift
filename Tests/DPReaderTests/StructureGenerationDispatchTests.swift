@@ -112,6 +112,50 @@ private func structureDispatchContext() -> StructureGenerationContext {
     }
 }
 
+@Test func testReferenceBuriedTreasureGeneration() async throws {
+    let structure = Structure(
+        type: "minecraft:buried_treasure",
+        biomes: .rawID("minecraft:beach"),
+        spawnOverrides: [:],
+        step: "underground_structures"
+    )
+    // The reference chest is at ocean-floor Y=65, above sandstone at Y=64.
+    let context = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64) { position in
+        position.y <= 64 ? BlockState(id: "minecraft:sandstone") : BlockState(id: "minecraft:air")
+    }
+    let containers = try #require(try structure.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: 13, z: -113),
+        context: context
+    ))
+
+    #expect(containers == [
+        StructureLootContainer(
+            block: "minecraft:chest",
+            pos: PosInt3D(x: 217, y: 65, z: -1_799),
+            lootTable: "minecraft:chests/buried_treasure",
+            lootSeed: -7_406_929_932_979_763_269
+        )
+    ])
+
+    let lootURL = repositoryRootURL()
+        .appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/buried_treasure.json")
+    let lootTable = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: lootURL))
+    let items = try lootTable.generateLoot(withContext: LootContext(
+        random: CheckedRandom(seed: UInt64(bitPattern: containers[0].lootSeed))
+    ))
+    let counts = Dictionary(grouping: items, by: \.itemName).mapValues { $0.reduce(0) { $0 + $1.count } }
+    #expect(counts == [
+        "minecraft:potion": 1,
+        "minecraft:diamond": 1,
+        "minecraft:gold_ingot": 1,
+        "minecraft:emerald": 8,
+        "minecraft:iron_ingot": 11,
+        "minecraft:cooked_salmon": 5,
+        "minecraft:heart_of_the_sea": 1
+    ])
+}
+
 private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGenerationContext {
     let pack = try DataPack(
         fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"),

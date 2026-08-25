@@ -1,5 +1,6 @@
 /// The type-specific output of complete structure block generation.
 public enum StructureGeneratedResult {
+    case buriedTreasure(BuriedTreasureGenerationResult)
     case desertPyramid(DesertPyramidGenerationResult)
     case jungleTemple(JungleTempleGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
@@ -123,6 +124,12 @@ public final class Structure: Codable {
         context: StructureGenerationContext
     ) throws -> PieceGraph? {
         switch self.type {
+        case "minecraft:buried_treasure":
+            return BuriedTreasure.generatePieceGraph(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
         case "minecraft:jigsaw":
             guard case .jigsaw(let settings) = self.settings else { return nil }
             return JigsawStructure.generatePieceGraph(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
@@ -166,6 +173,13 @@ public final class Structure: Codable {
         context: StructureGenerationContext
     ) throws -> StructureGeneratedResult? {
         switch self.type {
+        case "minecraft:buried_treasure":
+            guard let result = BuriedTreasure.generate(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            ) else { return nil }
+            return .buriedTreasure(result)
         case "minecraft:jigsaw":
             guard case .jigsaw(let settings) = self.settings,
                   let result = JigsawStructure.generate(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
@@ -220,6 +234,12 @@ public final class Structure: Codable {
         context: StructureGenerationContext
     ) throws -> [StructureLootContainer]? {
         switch self.type {
+        case "minecraft:buried_treasure":
+            return BuriedTreasure.generateLoot(
+                worldSeed: worldSeed,
+                startChunk: startChunk,
+                context: context
+            )
         case "minecraft:jigsaw":
             guard case .jigsaw(let settings) = self.settings else { return nil }
             return JigsawStructure.generate(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)?.lootContainers
