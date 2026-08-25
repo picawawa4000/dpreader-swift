@@ -134,26 +134,28 @@ extension Structure {
 
         switch self.type {
         case "minecraft:desert_pyramid":
-            guard try self.minimumTempleCornerHeight(
+            guard try self.templeCornersAreAtLeast(
                 startX: startX,
                 startZ: startZ,
                 width: 21,
                 depth: 21,
+                minimumHeight: context.seaLevel,
                 context: context
-            ) >= context.seaLevel else {
+            ) else {
                 return nil
             }
             let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
             return PosInt3D(x: centerX, y: y, z: centerZ)
 
         case "minecraft:jungle_temple":
-            guard try self.minimumTempleCornerHeight(
+            guard try self.templeCornersAreAtLeast(
                 startX: startX,
                 startZ: startZ,
                 width: 12,
                 depth: 15,
+                minimumHeight: context.seaLevel,
                 context: context
-            ) >= context.seaLevel else {
+            ) else {
                 return nil
             }
             let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
@@ -266,19 +268,21 @@ extension Structure {
         }
     }
 
-    private func minimumTempleCornerHeight(
+    /// Checks temple corner heights in vanilla order, stopping as soon as terrain rejects the
+    /// start. In a large scan this avoids generating the remaining corner chunks for the many
+    /// candidates whose first corner is below sea level.
+    private func templeCornersAreAtLeast(
         startX: Int32,
         startZ: Int32,
         width: Int32,
         depth: Int32,
+        minimumHeight: Int32,
         context: StructureStartValidationContext
-    ) throws -> Int32 {
-        try min(
-            context.height(.worldSurfaceWG, x: startX, z: startZ),
-            context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ),
-            context.height(.worldSurfaceWG, x: startX, z: startZ &+ depth &- 1),
-            context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ &+ depth &- 1)
-        )
+    ) throws -> Bool {
+        guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= minimumHeight else { return false }
+        guard try context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ) >= minimumHeight else { return false }
+        guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ depth &- 1) >= minimumHeight else { return false }
+        return try context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ &+ depth &- 1) >= minimumHeight
     }
 
     private func minimumCornerHeight(
@@ -513,7 +517,7 @@ private extension BlockState {
 }
 
 private final class GeneratedStructureHeightmapSampler {
-    private struct ChunkKey: Hashable {
+    private struct ColumnKey: Hashable {
         let x: Int32
         let z: Int32
     }
@@ -523,7 +527,7 @@ private final class GeneratedStructureHeightmapSampler {
     private let minimumWorldY: Int32
     private let maximumWorldY: Int32
     private let hasSeaLevelFluid: Bool
-    private var chunks: [ChunkKey: ProtoChunk] = [:]
+    private var terrainHeights: [ColumnKey: Int32] = [:]
 
     init(
         worldGenerator: WorldGenerator,
@@ -540,28 +544,13 @@ private final class GeneratedStructureHeightmapSampler {
     }
 
     func height(_ heightmap: StructureStartHeightmap, _ x: Int32, _ z: Int32) throws -> Int32 {
-        let chunkX = floorDiv(x, by: 16)
-        let chunkZ = floorDiv(z, by: 16)
-        let key = ChunkKey(x: chunkX, z: chunkZ)
-        let chunk: ProtoChunk
-        if let cached = self.chunks[key] {
-            chunk = cached
+        let key = ColumnKey(x: x, z: z)
+        let terrainHeight: Int32
+        if let cached = self.terrainHeights[key] {
+            terrainHeight = cached
         } else {
-            let generated = ProtoChunk()
-            try self.worldGenerator.generateInto(generated, at: PosInt2D(x: chunkX, z: chunkZ))
-            self.chunks[key] = generated
-            chunk = generated
-        }
-
-        let localX = x &- chunkX &* 16
-        let localZ = z &- chunkZ &* 16
-        var terrainHeight = self.minimumWorldY
-        for worldY in stride(from: self.maximumWorldY, through: self.minimumWorldY, by: -1) {
-            let localY = worldY &- chunk.minY
-            if chunk.isTerrain(atLocal: PosInt3D(x: localX, y: localY, z: localZ)) {
-                terrainHeight = worldY &+ 1
-                break
-            }
+            terrainHeight = try self.worldGenerator.terrainHeightForStructureStartValidation(atX: x, z: z)
+            self.terrainHeights[key] = terrainHeight
         }
 
         if heightmap == .worldSurfaceWG && self.hasSeaLevelFluid {

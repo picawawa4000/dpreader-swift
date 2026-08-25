@@ -46,6 +46,17 @@ DPReader contains a runtime compiler for density functions that can be used to c
 - ``compile(densityFunction:strategy:registry:runtime:)``
 - ``compile(noiseRouter:biomeSearchTree:bufferContext:strategy:useAlternativeNode:registry:runtime:)``
 
+### Chunk terrain compilation
+
+``WorldGenerator`` uses the buffered density-function compiler for final-density terrain when a
+compilation backend is configured. The scalar compiled-function registry remains for individual
+point consumers such as climate sampling. Terrain has its own lazy, context-keyed compiled-function
+registry: each entry is compiled for the complete generation-cell corner lattice of a chunk—the
+exact set of final-density values vanilla evaluates before interpolation—so one buffer invocation
+supplies the whole chunk. Entries are reused for matching chunk shapes and rebuilt when the world
+seed changes. If a configured backend cannot compile a density tree, terrain automatically retains
+the interpreted path.
+
 ## Profiling Helpers
 
 These are just helpers for profiling the compiled density functions.

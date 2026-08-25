@@ -252,7 +252,7 @@ public final class CompiledDensityFunctionBulkProgram: @unchecked Sendable {
 }
 
 /// Describes the dimensions and coordinate stride of a fixed bulk-sampling volume.
-public struct CompiledDensityFunctionBufferContext: Sendable {
+public struct CompiledDensityFunctionBufferContext: Sendable, Hashable {
     public let xCount: Int32
     public let yCount: Int32
     public let zCount: Int32

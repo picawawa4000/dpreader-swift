@@ -93,6 +93,18 @@ private func expectReferenceLoot(
     }
 }
 
+private func decodeVanillaJigsawLootTable(_ identifier: String) throws -> LootTable {
+    let parts = identifier.split(separator: ":", maxSplits: 1).map(String.init)
+    let namespace = parts.count == 2 ? parts[0] : "minecraft"
+    let path = parts.count == 2 ? parts[1] : parts[0]
+    let url = URL(filePath: "vanilla/1.21.11")
+        .appendingPathComponent("data")
+        .appendingPathComponent(namespace)
+        .appendingPathComponent("loot_table")
+        .appendingPathComponent(path + ".json")
+    return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
+}
+
 @Suite(.serialized)
 struct JigsawStructureTests {
     private static let fixture = try! VanillaJigsawFixture()
@@ -154,6 +166,28 @@ struct JigsawStructureTests {
             (PosInt3D(x: -5674, y: -26, z: -425), 6_595_961_592_803_968_598),
             (PosInt3D(x: -5723, y: -19, z: -395), -4_433_221_988_775_009_979)
         ])
+    }
+
+    @Test func trialChambersRewardChestReportsItsLoot() throws {
+        let structure = try #require(Self.fixture.pack.structureRegistry.get(RegistryKey(referencing: "minecraft:trial_chambers")))
+        let target = PosInt3D(x: -120, y: 16, z: -334)
+        let containers = try #require(try structure.generateLoot(
+            worldSeed: jigsawReferenceSeed,
+            startChunk: PosInt2D(x: 11, z: -19),
+            context: Self.fixture.context
+        ))
+        let chest = try #require(
+            containers.first { $0.pos == target },
+            "Generated containers: \(containers.map { "\($0.pos) [\($0.block)] \($0.lootTable) / \($0.lootSeed)" })"
+        )
+        #expect(chest.block == "minecraft:chest")
+        #expect(chest.lootTable == "minecraft:chests/trial_chambers/reward")
+        let loot = try decodeVanillaJigsawLootTable(chest.lootTable).generateLoot(
+            withContext: LootContext(random: CheckedRandom(seed: UInt64(bitPattern: chest.lootSeed))),
+            resolvingTables: decodeVanillaJigsawLootTable
+        )
+        #expect(loot.contains { $0.itemName == "minecraft:emerald" })
+        #expect(loot.contains { $0.itemName == "minecraft:trident" })
     }
 
     @Test func plainsVillageMatchesReferencePiecesAndLootUsingGeneratedTerrain() throws {

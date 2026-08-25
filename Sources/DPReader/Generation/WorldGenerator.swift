@@ -55,6 +55,66 @@ private enum CompiledBiomeDensityFunctions {
     }
 }
 
+/// A fixed chunk's compiled final-density corner lattice.
+///
+/// Vanilla terrain interpolates the values at generation-cell corners rather than sampling every
+/// block. The compiled program fills that entire lattice in one call, and this adapter preserves
+/// the sampler's normal interpolation and block-placement path.
+private final class CompiledChunkTerrainDensity: DensityFunction {
+    private let fallback: any DensityFunction
+    private let basePosition: PosInt3D
+    private let context: CompiledDensityFunctionBufferContext
+    private let values: [Double]
+
+    init(
+        fallback: any DensityFunction,
+        sampler: CompiledDensityFunctionBulk,
+        basePosition: PosInt3D
+    ) {
+        self.fallback = fallback
+        self.basePosition = basePosition
+        self.context = sampler.bufferContext
+        self.values = sampler.callAsFunction(at: basePosition)
+    }
+
+    @inline(__always)
+    func sample(at position: PosInt3D) -> Double {
+        let xOffset = position.x - self.basePosition.x
+        let yOffset = position.y - self.basePosition.y
+        let zOffset = position.z - self.basePosition.z
+        guard xOffset >= 0, yOffset >= 0, zOffset >= 0,
+              xOffset % self.context.xStep == 0,
+              yOffset % self.context.yStep == 0,
+              zOffset % self.context.zStep == 0 else {
+            return self.fallback.sample(at: position)
+        }
+        let x = xOffset / self.context.xStep
+        let y = yOffset / self.context.yStep
+        let z = zOffset / self.context.zStep
+        guard x < self.context.xCount, y < self.context.yCount, z < self.context.zCount else {
+            return self.fallback.sample(at: position)
+        }
+        return self.values[Int((z * self.context.xCount + x) * self.context.yCount + y)]
+    }
+
+    func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        return self
+    }
+
+    init(from decoder: any Decoder) throws {
+        throw DecodingError.dataCorrupted(
+            DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "CompiledChunkTerrainDensity is runtime-only.")
+        )
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        throw EncodingError.invalidValue(
+            self,
+            EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "CompiledChunkTerrainDensity is runtime-only.")
+        )
+    }
+}
+
 @inline(__always)
 private func canonicalPredefinedBiomePreset(_ preset: String) -> String? {
     switch preset {
@@ -1401,8 +1461,15 @@ public final class ProtoChunkSection {
 
     /// Creates an empty section with no terrain bits and no assigned biomes.
     /// Not concurrency-safe.
-    public init(defaultTerrainState: BlockState = BlockState(id: "minecraft:stone")) {
+    public init(
+        defaultTerrainState: BlockState = BlockState(id: "minecraft:stone"),
+        storesBiomeData: Bool = true
+    ) {
         self.defaultTerrainState = defaultTerrainState
+        if !storesBiomeData {
+            self.blockBiomes = []
+            self.quartBiomes = []
+        }
     }
 
     /// Returns the section terrain bitmap in local block order.
@@ -1420,8 +1487,12 @@ public final class ProtoChunkSection {
     func clear() {
         self.terrainBitmap = [UInt64](repeating: 0, count: Self.bitmapWordCount)
         self.blockOverrides.removeAll(keepingCapacity: true)
-        self.blockBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.blockCount)
-        self.quartBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.biomeCount)
+        if !self.blockBiomes.isEmpty {
+            self.blockBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.blockCount)
+        }
+        if !self.quartBiomes.isEmpty {
+            self.quartBiomes = [RegistryKey<Biome>?](repeating: nil, count: Self.biomeCount)
+        }
     }
 
     @inline(__always) func setTerrainUnchecked(_ isSolid: Bool, blockIndex: Int) {
@@ -1640,7 +1711,8 @@ public final class ProtoChunk {
     public func configure(
         minY: Int32,
         height: Int32,
-        defaultTerrainState: BlockState = BlockState(id: "minecraft:stone")
+        defaultTerrainState: BlockState = BlockState(id: "minecraft:stone"),
+        storesBiomeData: Bool = true
     ) throws {
         guard height > 0 && height % Int32(Self.sectionHeight) == 0 else {
             throw WorldGenerationErrors.invalidProtoChunkHeight(Int(height))
@@ -1651,7 +1723,7 @@ public final class ProtoChunk {
         self.defaultTerrainState = defaultTerrainState
         self.aquiferSampler = nil
         self.sections = (0..<Int(height / Int32(Self.sectionHeight))).map { _ in
-            ProtoChunkSection(defaultTerrainState: defaultTerrainState)
+            ProtoChunkSection(defaultTerrainState: defaultTerrainState, storesBiomeData: storesBiomeData)
         }
     }
 
@@ -2352,6 +2424,9 @@ public final class WorldGenerator {
     private var endBiomeDimensions = Set<RegistryKey<Dimension>>()
     private var directPointSamplingDensityFunctions: DirectPointSamplingDensityFunctions?
     private var compiledBiomeDensityFunctions: CompiledBiomeDensityFunctions?
+    /// The final-density program used by vanilla terrain generation. Its buffer shape is the
+    /// complete generation-cell corner lattice for one chunk, not a scalar sample.
+    private var compiledChunkTerrainDensityRegistry: [CompiledDensityFunctionBufferContext: CompiledDensityFunctionBulk] = [:]
     private var finalDensityBulkSamplers: [WeakCompiledDensityFunctionBulk] = []
     private var climateBiomeBulkSamplers: [WeakCompiledClimateBiomeBulkSampler] = []
     private var biomeIDBulkSamplers: [WeakCompiledNoiseRouterBiomeBulkSampler] = []
@@ -2403,6 +2478,7 @@ public final class WorldGenerator {
         self.registries.bakedNoiseRegistry = Registry()
         self.directPointSamplingDensityFunctions = nil
         self.compiledBiomeDensityFunctions = nil
+        self.compiledChunkTerrainDensityRegistry = [:]
         self.compiledSearchTrees = [:]
         self.config = self.unbakedConfig
 
@@ -3232,11 +3308,20 @@ public final class WorldGenerator {
         )
     }
 
-    private func generateTerrainChunk(at chunkPos: PosInt2D, using config: NoiseSettings) throws -> ProtoChunk {
+    private func generateTerrainChunk(
+        at chunkPos: PosInt2D,
+        using config: NoiseSettings,
+        storesBiomeData: Bool = true
+    ) throws -> ProtoChunk {
         let chunk = ProtoChunk()
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        try chunk.configure(minY: minY, height: height, defaultTerrainState: config.defaultBlock)
+        try chunk.configure(
+            minY: minY,
+            height: height,
+            defaultTerrainState: config.defaultBlock,
+            storesBiomeData: storesBiomeData
+        )
 
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
@@ -3246,8 +3331,91 @@ public final class WorldGenerator {
             sizeVertical: config.sizeVertical
         )
         let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
-        chunkSampler.generateTerrain(into: chunk, with: terrainDensity)
+        let sampledTerrainDensity = self.compiledTerrainDensityIfPossible(
+            fallback: terrainDensity,
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+        chunkSampler.generateTerrain(into: chunk, with: sampledTerrainDensity)
         return chunk
+    }
+
+    /// Returns the compiled full-chunk corner lattice when the configured backend can express it.
+    ///
+    /// The registry's scalar programs remain useful for isolated climate samples. Terrain is
+    /// different: vanilla evaluates final density over a complete generation-cell lattice before
+    /// interpolating blocks, so this path compiles that full chunk-shaped volume and reuses the
+    /// resulting program for every generated chunk. Unsupported functions retain the exact
+    /// interpreted terrain path.
+    private func compiledTerrainDensityIfPossible(
+        fallback: any DensityFunction,
+        chunkPos: PosInt2D,
+        minY: Int32,
+        height: Int32,
+        sizeHorizontal: Int,
+        sizeVertical: Int
+    ) -> any DensityFunction {
+        guard let strategy = self.densityFunctionCompilationStrategy,
+              let context = Self.chunkTerrainCornerBufferContext(
+                  height: height,
+                  sizeHorizontal: sizeHorizontal,
+                  sizeVertical: sizeVertical
+              ) else {
+            return fallback
+        }
+
+        let compiled: CompiledDensityFunctionBulk
+        if let existing = self.compiledChunkTerrainDensityRegistry[context],
+           existing.strategy == strategy {
+            compiled = existing
+        } else {
+            guard let generated = try? compile(
+                densityFunction: try self.validatedDirectPointSamplingDensityFunctions(
+                    for: "Compiled chunk terrain generation"
+                ).cacheless.finalDensity,
+                bufferContext: context,
+                strategy: strategy,
+                registry: self.registries.densityFunctionRegistry,
+                runtime: self.wasmRuntime
+            ) else {
+                return fallback
+            }
+            self.compiledChunkTerrainDensityRegistry[context] = generated
+            compiled = generated
+        }
+
+        return CompiledChunkTerrainDensity(
+            fallback: fallback,
+            sampler: compiled,
+            basePosition: PosInt3D(
+                x: chunkPos.x * Int32(ProtoChunk.sideLength),
+                y: minY,
+                z: chunkPos.z * Int32(ProtoChunk.sideLength)
+            )
+        )
+    }
+
+    private static func chunkTerrainCornerBufferContext(
+        height: Int32,
+        sizeHorizontal: Int,
+        sizeVertical: Int
+    ) -> CompiledDensityFunctionBufferContext? {
+        let horizontalStep = terrainCellBlockCount(fromNoiseSize: sizeHorizontal)
+        let verticalStep = terrainCellBlockCount(fromNoiseSize: sizeVertical)
+        guard Int32(ProtoChunk.sideLength) % horizontalStep == 0, height % verticalStep == 0 else {
+            return nil
+        }
+        return CompiledDensityFunctionBufferContext(
+            xCount: Int32(ProtoChunk.sideLength) / horizontalStep + 1,
+            yCount: height / verticalStep + 1,
+            zCount: Int32(ProtoChunk.sideLength) / horizontalStep + 1,
+            xStep: horizontalStep,
+            yStep: verticalStep,
+            zStep: horizontalStep
+        )
     }
 
     private func generateLODBiomeChunk(
@@ -3897,10 +4065,67 @@ public final class WorldGenerator {
 
         let aquifer = AquiferSampler(settings: config, chunkPos: chunkPos, worldSeed: self.worldSeed)
         chunk.aquiferSampler = aquifer
+        let terrainDensity = self.compiledTerrainDensityIfPossible(
+            fallback: chunkGenerationFunctions.terrainDensity,
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
         chunkSampler.generateTerrain(
             into: chunk,
-            with: chunkGenerationFunctions.terrainDensity,
+            with: terrainDensity,
             aquifer: aquifer
+        )
+    }
+
+    /// Generates only raw density terrain for structure-start heightmap validation.
+    ///
+    /// Structure start checks inspect ``ProtoChunk/isTerrain(atLocal:)``, which deliberately
+    /// represents final-density occupancy rather than aquifer material or biome data.  Avoid
+    /// generating those unused layers when scanning many potential starts.
+    func generateTerrainForStructureStartValidation(at chunkPos: PosInt2D) throws -> ProtoChunk {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
+        let config = try self.validatedTerrainConfig(for: "Structure-start terrain validation")
+        return try self.generateTerrainChunk(at: chunkPos, using: config, storesBiomeData: false)
+    }
+
+    /// Samples one raw-terrain heightmap column for structure-start validation without allocating
+    /// or filling a complete chunk. The sampler still evaluates the exact four generation-cell
+    /// corner columns that vanilla interpolation uses for this block column.
+    func terrainHeightForStructureStartValidation(atX x: Int32, z: Int32) throws -> Int32 {
+        self.terrainGenerationLock.lock()
+        defer { self.terrainGenerationLock.unlock() }
+
+        let config = try self.validatedTerrainConfig(for: "Structure-start terrain-height validation")
+        let minY = Int32(config.minY)
+        let height = Int32(config.height)
+        let chunkPos = PosInt2D(x: floorDiv(x, by: 16), z: floorDiv(z, by: 16))
+        let localX = x &- chunkPos.x &* 16
+        let localZ = z &- chunkPos.z &* 16
+        let chunkSampler = VanillaChunkTerrainSampler(
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+        let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
+        let sampledTerrainDensity = self.compiledTerrainDensityIfPossible(
+            fallback: terrainDensity,
+            chunkPos: chunkPos,
+            minY: minY,
+            height: height,
+            sizeHorizontal: config.sizeHorizontal,
+            sizeVertical: config.sizeVertical
+        )
+        return chunkSampler.terrainHeight(
+            atLocalX: localX,
+            localZ: localZ,
+            with: sampledTerrainDensity
         )
     }
 

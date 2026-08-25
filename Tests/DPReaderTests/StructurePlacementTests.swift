@@ -41,6 +41,119 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         .appendingPathComponent("Tests/Resources/Cubiomes/nether_complexes_seed_503815372.json")
 }
 
+@Test func testGeneratedStructureStartHeightmapsMatchFullChunkTerrain() async throws {
+    let pack = try DataPack(fromRootPath: try vanillaStructurePlacementPackURL())
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let context = try StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:overworld"),
+        seaLevel: 63,
+        worldGenerator: generator
+    )
+    var fullChunks: [String: ProtoChunk] = [:]
+
+    func fullTerrainHeight(atX x: Int32, z: Int32) throws -> Int32 {
+        let chunkPos = PosInt2D(x: floorDiv(x, by: 16), z: floorDiv(z, by: 16))
+        let chunkKey = "\(chunkPos.x),\(chunkPos.z)"
+        let chunk: ProtoChunk
+        if let cached = fullChunks[chunkKey] {
+            chunk = cached
+        } else {
+            let generated = ProtoChunk()
+            try generator.generateInto(generated, at: chunkPos)
+            fullChunks[chunkKey] = generated
+            chunk = generated
+        }
+        let localX = x &- chunkPos.x &* 16
+        let localZ = z &- chunkPos.z &* 16
+        for worldY in stride(from: Int32(319), through: Int32(-64), by: -1) {
+            if chunk.isTerrain(atLocal: PosInt3D(x: localX, y: worldY &- chunk.minY, z: localZ)) {
+                return worldY &+ 1
+            }
+        }
+        return -64
+    }
+
+    for (x, z) in [(Int32(0), Int32(0)), (15, 15), (-1, -1), (245, -73)] {
+        let expectedTerrain = try fullTerrainHeight(atX: x, z: z)
+        #expect(try context.height(.oceanFloorWG, x: x, z: z) == expectedTerrain)
+        #expect(try context.height(.worldSurfaceWG, x: x, z: z) == max(expectedTerrain, 63))
+    }
+}
+
+#if DEBUG && !(os(WASI) || arch(wasm32))
+@Test func benchmarkLargeScaleStructureStartHeightSampling() async throws {
+    let pack = try DataPack(fromRootPath: try vanillaStructurePlacementPackURL())
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let context = try StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:overworld"),
+        seaLevel: 63,
+        worldGenerator: generator
+    )
+    let side = 16
+    let start = DispatchTime.now().uptimeNanoseconds
+    var checksum: Int64 = 0
+    for chunkZ in 0..<side {
+        for chunkX in 0..<side {
+            checksum &+= Int64(try context.height(
+                .worldSurfaceWG,
+                x: Int32(chunkX * 16 + 8),
+                z: Int32(chunkZ * 16 + 8)
+            ))
+        }
+    }
+    let elapsed = DispatchTime.now().uptimeNanoseconds - start
+    print(
+        "benchmarkLargeScaleStructureStartHeightSampling:",
+        "\(side * side) starts in \(elapsed) ns",
+        "(\(elapsed / UInt64(side * side))ns/start; checksum \(checksum))"
+    )
+}
+
+@Test func benchmarkLargeScaleValidatedStructureStartSampling() async throws {
+    let pack = try DataPack(fromRootPath: try vanillaStructurePlacementPackURL())
+    let generator = try WorldGenerator(
+        withWorldSeed: 503_815_372,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 503_815_372, usingDataPacks: [pack])
+    let context = try StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:overworld"),
+        seaLevel: 63,
+        worldGenerator: generator
+    )
+    let structureSet = RegistryKey<StructureSet>(referencing: "minecraft:desert_pyramids")
+    let side = 16
+    let start = DispatchTime.now().uptimeNanoseconds
+    var validStartCount = 0
+    for regionZ in 0..<side {
+        for regionX in 0..<side {
+            if try sampler.resolveStructureSet(
+                inRegion: PosInt2D(x: Int32(regionX), z: Int32(regionZ)),
+                validatingWith: context,
+                for: structureSet
+            ) != nil {
+                validStartCount += 1
+            }
+        }
+    }
+    let elapsed = DispatchTime.now().uptimeNanoseconds - start
+    print(
+        "benchmarkLargeScaleValidatedStructureStartSampling:",
+        "\(side * side) regions in \(elapsed) ns",
+        "(\(elapsed / UInt64(side * side))ns/region; \(validStartCount) valid starts)"
+    )
+}
+#endif
+
 @Test func testVanillaRandomSpreadStructurePlacementSamples() async throws {
     let pack = try DataPack(
         fromRootPath: try vanillaStructurePlacementPackURL(),
