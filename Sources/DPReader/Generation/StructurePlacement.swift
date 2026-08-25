@@ -54,9 +54,14 @@ public final class StructurePlacementSampler {
     private let dataPackSources: [DataPackSource]
     private let structureRegistry = Registry<Structure>()
     private let structureSetRegistry = Registry<StructureSet>()
+    private let dimensionRegistry = Registry<Dimension>()
     private var tagRegistry: [String: TagDefinition] = [:]
     private var concentricRingsCache: [String: [StructurePlacementSample]] = [:]
     private var resolvedRegistryEntriesCache: [String: Set<String>] = [:]
+    /// Known eligible structure keys for each dimension whose biome source can be enumerated.
+    /// A missing entry means the source is not enumerable, so validation must remain conservative.
+    private var eligibleStructureKeysByDimension: [String: Set<String>] = [:]
+    private var nonEnumerableStructureDimensions = Set<String>()
     private var overworldBiomeGenerator: WorldGenerator?
 
     public init(withWorldSeed worldSeed: WorldSeed, usingDataPacks dataPacks: [DataPack]) {
@@ -67,6 +72,7 @@ public final class StructurePlacementSampler {
         for pack in dataPacks {
             self.structureRegistry.mergeDown(with: pack.structureRegistry)
             self.structureSetRegistry.mergeDown(with: pack.structureSetRegistry)
+            self.dimensionRegistry.mergeDown(with: pack.dimensionsRegistry)
             pack.tagRegistry.forEach { (key, value) in
                 self.mergeTag(value, forKey: key.name)
             }
@@ -202,6 +208,28 @@ public final class StructurePlacementSampler {
         guard let structure = self.structureRegistry.get(structureKey) else {
             throw Errors.structureNotFound(structureKey.name)
         }
+        guard try self.structureCanGenerate(structureKey, in: context.dimension) else {
+            return nil
+        }
+
+        let allowedBiomeNames = try self.resolveRegistryEntries(
+            matching: structure.biomes,
+            in: "worldgen/biome"
+        )
+        var prevalidatedBiome: RegistryKey<Biome>? = nil
+        // Temple starts use the center world-surface biome. Biome eligibility is independent of
+        // their footprint-height check, so reject the overwhelmingly common nonmatching center
+        // before evaluating up to four separate terrain columns.
+        if structure.type == "minecraft:desert_pyramid" || structure.type == "minecraft:jungle_temple" {
+            let centerX = startChunk.x &* 16 &+ 8
+            let centerZ = startChunk.z &* 16 &+ 8
+            let centerY = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
+            guard let biome = try context.biome(at: PosInt3D(x: centerX, y: centerY, z: centerZ)),
+                  allowedBiomeNames.contains(biome.name) else {
+                return nil
+            }
+            prevalidatedBiome = biome
+        }
         guard let generationPosition = try structure.generationPosition(
             structureKey: structureKey,
             worldSeed: self.worldSeed,
@@ -239,11 +267,8 @@ public final class StructurePlacementSampler {
             }
         }
 
-        let allowedBiomeNames = try self.resolveRegistryEntries(
-            matching: structure.biomes,
-            in: "worldgen/biome"
-        )
-        guard let biome = try context.biome(at: generationPosition),
+        let biome = try prevalidatedBiome ?? context.biome(at: generationPosition)
+        guard let biome,
               allowedBiomeNames.contains(biome.name) else {
             return nil
         }
@@ -253,6 +278,94 @@ public final class StructurePlacementSampler {
             generationPosition: generationPosition,
             biome: biome
         )
+    }
+
+    /// Determines whether `structureKey` can ever pass a biome validation in `dimension`.
+    ///
+    /// This is intentionally an eligibility mapping rather than a hard-coded structure/dimension
+    /// table: custom noise dimensions inherit the biomes declared by their biome source, and a
+    /// structure is included exactly when its configured biome set intersects that source. Sources
+    /// which cannot be enumerated retain normal per-start validation.
+    private func structureCanGenerate(
+        _ structureKey: RegistryKey<Structure>,
+        in dimension: RegistryKey<Dimension>
+    ) throws -> Bool {
+        if let eligible = self.eligibleStructureKeysByDimension[dimension.name] {
+            return eligible.contains(structureKey.name)
+        }
+        if self.nonEnumerableStructureDimensions.contains(dimension.name) {
+            return true
+        }
+        guard let biomeNames = self.biomeNamesGenerated(in: dimension) else {
+            self.nonEnumerableStructureDimensions.insert(dimension.name)
+            return true
+        }
+
+        var eligible = Set<String>()
+        for entry in self.structureRegistry.entries() {
+            let structureBiomeNames = try self.resolveRegistryEntries(
+                matching: entry.value.biomes,
+                in: "worldgen/biome"
+            )
+            if !structureBiomeNames.isDisjoint(with: biomeNames) {
+                eligible.insert(entry.key.name)
+            }
+        }
+        self.eligibleStructureKeysByDimension[dimension.name] = eligible
+        return eligible.contains(structureKey.name)
+    }
+
+    private func biomeNamesGenerated(in dimension: RegistryKey<Dimension>) -> Set<String>? {
+        let biomeSource: (any BiomeSource)?
+        if let configured = self.dimensionRegistry.get(dimension),
+           let noiseGenerator = configured.generator as? NoiseDimensionGenerator {
+            biomeSource = noiseGenerator.biomeSource
+        } else {
+            // Vanilla world presets supply these dimensions rather than individual dimension
+            // files, so retain their standard sources when no explicit pack entry overrides them.
+            switch dimension.name {
+            case "minecraft:overworld":
+                biomeSource = MultiNoiseBiomeSource(preset: "minecraft:overworld")
+            case "minecraft:nether":
+                biomeSource = MultiNoiseBiomeSource(preset: "minecraft:nether")
+            case "minecraft:end", "minecraft:the_end":
+                biomeSource = TheEndBiomeSource()
+            default:
+                biomeSource = nil
+            }
+        }
+
+        guard let biomeSource else { return nil }
+        if let fixed = biomeSource as? FixedBiomeSource {
+            return [fixed.biome]
+        }
+        if let checkerboard = biomeSource as? CheckerboardBiomeSource {
+            return Set(checkerboard.biomes)
+        }
+        if let multiNoise = biomeSource as? MultiNoiseBiomeSource {
+            if let biomes = multiNoise.biomes {
+                return Set(biomes.map(\.biome))
+            }
+            guard let preset = multiNoise.preset else { return nil }
+            switch preset {
+            case "minecraft:overworld":
+                return Set(getPredefinedBiomeSearchTreeData(for: "overworld")!.map(\.biome))
+            case "minecraft:nether":
+                return Set(getPredefinedBiomeSearchTreeData(for: "nether")!.map(\.biome))
+            default:
+                return nil
+            }
+        }
+        if biomeSource is TheEndBiomeSource {
+            return [
+                "minecraft:the_end",
+                "minecraft:end_highlands",
+                "minecraft:end_midlands",
+                "minecraft:small_end_islands",
+                "minecraft:end_barrens"
+            ]
+        }
+        return nil
     }
 
     private func sampleStructureSet(inRegion regionPos: PosInt2D, for structureSetKey: RegistryKey<StructureSet>, visitedKeys: Set<String>) throws -> StructurePlacementSample? {

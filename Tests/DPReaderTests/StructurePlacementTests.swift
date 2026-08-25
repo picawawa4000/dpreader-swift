@@ -400,6 +400,73 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     #expect(validated.biome == RegistryKey<Biome>(referencing: "minecraft:desert"))
 }
 
+@Test func testStructureStartValidationRejectsOverworldEndCitiesBeforeTerrain() throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let dimensionPack = try DataPack(
+        fromRootPath: URL(filePath: "Tests/Resources/Datapacks/Dimensions/dimensions"),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noBiomes, .noStructures, .noStructureSets]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack, dimensionPack])
+    var heightCalls = 0
+    var biomeCalls = 0
+    let context = StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "test:example"),
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, _, _ in
+            heightCalls += 1
+            return 70
+        },
+        biomeSampler: { _ in
+            biomeCalls += 1
+            return RegistryKey(referencing: "minecraft:the_end")
+        }
+    )
+
+    #expect(
+        try sampler.validateStructureStart(
+            for: RegistryKey(referencing: "minecraft:end_city"),
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: context
+        ) == nil
+    )
+    #expect(heightCalls == 0)
+    #expect(biomeCalls == 0)
+}
+
+@Test func testTempleStartValidationRejectsBiomeBeforeFootprintTerrain() throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack])
+    var heightCalls = 0
+    let context = StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:overworld"),
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, _, _ in
+            heightCalls += 1
+            return 70
+        },
+        biomeSampler: { _ in RegistryKey(referencing: "minecraft:plains") }
+    )
+
+    #expect(
+        try sampler.validateStructureStart(
+            for: RegistryKey(referencing: "minecraft:desert_pyramid"),
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: context
+        ) == nil
+    )
+    #expect(heightCalls == 1)
+}
+
 @Test func testStructureStartValidationProjectsJigsawBiomeCheckToSurface() async throws {
     let pack = try DataPack(
         fromRootPath: try vanillaStructurePlacementPackURL(),
