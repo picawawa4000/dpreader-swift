@@ -4563,6 +4563,15 @@ public final class WorldGenerator {
         ).cached.finalDensity
     }
 
+    // Currently visible for testing only. This form intentionally strips the
+    // world-scale cache wrappers: compiled backends lower the underlying tree,
+    // whereas those wrappers must remain in the Swift evaluator.
+    func cachelessFinalDensityFunction() throws -> any DensityFunction {
+        return try self.validatedDirectPointSamplingDensityFunctions(
+            for: "Cacheless final density access"
+        ).cacheless.finalDensity
+    }
+
     // Currently visible for testing only.
     func terrainSettingsForTesting() throws -> NoiseSettings {
         try self.validatedTerrainConfig(for: "Terrain settings access")

@@ -245,8 +245,26 @@ private func appendDoubleExtractLane(_ lane: UInt8, to body: inout WASMEncoder) 
     body.append(lane)
 }
 
+private func appendInt32ExtractLane(_ lane: UInt8, to body: inout WASMEncoder) {
+    appendSIMDOpcode(0x1b, to: &body) // i32x4.extract_lane_s
+    body.append(lane)
+}
+
 private func supportsWASMPairedSIMD(_ program: DensityFunctionIRProgram) -> Bool {
     guard program.inputTypes == [.i32, .i32, .i32], program.outputs.count == 1 else { return false }
+    let output = program.outputs[0]
+    let outputType = output < program.inputTypes.count
+        ? program.inputTypes[output]
+        : program.instructions[output - program.inputTypes.count].resultType
+    let isFusedClimateBiome = outputType == .i32
+        && output >= program.inputTypes.count
+        && {
+            if case .searchBiome(_, _, nil, nil, false) = program.instructions[output - program.inputTypes.count] {
+                return true
+            }
+            return false
+        }()
+    guard outputType == .f64 || isFusedClimateBiome else { return false }
     for instruction in program.instructions {
         switch instruction {
         case .constant, .convertSignedIntToDouble, .add, .subtract, .multiply, .divide,
@@ -254,8 +272,19 @@ private func supportsWASMPairedSIMD(_ program: DensityFunctionIRProgram) -> Bool
             continue
         case .sampleDensity(_, let x, let y, let z):
             guard x < 3, y < 3, z < 3 else { return false }
-        case .constantInt32, .constantInt64, .divideSignedInt32, .multiplyInt32,
-             .convertDoubleToSignedInt64, .spline, .searchBiome:
+        case .constantInt64, .convertDoubleToSignedInt64:
+            guard isFusedClimateBiome else { return false }
+        case .searchBiome(_, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
+            guard isFusedClimateBiome,
+                  initialBestDistance == nil,
+                  initialBestNode == nil,
+                  !returnNodeIndex,
+                  point.allSatisfy({ value in
+                      value >= program.inputTypes.count
+                          && program.instructions[value - program.inputTypes.count].resultType == .i64
+                  })
+            else { return false }
+        case .constantInt32, .divideSignedInt32, .multiplyInt32, .spline:
             return false
         }
     }
@@ -799,7 +828,9 @@ private func makeWASMPairedSIMDFunctionBody(
     embeddedNoiseLayouts: [Int: WASMEmbeddedNoiseLayout],
     densitySamplerFunctionIndex: Int?,
     noiseSamplerFunctionIndex: Int?,
-    perlinFunctionIndex: Int
+    perlinFunctionIndex: Int,
+    biomeTreeLayouts: [WASMBiomeTreeLayout],
+    alternativeNodeOffset: Int?
 ) -> [UInt8] {
     precondition(supportsWASMPairedSIMD(program))
     // Six scalar parameters contain x/y/z for two adjacent samples. Every IR value is
@@ -807,13 +838,37 @@ private func makeWASMPairedSIMDFunctionBody(
     let vectorLocalStart = 6
     let temporaryLocalStart = vectorLocalStart + program.inputTypes.count + program.instructions.count
     func vectorLocal(_ value: Int) -> Int { vectorLocalStart + value }
+    let output = program.outputs[0]
+    let outputType = output < program.inputTypes.count
+        ? program.inputTypes[output]
+        : program.instructions[output - program.inputTypes.count].resultType
+    let isFusedClimateBiome = outputType == .i32
+    let i64InstructionIndices = program.instructions.indices.filter {
+        program.instructions[$0].resultType == .i64
+    }
+    let i64InstructionOffsets = Dictionary(uniqueKeysWithValues: i64InstructionIndices.enumerated().map { ($0.element, $0.offset) })
+    let laneI64LocalStart = temporaryLocalStart + 3
+    func laneI64Local(_ value: Int, lane: Int) -> Int {
+        let instructionIndex = value - program.inputTypes.count
+        return laneI64LocalStart + i64InstructionOffsets[instructionIndex]! * 2 + lane
+    }
+    let biomeScratchI64Start = laneI64LocalStart + i64InstructionIndices.count * 2
+    let biomeScratchI32Start = biomeScratchI64Start + 5
+    let biomeResultLane0Local = biomeScratchI32Start + 4
+    let biomeResultLane1Local = biomeScratchI32Start + 5
 
     var body = WASMEncoder()
-    body.appendUnsigned(2)
+    body.appendUnsigned(isFusedClimateBiome ? 4 : 2)
     body.appendUnsigned(program.inputTypes.count + program.instructions.count)
     body.append(WASMValueType.v128.rawValue)
     body.appendUnsigned(3)
     body.append(WASMValueType.f64.rawValue)
+    if isFusedClimateBiome {
+        body.appendUnsigned(i64InstructionIndices.count * 2 + 5)
+        body.append(WASMValueType.i64.rawValue)
+        body.appendUnsigned(6)
+        body.append(WASMValueType.i32.rawValue)
+    }
 
     for input in 0..<3 {
         appendLocalGet(input, to: &body)
@@ -919,8 +974,55 @@ private func makeWASMPairedSIMDFunctionBody(
                 appendCall(noiseSamplerFunctionIndex!, to: &body)
             }
             appendDoubleReplaceLane(1, to: &body)
-        case .constantInt32, .constantInt64, .divideSignedInt32, .multiplyInt32,
-             .convertDoubleToSignedInt64, .spline, .searchBiome:
+        case .constantInt64(let value):
+            precondition(isFusedClimateBiome)
+            appendInt64Constant(value, to: &body)
+            appendLocalSet(laneI64Local(program.inputTypes.count + instructionIndex, lane: 0), to: &body)
+            appendInt64Constant(value, to: &body)
+            appendLocalSet(laneI64Local(program.inputTypes.count + instructionIndex, lane: 1), to: &body)
+            continue
+        case .convertDoubleToSignedInt64(let input):
+            precondition(isFusedClimateBiome)
+            for lane in 0..<2 {
+                appendLocalGet(vectorLocal(input), to: &body)
+                appendDoubleExtractLane(UInt8(lane), to: &body)
+                body.append(0xb0) // i64.trunc_f64_s
+                appendLocalSet(laneI64Local(program.inputTypes.count + instructionIndex, lane: lane), to: &body)
+            }
+            continue
+        case .searchBiome(let index, let point, let initialBestDistance, let initialBestNode, let returnNodeIndex):
+            precondition(isFusedClimateBiome)
+            precondition(initialBestDistance == nil && initialBestNode == nil && !returnNodeIndex)
+            let tree = program.biomeSearchTrees[index]
+            for lane in 0..<2 {
+                appendBiomeSearchFromMemory(
+                    tree: tree,
+                    layout: biomeTreeLayouts[index],
+                    point: point.map { laneI64Local($0, lane: lane) },
+                    initialBestDistance: nil,
+                    initialBestNode: nil,
+                    alternativeNodeOffset: alternativeNodeOffset,
+                    returnNodeIndex: false,
+                    resultLocal: biomeResultLane0Local,
+                    bestDistanceLocal: biomeScratchI64Start,
+                    candidateDistanceLocal: biomeScratchI64Start + 1,
+                    deltaLocal: biomeScratchI64Start + 2,
+                    minimumLocal: biomeScratchI64Start + 3,
+                    maximumLocal: biomeScratchI64Start + 4,
+                    stackCountLocal: biomeScratchI32Start,
+                    nodeIndexLocal: biomeScratchI32Start + 1,
+                    nodeAddressLocal: biomeScratchI32Start + 2,
+                    childIndexLocal: biomeScratchI32Start + 3,
+                    to: &body
+                )
+                appendLocalSet(lane == 0 ? biomeResultLane0Local : biomeResultLane1Local, to: &body)
+            }
+            appendLocalGet(biomeResultLane0Local, to: &body)
+            appendSIMDOpcode(0x11, to: &body) // i32x4.splat
+            appendLocalGet(biomeResultLane1Local, to: &body)
+            appendSIMDOpcode(0x1a, to: &body) // i32x4.replace_lane
+            body.append(1)
+        case .constantInt32, .divideSignedInt32, .multiplyInt32, .spline:
             preconditionFailure("Unsupported instruction reached paired SIMD lowering.")
         }
         appendLocalSet(vectorLocal(program.inputTypes.count + instructionIndex), to: &body)
@@ -941,13 +1043,19 @@ private func makeWASMBulkFunctionBody(
 ) -> [UInt8] {
     // Parameters are base x/y/z. Carrying coordinates between iterations avoids three
     // multiply/add pairs in the innermost loop. Supported single-output programs evaluate
-    // adjacent y samples through paired SIMD IR and write them with one f64x2 store.
-    let usesSIMDStores = outputType == .f64
+    // adjacent samples through paired SIMD IR and write them with one f64x2 store.
+    // Z/x/y output order makes Y the natural pairing axis, but a horizontal biome plane
+    // has yCount == 1; use adjacent X samples in that case rather than leaving SIMD idle.
+    enum PairedSIMDAxis { case y, x }
+    let pairedAxis: PairedSIMDAxis? = (outputType == .f64 || outputType == .i32)
         && pairedSIMDFunctionIndex != nil
         && outputValueCount == 1
-        && bufferContext.yCount >= 2
+        ? (bufferContext.yCount >= 2 ? .y : (bufferContext.xCount >= 2 ? .x : nil))
+        : nil
+    let usesSIMDStores = pairedAxis != nil
     let outputStride = outputType == .i32 ? 4 : 8
     let evenYCount = bufferContext.yCount & ~1
+    let evenXCount = bufferContext.xCount & ~1
     let firstOutputLocal = 10
     let vectorLocal = firstOutputLocal + outputValueCount
     var body = WASMEncoder()
@@ -974,6 +1082,33 @@ private func makeWASMBulkFunctionBody(
     appendIntConstant(Int32(outputOffset), to: &body)
     appendLocalSet(6, to: &body)
 
+    func appendPairOutputStore() {
+        appendLocalGet(6, to: &body)
+        appendLocalGet(vectorLocal, to: &body)
+        if outputType == .f64 {
+            appendDoublePairStore(to: &body)
+            appendLocalGet(6, to: &body)
+            appendIntConstant(16, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(6, to: &body)
+        } else {
+            appendInt32ExtractLane(0, to: &body)
+            appendInt32Store(to: &body)
+            appendLocalGet(6, to: &body)
+            appendIntConstant(4, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(6, to: &body)
+            appendLocalGet(6, to: &body)
+            appendLocalGet(vectorLocal, to: &body)
+            appendInt32ExtractLane(1, to: &body)
+            appendInt32Store(to: &body)
+            appendLocalGet(6, to: &body)
+            appendIntConstant(4, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(6, to: &body)
+        }
+    }
+
     body.append(0x03) // loop z
     body.append(0x40)
     appendIntConstant(0, to: &body)
@@ -988,7 +1123,7 @@ private func makeWASMBulkFunctionBody(
     appendLocalGet(1, to: &body)
     appendLocalSet(8, to: &body)
 
-    if usesSIMDStores {
+    if pairedAxis == .y {
         body.append(0x03) // loop over pairs of y samples
         body.append(0x40)
 
@@ -1001,13 +1136,7 @@ private func makeWASMBulkFunctionBody(
         appendCall(pairedSIMDFunctionIndex!, to: &body)
         appendLocalSet(vectorLocal, to: &body)
 
-        appendLocalGet(6, to: &body)
-        appendLocalGet(vectorLocal, to: &body)
-        appendDoublePairStore(to: &body)
-        appendLocalGet(6, to: &body)
-        appendIntConstant(16, to: &body)
-        body.append(0x6a) // i32.add
-        appendLocalSet(6, to: &body)
+        appendPairOutputStore()
 
         appendLocalGet(8, to: &body)
         appendIntConstant(bufferContext.yStep &* 2, to: &body)
@@ -1025,6 +1154,54 @@ private func makeWASMBulkFunctionBody(
         body.append(0x0b) // end y pair
 
         if bufferContext.yCount != evenYCount {
+            appendLocalGet(7, to: &body)
+            appendLocalGet(8, to: &body)
+            appendLocalGet(9, to: &body)
+            appendCall(scalarFunctionIndex, to: &body)
+            appendLocalSet(firstOutputLocal, to: &body)
+            appendLocalGet(6, to: &body)
+            appendLocalGet(firstOutputLocal, to: &body)
+            appendDoubleStore(to: &body)
+            appendLocalGet(6, to: &body)
+            appendIntConstant(8, to: &body)
+            body.append(0x6a) // i32.add
+            appendLocalSet(6, to: &body)
+        }
+    } else if pairedAxis == .x {
+        // This route is only selected when yCount == 1. Consecutive X samples are
+        // contiguous in the Z/x/y output buffer, so the same f64x2 store is valid.
+        body.append(0x03) // loop over pairs of x samples
+        body.append(0x40)
+
+        appendLocalGet(7, to: &body)
+        appendLocalGet(8, to: &body)
+        appendLocalGet(9, to: &body)
+        appendLocalGet(7, to: &body)
+        appendIntConstant(bufferContext.xStep, to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalGet(8, to: &body)
+        appendLocalGet(9, to: &body)
+        appendCall(pairedSIMDFunctionIndex!, to: &body)
+        appendLocalSet(vectorLocal, to: &body)
+
+        appendPairOutputStore()
+
+        appendLocalGet(7, to: &body)
+        appendIntConstant(bufferContext.xStep &* 2, to: &body)
+        body.append(0x6a) // i32.add
+        appendLocalSet(7, to: &body)
+        appendLocalGet(4, to: &body)
+        appendIntConstant(2, to: &body)
+        body.append(0x6a) // i32.add
+        body.append(0x22) // local.tee
+        body.appendUnsigned(4)
+        appendIntConstant(evenXCount, to: &body)
+        body.append(0x49) // i32.lt_u
+        body.append(0x0d) // br_if x pair
+        body.appendUnsigned(0)
+        body.append(0x0b) // end x pair
+
+        if bufferContext.xCount != evenXCount {
             appendLocalGet(7, to: &body)
             appendLocalGet(8, to: &body)
             appendLocalGet(9, to: &body)
@@ -1237,7 +1414,7 @@ func buildDensityFunctionWASMModule(
     let noiseSamplerFunctionIndex = importsNoiseSampler ? (importsDensitySampler ? 1 : 0) : nil
     let importCount = (importsDensitySampler ? 1 : 0) + (importsNoiseSampler ? 1 : 0)
     let usesPairedSIMD = useBulkSIMD
-        && bulkContext.map { $0.yCount >= 2 } == true
+        && bulkContext.map { $0.yCount >= 2 || $0.xCount >= 2 } == true
         && supportsWASMPairedSIMD(program)
 
     let baseTypeCount = 3
@@ -1600,7 +1777,9 @@ func buildDensityFunctionWASMModule(
             embeddedNoiseLayouts: embeddedNoiseLayouts,
             densitySamplerFunctionIndex: densitySamplerFunctionIndex,
             noiseSamplerFunctionIndex: noiseSamplerFunctionIndex,
-            perlinFunctionIndex: perlinFunctionIndex
+            perlinFunctionIndex: perlinFunctionIndex,
+            biomeTreeLayouts: biomeTreeLayouts,
+            alternativeNodeOffset: alternativeNodeOffset
         )
         code.appendUnsigned(pairedSIMDBody.count)
         code.append(contentsOf: pairedSIMDBody)

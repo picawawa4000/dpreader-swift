@@ -494,7 +494,9 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     )
     let bufferContext = CompiledDensityFunctionBufferContext(
         xCount: 6,
-        yCount: 5,
+        // A one-block-high plane cannot pair adjacent Y samples. This exercises
+        // the paired-X bulk fallback used by biome-plane generation.
+        yCount: 1,
         zCount: 4,
         xStep: 2,
         yStep: 3,

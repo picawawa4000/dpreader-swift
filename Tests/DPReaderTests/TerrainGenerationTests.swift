@@ -2472,7 +2472,10 @@ private func makeVanillaTerrainCompiledBenchmarkContext() throws -> VanillaTerra
             zCount: Int32(ProtoChunk.sideLength)
         ),
         densityFunctionRegistry: worldGenerator.densityFunctionRegistryForTesting(),
-        finalDensity: try worldGenerator.cachedFinalDensityFunction()
+        // The cached direct-point variant intentionally contains world-scale
+        // cache wrappers, which cannot be lowered by LLVM/WASM. Benchmark the
+        // same cacheless tree used by direct final-density sampling instead.
+        finalDensity: try worldGenerator.cachelessFinalDensityFunction()
     )
 }
 #endif
