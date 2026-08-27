@@ -393,19 +393,31 @@ public final class CompiledNoiseRouterBiomeBulkSampler: @unchecked Sendable {
 
     /// Evaluates the fixed volume in z/x/y order.
     public func callAsFunction(at basePosition: PosInt3D) -> CompiledBiomeIDVolume {
-        let implementation = self.stateLock.withLock { self.implementation }
         var biomeIDs = [Int32](repeating: 0, count: self.bufferContext.sampleCount)
         biomeIDs.withUnsafeMutableBufferPointer { output in
-            guard let baseAddress = output.baseAddress else { return }
-            implementation(basePosition.x, basePosition.y, basePosition.z, baseAddress)
+            self.fill(at: basePosition, into: output)
         }
-        for biomeID in biomeIDs {
+        return CompiledBiomeIDVolume(biomeIDs: biomeIDs, palette: self.palette)
+    }
+
+    /// Evaluates the fixed volume into caller-owned storage in z/x/y order.
+    ///
+    /// Reusing one buffer across calls avoids an output allocation for every tile when the same
+    /// compiled shape is evaluated at many world positions.
+    public func fill(at basePosition: PosInt3D, into output: UnsafeMutableBufferPointer<Int32>) {
+        precondition(
+            output.count == self.bufferContext.sampleCount,
+            "Compiled biome output storage does not match the configured sample count."
+        )
+        let implementation = self.stateLock.withLock { self.implementation }
+        guard let baseAddress = output.baseAddress else { return }
+        implementation(basePosition.x, basePosition.y, basePosition.z, baseAddress)
+        for biomeID in output {
             precondition(
                 biomeID >= 0 && Int(biomeID) < self.palette.count,
                 "Compiled biome program returned an invalid palette index."
             )
         }
-        return CompiledBiomeIDVolume(biomeIDs: biomeIDs, palette: self.palette)
     }
 }
 

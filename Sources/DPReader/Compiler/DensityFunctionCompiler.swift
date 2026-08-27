@@ -1527,7 +1527,7 @@ private func addEnumAttribute(
     LLVMAddAttributeAtIndex(function, index, LLVMCreateEnumAttribute(llvmContext, kind, value))
 }
 
-private func optimize(_ module: LLVMModuleRef) throws {
+private func optimize(_ module: LLVMModuleRef, pipeline: String = "default<O3>") throws {
     let options = LLVMCreatePassBuilderOptions()
     defer {
         LLVMDisposePassBuilderOptions(options)
@@ -1536,7 +1536,7 @@ private func optimize(_ module: LLVMModuleRef) throws {
     LLVMPassBuilderOptionsSetVerifyEach(options, 0)
 
     try throwIfLLVMError(
-        LLVMRunPasses(module, "default<O3>", nil, options),
+        LLVMRunPasses(module, pipeline, nil, options),
         prefix: "Failed to optimize density function module"
     )
 }
@@ -2965,7 +2965,11 @@ func compileDensityFunctionIRBulkWithLLVM(
         LLVMBuildRetVoid(builder)
 
         try verify(module)
-        try optimize(module)
+        // This fused program contains six embedded noise graphs plus the complete biome search
+        // tree. O3 spends tens of seconds reconsidering that large scalar body for every tile
+        // stride, while O1 retains the important canonicalization and inlining at a fraction of
+        // the setup cost. Tile generation amortizes the resulting loop across many invocations.
+        try optimize(module, pipeline: "default<O1>")
         try verify(module)
 
         let threadSafeContext = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(llvmContext)

@@ -57,6 +57,10 @@ supplies the whole chunk. Entries are reused for matching chunk shapes and rebui
 seed changes. If a configured backend cannot compile a density tree, terrain automatically retains
 the interpreted path.
 
+### Tile-based biome generation
+
+- <doc:BiomeTileGeneration>
+
 ## Profiling Helpers
 
 These are just helpers for profiling the compiled density functions.

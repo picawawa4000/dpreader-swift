@@ -30,6 +30,7 @@ Load a ``DataPack`` to access its registries, then pass one or more packs to a `
 
 - <doc:Worldgen>
 - <doc:WorldgenCollection>
+- <doc:BiomeTileGeneration>
 - <doc:DensityFunctions>
 - <doc:Structures>
 - <doc:SurfaceRules>
