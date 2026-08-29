@@ -119,69 +119,109 @@ public struct ValidatedStructureStart {
 }
 
 extension Structure {
-    /// Locates the point used by vanilla's final biome check, returning `nil` when an earlier
-    /// terrain check prevents this structure from starting.
-    func generationPosition(
+    /// Resolves the generation point and validates its biome and terrain. Cheap biome checks are
+    /// performed before heightmap sampling whenever the eventual Y is terrain-dependent.
+    func generatePosition(
         structureKey: RegistryKey<Structure>,
         worldSeed: WorldSeed,
         startChunk: PosInt2D,
+        allowedBiomeNames: Set<String>,
+        monumentSurroundingBiomeNames: Set<String>?,
         context: StructureStartValidationContext
-    ) throws -> PosInt3D? {
+    ) throws -> ValidatedStructureStart? {
         let startX = startChunk.x &* 16
         let startZ = startChunk.z &* 16
         let centerX = startX &+ 8
         let centerZ = startZ &+ 8
 
+        func makeValidatedStart(
+            at position: PosInt3D,
+            knownBiome: RegistryKey<Biome>? = nil
+        ) throws -> ValidatedStructureStart? {
+            let biome = try knownBiome ?? context.biome(at: position)
+            guard let biome, allowedBiomeNames.contains(biome.name) else { return nil }
+            return ValidatedStructureStart(
+                structureKey: structureKey,
+                chunkPos: startChunk,
+                generationPosition: position,
+                biome: biome
+            )
+        }
+
+        // A heightmap can only select a Y in this interval. Scanning its biome column is cheap
+        // and gives a safe early rejection without assuming that biomes are two-dimensional.
+        func biomeColumnCanMatch(
+            x: Int32,
+            z: Int32,
+            minimumY: Int32 = context.minimumWorldY,
+            maximumY: Int32 = context.maximumWorldY &+ 1,
+            preferredY: Int32 = context.seaLevel
+        ) throws -> Bool {
+            let preferredQuartY = floorDiv(preferredY, by: 4)
+            if let biome = try context.biome(at: PosInt3D(x: x, y: preferredQuartY &* 4, z: z)),
+               allowedBiomeNames.contains(biome.name) {
+                return true
+            }
+            let minimumQuartY = floorDiv(minimumY, by: 4)
+            let maximumQuartY = floorDiv(maximumY, by: 4)
+            guard minimumQuartY <= maximumQuartY else { return false }
+            for quartY in minimumQuartY...maximumQuartY where quartY != preferredQuartY {
+                if let biome = try context.biome(at: PosInt3D(x: x, y: quartY &* 4, z: z)),
+                   allowedBiomeNames.contains(biome.name) {
+                    return true
+                }
+            }
+            return false
+        }
+
         switch self.type {
         case "minecraft:desert_pyramid":
-            guard try self.templeCornersAreAtLeast(
-                startX: startX,
-                startZ: startZ,
-                width: 21,
-                depth: 21,
-                minimumHeight: context.seaLevel,
-                context: context
-            ) else {
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
+            let position = PosInt3D(x: centerX, y: y, z: centerZ)
+            guard let biome = try context.biome(at: position), allowedBiomeNames.contains(biome.name) else {
                 return nil
             }
-            let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
+            guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ) >= context.seaLevel else { return nil }
+            guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 20) >= context.seaLevel else { return nil }
+            guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ &+ 20) >= context.seaLevel else { return nil }
+            return try makeValidatedStart(at: position, knownBiome: biome)
 
         case "minecraft:jungle_temple":
-            guard try self.templeCornersAreAtLeast(
-                startX: startX,
-                startZ: startZ,
-                width: 12,
-                depth: 15,
-                minimumHeight: context.seaLevel,
-                context: context
-            ) else {
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
+            let position = PosInt3D(x: centerX, y: y, z: centerZ)
+            guard let biome = try context.biome(at: position), allowedBiomeNames.contains(biome.name) else {
                 return nil
             }
-            let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
+            guard try context.height(.worldSurfaceWG, x: startX &+ 11, z: startZ) >= context.seaLevel else { return nil }
+            guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 14) >= context.seaLevel else { return nil }
+            guard try context.height(.worldSurfaceWG, x: startX &+ 11, z: startZ &+ 14) >= context.seaLevel else { return nil }
+            return try makeValidatedStart(at: position, knownBiome: biome)
 
         case "minecraft:woodland_mansion":
             let anchorX = startX &+ 7
             let anchorZ = startZ &+ 7
+            guard try biomeColumnCanMatch(x: anchorX, z: anchorZ) else { return nil }
             var random = checkedRandomForChunkGeneration(
                 worldSeed: worldSeed,
                 chunkX: startChunk.x,
                 chunkZ: startChunk.z
             )
             let offsets = Self.cornerOffsets(forQuarterTurns: Int(random.next(bound: 4)))
-            let y = try self.minimumCornerHeight(
-                anchorX: anchorX,
-                anchorZ: anchorZ,
-                offsetX: offsets.x,
-                offsetZ: offsets.z,
-                heightmap: .worldSurfaceWG,
-                context: context
+            let y = try min(
+                context.height(.worldSurfaceWG, x: anchorX, z: anchorZ),
+                context.height(.worldSurfaceWG, x: anchorX &+ offsets.x, z: anchorZ),
+                context.height(.worldSurfaceWG, x: anchorX, z: anchorZ &+ offsets.z),
+                context.height(.worldSurfaceWG, x: anchorX &+ offsets.x, z: anchorZ &+ offsets.z)
             )
             guard y >= 60 else { return nil }
-            return PosInt3D(x: anchorX, y: y, z: anchorZ)
+            return try makeValidatedStart(at: PosInt3D(x: anchorX, y: y, z: anchorZ))
 
         case "minecraft:end_city":
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
             var random = checkedRandomForChunkGeneration(
                 worldSeed: worldSeed,
                 chunkX: startChunk.x,
@@ -190,35 +230,52 @@ extension Structure {
             let offsets = Self.endCityCornerOffsets(forQuarterTurns: Int(random.next(bound: 4)))
             let anchorX = startX &+ 7
             let anchorZ = startZ &+ 7
-            let y = try self.minimumCornerHeight(
-                anchorX: anchorX,
-                anchorZ: anchorZ,
-                offsetX: offsets.x,
-                offsetZ: offsets.z,
-                heightmap: .oceanFloorWG,
-                context: context
+            let y = try min(
+                context.height(.oceanFloorWG, x: anchorX, z: anchorZ),
+                context.height(.oceanFloorWG, x: anchorX &+ offsets.x, z: anchorZ),
+                context.height(.oceanFloorWG, x: anchorX, z: anchorZ &+ offsets.z),
+                context.height(.oceanFloorWG, x: anchorX &+ offsets.x, z: anchorZ &+ offsets.z)
             )
             guard y >= 60 else { return nil }
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:ocean_monument":
+            guard let surroundingBiomeNames = monumentSurroundingBiomeNames else { return nil }
+            let checkX = startX &+ 9
+            let checkZ = startZ &+ 9
+            let radius: Int32 = 29
+            for quartY in floorDiv(context.seaLevel &- radius, by: 4)...floorDiv(context.seaLevel &+ radius, by: 4) {
+                for quartZ in floorDiv(checkZ &- radius, by: 4)...floorDiv(checkZ &+ radius, by: 4) {
+                    for quartX in floorDiv(checkX &- radius, by: 4)...floorDiv(checkX &+ radius, by: 4) {
+                        guard let biome = try context.biome(
+                            at: PosInt3D(x: quartX &* 4, y: quartY &* 4, z: quartZ &* 4)
+                        ), surroundingBiomeNames.contains(biome.name) else {
+                            return nil
+                        }
+                    }
+                }
+            }
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
             let y = try context.height(.oceanFloorWG, x: centerX, z: centerZ)
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:ocean_ruin", "minecraft:buried_treasure":
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
             let y = try context.height(.oceanFloorWG, x: centerX, z: centerZ)
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:shipwreck":
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
             let heightmap: StructureStartHeightmap = structureKey.name.hasSuffix("_beached")
                 ? .worldSurfaceWG
                 : .oceanFloorWG
             let y = try context.height(heightmap, x: centerX, z: centerZ)
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:igloo", "minecraft:swamp_hut", "minecraft:ruined_portal":
+            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
             let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:jigsaw":
             guard case .jigsaw(let settings) = self.settings else { return nil }
@@ -232,16 +289,25 @@ extension Structure {
                 minimumWorldY: context.minimumWorldY,
                 maximumWorldY: context.maximumWorldY
             )
-            if settings.projectStartToHeightmap != nil {
-                y &+= try context.height(.worldSurfaceWG, x: startX, z: startZ)
-            }
             let horizontalPosition = Self.jigsawHorizontalPosition(
                 structureKey: structureKey,
                 startX: startX,
                 startZ: startZ,
                 random: &random
             )
-            return PosInt3D(x: horizontalPosition.x, y: y, z: horizontalPosition.z)
+            if settings.projectStartToHeightmap != nil {
+                guard try biomeColumnCanMatch(
+                    x: horizontalPosition.x,
+                    z: horizontalPosition.z,
+                    minimumY: y &+ context.minimumWorldY,
+                    maximumY: y &+ context.maximumWorldY &+ 1,
+                    preferredY: y &+ context.seaLevel
+                ) else { return nil }
+                y &+= try context.height(.worldSurfaceWG, x: startX, z: startZ)
+            }
+            return try makeValidatedStart(
+                at: PosInt3D(x: horizontalPosition.x, y: y, z: horizontalPosition.z)
+            )
 
         case "minecraft:nether_fossil":
             guard case .netherFossil(let settings) = self.settings else { return nil }
@@ -255,50 +321,17 @@ extension Structure {
                 minimumWorldY: context.minimumWorldY,
                 maximumWorldY: context.maximumWorldY
             )
-            return PosInt3D(x: centerX, y: y, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:mineshaft":
-            return PosInt3D(x: centerX, y: 50, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: 50, z: centerZ))
 
         case "minecraft:stronghold", "minecraft:fortress":
-            return PosInt3D(x: centerX, y: 0, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: 0, z: centerZ))
 
         default:
-            return PosInt3D(x: centerX, y: 0, z: centerZ)
+            return try makeValidatedStart(at: PosInt3D(x: centerX, y: 0, z: centerZ))
         }
-    }
-
-    /// Checks temple corner heights in vanilla order, stopping as soon as terrain rejects the
-    /// start. In a large scan this avoids generating the remaining corner chunks for the many
-    /// candidates whose first corner is below sea level.
-    private func templeCornersAreAtLeast(
-        startX: Int32,
-        startZ: Int32,
-        width: Int32,
-        depth: Int32,
-        minimumHeight: Int32,
-        context: StructureStartValidationContext
-    ) throws -> Bool {
-        guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= minimumHeight else { return false }
-        guard try context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ) >= minimumHeight else { return false }
-        guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ depth &- 1) >= minimumHeight else { return false }
-        return try context.height(.worldSurfaceWG, x: startX &+ width &- 1, z: startZ &+ depth &- 1) >= minimumHeight
-    }
-
-    private func minimumCornerHeight(
-        anchorX: Int32,
-        anchorZ: Int32,
-        offsetX: Int32,
-        offsetZ: Int32,
-        heightmap: StructureStartHeightmap,
-        context: StructureStartValidationContext
-    ) throws -> Int32 {
-        try min(
-            context.height(heightmap, x: anchorX, z: anchorZ),
-            context.height(heightmap, x: anchorX &+ offsetX, z: anchorZ),
-            context.height(heightmap, x: anchorX, z: anchorZ &+ offsetZ),
-            context.height(heightmap, x: anchorX &+ offsetX, z: anchorZ &+ offsetZ)
-        )
     }
 
     private static func cornerOffsets(forQuarterTurns rotation: Int) -> (x: Int32, z: Int32) {

@@ -216,67 +216,21 @@ public final class StructurePlacementSampler {
             matching: structure.biomes,
             in: "worldgen/biome"
         )
-        var prevalidatedBiome: RegistryKey<Biome>? = nil
-        // Temple starts use the center world-surface biome. Biome eligibility is independent of
-        // their footprint-height check, so reject the overwhelmingly common nonmatching center
-        // before evaluating up to four separate terrain columns.
-        if structure.type == "minecraft:desert_pyramid" || structure.type == "minecraft:jungle_temple" {
-            let centerX = startChunk.x &* 16 &+ 8
-            let centerZ = startChunk.z &* 16 &+ 8
-            let centerY = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
-            guard let biome = try context.biome(at: PosInt3D(x: centerX, y: centerY, z: centerZ)),
-                  allowedBiomeNames.contains(biome.name) else {
-                return nil
-            }
-            prevalidatedBiome = biome
-        }
-        guard let generationPosition = try structure.generationPosition(
-            structureKey: structureKey,
-            worldSeed: self.worldSeed,
-            startChunk: startChunk,
-            context: context
-        ) else {
-            return nil
-        }
-
+        var monumentSurroundingBiomeNames: Set<String>? = nil
         if structure.type == "minecraft:ocean_monument" {
             let surroundingTag = Identifiers.tagID("minecraft:required_ocean_monument_surrounding")
-            let surroundingBiomeNames = try self.resolveRegistryEntries(
+            monumentSurroundingBiomeNames = try self.resolveRegistryEntries(
                 matching: surroundingTag,
                 in: "worldgen/biome"
             )
-            let checkX = startChunk.x &* 16 &+ 9
-            let checkZ = startChunk.z &* 16 &+ 9
-            let radius: Int32 = 29
-            let minQuartX = floorDiv(checkX &- radius, by: 4)
-            let maxQuartX = floorDiv(checkX &+ radius, by: 4)
-            let minQuartY = floorDiv(context.seaLevel &- radius, by: 4)
-            let maxQuartY = floorDiv(context.seaLevel &+ radius, by: 4)
-            let minQuartZ = floorDiv(checkZ &- radius, by: 4)
-            let maxQuartZ = floorDiv(checkZ &+ radius, by: 4)
-            for quartY in minQuartY...maxQuartY {
-                for quartZ in minQuartZ...maxQuartZ {
-                    for quartX in minQuartX...maxQuartX {
-                        let position = PosInt3D(x: quartX &* 4, y: quartY &* 4, z: quartZ &* 4)
-                        guard let biome = try context.biome(at: position),
-                              surroundingBiomeNames.contains(biome.name) else {
-                            return nil
-                        }
-                    }
-                }
-            }
         }
-
-        let biome = try prevalidatedBiome ?? context.biome(at: generationPosition)
-        guard let biome,
-              allowedBiomeNames.contains(biome.name) else {
-            return nil
-        }
-        return ValidatedStructureStart(
+        return try structure.generatePosition(
             structureKey: structureKey,
-            chunkPos: startChunk,
-            generationPosition: generationPosition,
-            biome: biome
+            worldSeed: self.worldSeed,
+            startChunk: startChunk,
+            allowedBiomeNames: allowedBiomeNames,
+            monumentSurroundingBiomeNames: monumentSurroundingBiomeNames,
+            context: context
         )
     }
 

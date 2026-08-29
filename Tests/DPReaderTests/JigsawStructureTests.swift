@@ -155,6 +155,12 @@ struct JigsawStructureTests {
             (PosInt3D(x: -5800, y: 90, z: -520), -322_135_802_888_818_292),
             (PosInt3D(x: -5817, y: 92, z: -518), -5_675_096_834_141_249_724)
         ])
+        let archaeology = generated.lootContainers.filter {
+            $0.lootTable.hasPrefix("minecraft:archaeology/trail_ruins_")
+        }
+        #expect(!archaeology.isEmpty)
+        #expect(archaeology.allSatisfy { $0.block == "minecraft:suspicious_gravel" })
+        #expect(!archaeology.contains { $0.block == "minecraft:chest" })
     }
 
     @Test func trialChambersMatchesSelectedReferenceLoot() throws {

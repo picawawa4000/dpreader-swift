@@ -397,9 +397,9 @@ public struct StructureMarker: Equatable {
     public let represents: String
 }
 
-/// A loot-bearing block placed by structure generation.
+/// A block or entity assigned a loot table by structure generation.
 public struct StructureLootContainer: Equatable, Sendable {
-    /// The namespaced ID of the container block.
+    /// The namespaced ID of the block (or structure-spawned entity) carrying the loot table.
     public let block: String
 
     /// The absolute block position of the container.

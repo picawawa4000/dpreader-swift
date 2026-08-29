@@ -453,6 +453,7 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     )
     let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack])
     var heightCalls = 0
+    var biomeCalls = 0
     let context = StructureStartValidationContext(
         dimension: RegistryKey(referencing: "minecraft:overworld"),
         seaLevel: 63,
@@ -462,7 +463,10 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
             heightCalls += 1
             return 70
         },
-        biomeSampler: { _ in RegistryKey(referencing: "minecraft:plains") }
+        biomeSampler: { _ in
+            biomeCalls += 1
+            return RegistryKey(referencing: "minecraft:plains")
+        }
     )
 
     #expect(
@@ -472,7 +476,41 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
             using: context
         ) == nil
     )
-    #expect(heightCalls == 1)
+    #expect(biomeCalls > 0)
+    #expect(heightCalls == 0)
+}
+
+@Test func testStructureStartValidationRejectsMansionBiomeBeforeCornerTerrain() throws {
+    let pack = try DataPack(
+        fromRootPath: try vanillaStructurePlacementPackURL(),
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: 123456789, usingDataPacks: [pack])
+    var events: [String] = []
+    let context = StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:overworld"),
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, _, _ in
+            events.append("terrain")
+            return 70
+        },
+        biomeSampler: { _ in
+            events.append("biome")
+            return RegistryKey(referencing: "minecraft:plains")
+        }
+    )
+
+    #expect(
+        try sampler.validateStructureStart(
+            for: RegistryKey(referencing: "minecraft:mansion"),
+            atChunk: PosInt2D(x: 0, z: 0),
+            using: context
+        ) == nil
+    )
+    #expect(events.first == "biome")
+    #expect(!events.contains("terrain"))
 }
 
 @Test func testStructureStartValidationProjectsJigsawBiomeCheckToSurface() async throws {
@@ -536,12 +574,16 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         ) != nil
     )
 
+    var invalidHeightCalls = 0
     let invalidContext = StructureStartValidationContext(
         dimension: dimension,
         seaLevel: 63,
         minimumWorldY: -64,
         maximumWorldY: 319,
-        heightmapSampler: { _, _, _ in 35 },
+        heightmapSampler: { _, _, _ in
+            invalidHeightCalls += 1
+            return 35
+        },
         biomeSampler: { position in
             position == PosInt3D(x: -20, y: 32, z: -20)
                 ? RegistryKey(referencing: "minecraft:plains")
@@ -555,6 +597,7 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
             using: invalidContext
         ) == nil
     )
+    #expect(invalidHeightCalls == 0)
 }
 
 private enum Errors: Error {
