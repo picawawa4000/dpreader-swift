@@ -493,7 +493,8 @@ public func compile(
         let module = try buildDensityFunctionWASMModule(
             program,
             bulkContext: bufferContext,
-            useBiomeSearchAlternative: useAlternativeNode
+            useBiomeSearchAlternative: useAlternativeNode,
+            embedSharedSeedStorage: runtime == nil
         )
         let implementation: WASMBiomeIDBulkInvocation
         if let runtime {

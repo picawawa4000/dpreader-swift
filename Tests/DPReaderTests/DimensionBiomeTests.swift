@@ -120,6 +120,11 @@ private func makeVanillaDimensionBiomeWorldGenerator(seed: UInt64, settings: Str
         forTarget: .wasm,
         inDimension: dimension
     )
+    let initialCompiledFunctions = try #require(generator.compiledDensityFunctionRegistryForTesting())
+        .entries()
+        .reduce(into: [String: ObjectIdentifier]()) { result, entry in
+            result[entry.key.name] = ObjectIdentifier(entry.value)
+        }
     #expect(initialCompiledTree.usesAlternativeNode)
     try generator.setWorldSeed(501_235_370_21)
     let reseededCompiledTree = try generator.getCompiledBiomeSearchTree(
@@ -127,7 +132,13 @@ private func makeVanillaDimensionBiomeWorldGenerator(seed: UInt64, settings: Str
         inDimension: dimension
     )
     #expect(reseededCompiledTree.usesAlternativeNode)
-    #expect(reseededCompiledTree !== initialCompiledTree)
+    #expect(reseededCompiledTree === initialCompiledTree)
+    let reseededCompiledFunctions = try #require(generator.compiledDensityFunctionRegistryForTesting())
+        .entries()
+        .reduce(into: [String: ObjectIdentifier]()) { result, entry in
+            result[entry.key.name] = ObjectIdentifier(entry.value)
+        }
+    #expect(reseededCompiledFunctions == initialCompiledFunctions)
 
     let reseededPoint = generator.sampleNoisePoint(at: position)
     let reseededBiome = try generator.sampleBiome(at: position, in: dimension)

@@ -143,31 +143,54 @@ private func performConcurrentIterations(iterations: Int, _ body: @Sendable (Int
     #endif
 }
 
+/// Stable seed-dependent objects referenced by compiled programs. Reseeding replaces their data,
+/// not the object addresses embedded in native callbacks or captured by WASM imports.
+fileprivate final class SharedSeededNoiseStorage {
+    private var noises: [RegistryKey<NoiseDefinition>: BakedNoise] = [:]
+
+    func noise(for key: RegistryKey<NoiseDefinition>, sampler: DoublePerlinNoise) -> BakedNoise {
+        if let existing = self.noises[key] {
+            existing.replaceSampler(with: sampler)
+            return existing
+        }
+        let noise = BakedNoise(fromKey: key, withSampler: sampler, usesSharedSeedStorage: true)
+        self.noises[key] = noise
+        return noise
+    }
+}
+
 /// A density function baker that does all baking steps.
 final class FullDensityFunctionBaker: DensityFunctionBaker {
     fileprivate let registries: WorldGenerationRegistries
     private let seed: WorldSeed
     private let usesLegacyRandomSource: Bool
     private let randomDeriver: XoroshiroRandomSplitter
+    private let sharedSeededNoises: SharedSeededNoiseStorage
     private var initialisedFunctionIds = Set<RegistryKey<DensityFunction>>()
     private var legacyNoiseOverrides: [RegistryKey<NoiseDefinition>: DoublePerlinNoise] = [:]
 
-    init(withSeed seed: WorldSeed, usesLegacyRandomSource: Bool, registries: WorldGenerationRegistries) {
+    fileprivate init(
+        withSeed seed: WorldSeed,
+        usesLegacyRandomSource: Bool,
+        registries: WorldGenerationRegistries,
+        sharedSeededNoises: SharedSeededNoiseStorage
+    ) {
         self.seed = seed
         self.usesLegacyRandomSource = usesLegacyRandomSource
         self.registries = registries
+        self.sharedSeededNoises = sharedSeededNoises
         var random = XoroshiroRandom(seed: seed)
         self.randomDeriver = XoroshiroRandomSplitter(seedLo: random.nextLong(), seedHi: random.nextLong())
     }
 
     func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
         if self.usesLegacyRandomSource, let overrideSampler = self.legacySamplerOverride(for: noise.key) {
-            return BakedNoise(fromKey: noise.key, withSampler: overrideSampler)
+            return self.sharedSeededNoises.noise(for: noise.key, sampler: overrideSampler)
         }
         guard let sampler = self.registries.bakedNoiseRegistry.get(noise.key.convertType()) else {
             throw WorldGenerationErrors.noiseNotPresent(noise.key.name)
         }
-        return BakedNoise(fromKey: noise.key, withSampler: sampler)
+        return self.sharedSeededNoises.noise(for: noise.key, sampler: sampler)
     }
 
     func bake(referenceDensityFunction reference: ReferenceDensityFunction) throws -> any DensityFunction {
@@ -197,18 +220,22 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
 
     func bake(simplexNoise: DensityFunctionSimplexNoise) throws -> DensityFunctionSimplexNoise {
         var random: any Random = CheckedRandom(seed: self.seed)
-        return DensityFunctionSimplexNoise(withRandom: &random)
+        var shared = simplexNoise
+        shared.replaceSeed(using: &random)
+        return shared
     }
 
     func bake(interpolatedNoise noise: InterpolatedNoise) throws -> InterpolatedNoise {
         if self.usesLegacyRandomSource {
             var random: any Random = self.createLegacyNoiseRandom(seed: 0)
-            return noise.copy(withRandom: &random)
+            noise.replaceSeedState(withRandom: &random)
+            return noise
         }
 
         let terrainRandom = self.randomDeriver.split(usingString: LegacyNoiseKeys.terrain)
         var random: any Random = terrainRandom
-        return noise.copy(withRandom: &random)
+        noise.replaceSeedState(withRandom: &random)
+        return noise
     }
 
     private func legacySamplerOverride(for key: RegistryKey<NoiseDefinition>) -> DoublePerlinNoise? {
@@ -2419,6 +2446,8 @@ public final class WorldGenerator {
     private let wasmRuntime: (any WASMRuntime)?
     private var configuredDimensionKey: RegistryKey<Dimension>?
     private var registries = WorldGenerationRegistries()
+    private let sharedSeededNoises = SharedSeededNoiseStorage()
+    private var hasInitialisedCompiledSeedState = false
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
     private var compiledSearchTrees: [RegistryKey<Dimension>: CompiledBiomeSearchTree] = [:]
     private var endBiomeDimensions = Set<RegistryKey<Dimension>>()
@@ -2435,8 +2464,8 @@ public final class WorldGenerator {
     private let terrainGenerationLock = NSLock()
 
     /// Initialise this world generator.
-    /// Datapack setup is retained separately from seed-dependent noise and density-function baking. Use
-    /// ``setWorldSeed(_:)`` to rebuild the latter without parsing or rebuilding the datapack setup.
+    /// Datapack setup and compiled graphs are retained separately from seed-dependent sampler state.
+    /// Use ``setWorldSeed(_:)`` to update that shared state without rebuilding either one.
     /// - Parameters:
     ///   - seed: The seed of the world to generate.
     ///   - datapacks: The datapacks to generate. Entries from later elements in this array will override earlier ones.
@@ -2465,8 +2494,8 @@ public final class WorldGenerator {
         try self.setWorldSeed(seed)
     }
 
-    /// Rebuilds seed-dependent noises, density functions, and optional compiled programs.
-    /// Datapack registries and biome search-tree construction are retained from initialisation.
+    /// Rebuilds seed-dependent noises and density functions. Compiled graphs and biome search
+    /// trees are retained; their shared seed storage is updated in place.
     public func setWorldSeed(_ seed: WorldSeed) throws {
         self.terrainGenerationLock.lock()
         defer { self.terrainGenerationLock.unlock() }
@@ -2474,12 +2503,14 @@ public final class WorldGenerator {
         self.worldSeed = seed
         self.voronoiSHA = VoronoiBiomeSubsampler.makeVoronoiSHA(seed)
         self.registries.densityFunctionRegistry = Registry()
-        self.registries.compiledDensityFunctionRegistry = nil
         self.registries.bakedNoiseRegistry = Registry()
         self.directPointSamplingDensityFunctions = nil
-        self.compiledBiomeDensityFunctions = nil
-        self.compiledChunkTerrainDensityRegistry = [:]
-        self.compiledSearchTrees = [:]
+        if !self.hasInitialisedCompiledSeedState {
+            self.registries.compiledDensityFunctionRegistry = nil
+            self.compiledBiomeDensityFunctions = nil
+            self.compiledChunkTerrainDensityRegistry = [:]
+            self.compiledSearchTrees = [:]
+        }
         self.config = self.unbakedConfig
 
         for datapack in self.datapacks {
@@ -2497,11 +2528,11 @@ public final class WorldGenerator {
         }
 
         try self.bakeDensityFunctions()
-        try self.populateCompiledDensityFunctionRegistry()
-        try self.compileConfiguredFunctions()
-        try self.refreshFinalDensityBulkSamplers()
-        try self.refreshClimateBiomeBulkSamplers()
-        try self.refreshBiomeIDBulkSamplers()
+        if !self.hasInitialisedCompiledSeedState {
+            try self.populateCompiledDensityFunctionRegistry()
+            try self.compileConfiguredFunctions()
+            self.hasInitialisedCompiledSeedState = true
+        }
     }
 
     /// Labelled spelling retained for callers that prefer an explicit seed argument.
@@ -2853,7 +2884,11 @@ public final class WorldGenerator {
             registry: registry,
             tree: snapshot.tree
         )
-        let module = try buildDensityFunctionWASMModule(program, bulkContext: volume)
+        let module = try buildDensityFunctionWASMModule(
+            program,
+            bulkContext: volume,
+            embedSharedSeedStorage: self.wasmRuntime == nil
+        )
         let (rawValueCount, rawValueCountOverflow) = volume.sampleCount.multipliedReportingOverflow(
             by: program.outputs.count
         )
@@ -3062,7 +3097,8 @@ public final class WorldGenerator {
         let baker = FullDensityFunctionBaker(
             withSeed: self.worldSeed,
             usesLegacyRandomSource: self.config?.legacyRandomSource ?? false,
-            registries: self.registries
+            registries: self.registries,
+            sharedSeededNoises: self.sharedSeededNoises
         )
         try self.registries.densityFunctionRegistry.forEach { (key: RegistryKey<any DensityFunction>, value: any DensityFunction) in
             if baker.hasBeenBaked(atKey: key) { return }

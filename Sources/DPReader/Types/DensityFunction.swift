@@ -180,15 +180,38 @@ public final class UnbakedNoise: DensityFunctionNoise {
 /// A seed-initialized noise implementation ready for density-function sampling.
 public final class BakedNoise: DensityFunctionNoise {
     public let key: RegistryKey<NoiseDefinition>
-    let sampler: DoublePerlinNoise
+    private let stateLock = NSLock()
+    private var storedSampler: DoublePerlinNoise
+    let usesSharedSeedStorage: Bool
 
-    public init(fromKey key: RegistryKey<NoiseDefinition>, withSampler sampler: DoublePerlinNoise) {
+    var sampler: DoublePerlinNoise {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self.storedSampler
+    }
+
+    public init(
+        fromKey key: RegistryKey<NoiseDefinition>,
+        withSampler sampler: DoublePerlinNoise,
+        usesSharedSeedStorage: Bool = false
+    ) {
         self.key = key
-        self.sampler = sampler
+        self.storedSampler = sampler
+        self.usesSharedSeedStorage = usesSharedSeedStorage
+    }
+
+    func replaceSampler(with sampler: DoublePerlinNoise) {
+        precondition(self.usesSharedSeedStorage, "Only shared seeded noises can be updated in place.")
+        self.stateLock.lock()
+        self.storedSampler = sampler
+        self.stateLock.unlock()
     }
 
     public func sample(x: Double, y: Double, z: Double) -> Double {
-        return self.sampler.sample(x: x, y: y, z: z)
+        self.stateLock.lock()
+        let sampler = self.storedSampler
+        self.stateLock.unlock()
+        return sampler.sample(x: x, y: y, z: z)
     }
 }
 
@@ -280,25 +303,45 @@ private struct EndIslandsSimplexNoise {
 
 /// A mutable simplex-noise sampler used by End-island density generation.
 public struct DensityFunctionSimplexNoise {
-    fileprivate var noise: EndIslandsSimplexNoise
-    // For debugging.
-    var isBaked: Bool
+    private final class Storage {
+        let lock = NSLock()
+        var noise: EndIslandsSimplexNoise
+        var isBaked: Bool
+
+        init(noise: EndIslandsSimplexNoise, isBaked: Bool) {
+            self.noise = noise
+            self.isBaked = isBaked
+        }
+    }
+
+    private let storage: Storage
 
     init() {
         var tempRandom = CheckedRandom(seed: 0)
-        self.noise = EndIslandsSimplexNoise(random: &tempRandom)
-        self.isBaked = false
+        self.storage = Storage(noise: EndIslandsSimplexNoise(random: &tempRandom), isBaked: false)
     }
 
     init<R: Random>(withRandom random: inout R) {
         random.skip(calls: 17292)
-        self.noise = EndIslandsSimplexNoise(random: &random)
-        self.isBaked = true
+        self.storage = Storage(noise: EndIslandsSimplexNoise(random: &random), isBaked: true)
+    }
+
+    mutating func replaceSeed<R: Random>(using random: inout R) {
+        random.skip(calls: 17292)
+        let noise = EndIslandsSimplexNoise(random: &random)
+        self.storage.lock.lock()
+        self.storage.noise = noise
+        self.storage.isBaked = true
+        self.storage.lock.unlock()
     }
 
     func sample(x: Double, y: Double) -> Double {
-        if (!self.isBaked) { print("WARNING: Unbaked DensityFunctionSimplexNoise sampled!") }
-        return self.noise.sample(x: x, z: y)
+        self.storage.lock.lock()
+        let noise = self.storage.noise
+        let isBaked = self.storage.isBaked
+        self.storage.lock.unlock()
+        if !isBaked { print("WARNING: Unbaked DensityFunctionSimplexNoise sampled!") }
+        return noise.sample(x: x, z: y)
     }
 }
 

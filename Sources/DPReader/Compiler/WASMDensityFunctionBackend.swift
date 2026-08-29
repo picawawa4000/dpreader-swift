@@ -1302,7 +1302,8 @@ func buildDensityFunctionWASMModule(
     bulkContext: CompiledDensityFunctionBufferContext? = nil,
     bulkExportName: String = "sample_bulk",
     useBulkSIMD: Bool = true,
-    useBiomeSearchAlternative: Bool = false
+    useBiomeSearchAlternative: Bool = false,
+    embedSharedSeedStorage: Bool = true
 ) throws -> [UInt8] {
     let outputTypes: [DensityFunctionIRValueType] = program.outputs.map { output in
         if output < program.inputTypes.count {
@@ -1347,7 +1348,8 @@ func buildDensityFunctionWASMModule(
     var embeddedNoiseLayouts: [Int: WASMEmbeddedNoiseLayout] = [:]
     var embeddedNoiseLayoutsBySampler: [ObjectIdentifier: WASMEmbeddedNoiseLayout] = [:]
     for (index, noise) in program.noises.enumerated() {
-        guard let bakedNoise = noise as? BakedNoise else { continue }
+        guard let bakedNoise = noise as? BakedNoise,
+              embedSharedSeedStorage || !bakedNoise.usesSharedSeedStorage else { continue }
         let identity = ObjectIdentifier(bakedNoise.sampler)
         if let existing = embeddedNoiseLayoutsBySampler[identity] {
             embeddedNoiseLayouts[index] = existing

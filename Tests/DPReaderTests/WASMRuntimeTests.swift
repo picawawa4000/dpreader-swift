@@ -380,6 +380,107 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     }
 }
 
+@Test func testWASMSharedSeedNoiseUpdatesWithoutReinstantiation() throws {
+    var firstRandom = XoroshiroRandom(seed: 11)
+    let firstSampler = DoublePerlinNoise(
+        random: &firstRandom,
+        firstOctave: -5,
+        amplitudes: [1.0, 0.5, 0.25],
+        useModernInitialization: true
+    )
+    let noise = BakedNoise(
+        fromKey: RegistryKey(referencing: "test:shared_seed_noise"),
+        withSampler: firstSampler,
+        usesSharedSeedStorage: true
+    )
+    let density = NoiseDensityFunction(noise: noise, scaleXZ: 0.125, scaleY: 0.25)
+    let instantiations = BulkInvocationCounter()
+    let runtime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, imports in
+            instantiations.increment()
+            return { x, y, z in
+                imports.sampleNoise(0, Double(x) * 0.125, Double(y) * 0.25, Double(z) * 0.125)
+            }
+        },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _, _, _ in 0 } }
+    )
+    let compiled = try compile(densityFunction: density, strategy: .wasm, runtime: runtime)
+    let position = PosInt3D(x: 1_337, y: 47, z: -9_007)
+    let firstValue = compiled(position.x, position.y, position.z)
+    #expect(firstValue == density.sample(at: position))
+
+    var secondRandom = XoroshiroRandom(seed: 22)
+    let secondSampler = DoublePerlinNoise(
+        random: &secondRandom,
+        firstOctave: -5,
+        amplitudes: [1.0, 0.5, 0.25],
+        useModernInitialization: true
+    )
+    noise.replaceSampler(with: secondSampler)
+    let secondValue = compiled(position.x, position.y, position.z)
+
+    #expect(secondValue == density.sample(at: position))
+    #expect(secondValue != firstValue)
+    #expect(instantiations.count == 1)
+    #expect(Data(try #require(compiled.wasmModule)).range(of: Data("sample_noise".utf8)) != nil)
+}
+
+@Test func testWASMSharedLegacySeedStateUpdatesWithoutReinstantiation() throws {
+    let instantiations = BulkInvocationCounter()
+    let runtime = ClosureWASMRuntime(
+        instantiateDensityFunction: { _, _, imports in
+            instantiations.increment()
+            return { x, y, z in imports.sampleDensity(0, x, y, z) }
+        },
+        instantiateBiomeSearch: { _, _ in { _, _, _, _, _, _, _, _ in 0 } }
+    )
+
+    var simplexRandom: any Random = CheckedRandom(seed: 101)
+    var simplex = DensityFunctionSimplexNoise(withRandom: &simplexRandom)
+    let endIslands = EndIslandsDensityFunction(withSampler: simplex)
+    let compiledEnd = try compile(densityFunction: endIslands, strategy: .wasm, runtime: runtime)
+    let endPosition = PosInt3D(x: 120_000, y: 0, z: -96_000)
+    let firstEndValue = compiledEnd(endPosition.x, endPosition.y, endPosition.z)
+
+    var interpolatedRandom: any Random = CheckedRandom(seed: 202)
+    let interpolated = InterpolatedNoise(
+        random: &interpolatedRandom,
+        xzScale: 1,
+        yScale: 1,
+        xzFactor: 80,
+        yFactor: 160,
+        smearScaleMultiplier: 8
+    )
+    let compiledInterpolated = try compile(
+        densityFunction: interpolated,
+        strategy: .wasm,
+        runtime: runtime
+    )
+    let interpolatedPosition = PosInt3D(x: 1_337, y: 47, z: -9_007)
+    let firstInterpolatedValue = compiledInterpolated(
+        interpolatedPosition.x,
+        interpolatedPosition.y,
+        interpolatedPosition.z
+    )
+
+    var secondSimplexRandom: any Random = CheckedRandom(seed: 303)
+    simplex.replaceSeed(using: &secondSimplexRandom)
+    var secondInterpolatedRandom: any Random = CheckedRandom(seed: 404)
+    interpolated.replaceSeedState(withRandom: &secondInterpolatedRandom)
+
+    let secondEndValue = compiledEnd(endPosition.x, endPosition.y, endPosition.z)
+    let secondInterpolatedValue = compiledInterpolated(
+        interpolatedPosition.x,
+        interpolatedPosition.y,
+        interpolatedPosition.z
+    )
+    #expect(secondEndValue == endIslands.sample(at: endPosition))
+    #expect(secondInterpolatedValue == interpolated.sample(at: interpolatedPosition))
+    #expect(secondEndValue != firstEndValue)
+    #expect(secondInterpolatedValue != firstInterpolatedValue)
+    #expect(instantiations.count == 2)
+}
+
 @Test func testWASMClimateCompilationUsesOneMultiValueExport() throws {
     var random = XoroshiroRandom(seed: 0x0fed_cba9_8765_4321)
     let sampler = DoublePerlinNoise(
@@ -418,7 +519,7 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     }
 }
 
-@Test func testVanillaWASMClimateModuleHasNoHostNoiseCallbacks() throws {
+@Test func testVanillaWASMClimateModuleUsesSharedSeedNoiseImports() throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -460,10 +561,10 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     #expect(previousScalarNoiseCallbacks > 0)
     #expect(frontend.densityFunctions.isEmpty)
     let captured = runtime.snapshot
-    #expect(captured.densityCount == 0)
+    #expect(captured.densityCount > 0)
     #expect(captured.climateModules.count == 1)
     let moduleData = Data(try #require(captured.climateModules.first))
-    #expect(moduleData.range(of: Data("sample_noise".utf8)) == nil)
+    #expect(moduleData.range(of: Data("sample_noise".utf8)) != nil)
     // Vanilla depth contains a float-precision spline, which is now emitted directly into WASM.
     #expect(moduleData.range(of: Data("sample_density".utf8)) == nil)
     #expect(moduleData.count < 100_000)
@@ -471,7 +572,7 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     if let outputPath = ProcessInfo.processInfo.environment["DPREADER_VANILLA_CLIMATE_WASM_OUTPUT_PATH"] {
         try moduleData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
         print("vanilla climate WASM module:", moduleData.count, "bytes")
-        print("eliminated vanilla sample_noise callbacks per climate point:", previousScalarNoiseCallbacks)
+        print("shared seed-noise imports per climate point:", previousScalarNoiseCallbacks)
     }
 }
 
@@ -716,9 +817,11 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
     )
     let sampler = try generator.makeFinalDensityBulkSampler(for: volume)
     #expect(sampler.strategy == .wasm)
+    let compiledModule = sampler.wasmModule
     let firstValues = sampler(at: basePosition)
 
     try generator.setWorldSeed(secondSeed)
+    #expect(sampler.wasmModule == compiledModule)
     let reseededValues = sampler(at: basePosition)
     let freshGenerator = try WorldGenerator(
         withWorldSeed: secondSeed,
@@ -888,6 +991,20 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
         #expect(actual.climate == expected.climate)
         #expect(actual.biome == expected.biome)
     }
+    #if canImport(CLLVM)
+    let reseededLLVMSamples = llvmSampler(at: basePosition)
+    for (actual, expected) in zip(reseededLLVMSamples, reseededExpected) {
+        #expect(abs(actual.climate.temperature - expected.climate.temperature) < 1e-12)
+        #expect(abs(actual.climate.humidity - expected.climate.humidity) < 1e-12)
+        #expect(abs(actual.climate.continentalness - expected.climate.continentalness) < 1e-12)
+        #expect(abs(actual.climate.erosion - expected.climate.erosion) < 1e-12)
+        #expect(abs(actual.climate.weirdness - expected.climate.weirdness) < 1e-12)
+        #expect(abs(actual.climate.depth - expected.climate.depth) < 1e-8)
+        #expect(actual.biome == expected.biome)
+    }
+    let reseededLLVMBiomeIDs = llvmBiomeIDSampler(at: basePosition)
+    #expect(reseededLLVMBiomeIDs.biomeIDs.map { reseededLLVMBiomeIDs.palette[Int($0)] } == reseededExpected.map(\.biome))
+    #endif
     #expect(zip(firstSamples, reseededSamples).contains { $0.0.climate != $0.1.climate })
 }
 

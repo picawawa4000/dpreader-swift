@@ -770,13 +770,14 @@ struct WASMDoublePerlinNoiseSnapshot {
 
 /// Vanilla's blended lower, upper, and interpolation noise density function.
 public final class InterpolatedNoise: DensityFunction {
+    private let seedStateLock = NSLock()
     private let xzScale: Double, yScale: Double
     private let scaledXZScale: Double, scaledYScale: Double
     private let xzFactor: Double, yFactor: Double
     private let smearScaleMultiplier: Double
-    private let lowerInterpolatedOctaves: [PerlinNoise]
-    private let upperInterpolatedOctaves: [PerlinNoise]
-    private let interpolationOctaves: [PerlinNoise]
+    private var lowerInterpolatedOctaves: [PerlinNoise]
+    private var upperInterpolatedOctaves: [PerlinNoise]
+    private var interpolationOctaves: [PerlinNoise]
 
     private static func initOctaves<R: Random>(random rng: inout R, count: UInt) -> [PerlinNoise] {
         var octaves: [PerlinNoise] = []
@@ -838,8 +839,21 @@ public final class InterpolatedNoise: DensityFunction {
         )
     }
 
+    func replaceSeedState(withRandom rng: inout any Random) {
+        let lower = Self.initOctaves(random: &rng, count: 16)
+        let upper = Self.initOctaves(random: &rng, count: 16)
+        let interpolation = Self.initOctaves(random: &rng, count: 8)
+        self.seedStateLock.lock()
+        self.lowerInterpolatedOctaves = lower
+        self.upperInterpolatedOctaves = upper
+        self.interpolationOctaves = interpolation
+        self.seedStateLock.unlock()
+    }
+
     /// Because `InterpolatedNoise` is a density function, it uses ints instead of doubles.
     public func sample(at pos: PosInt3D) -> Double {
+        self.seedStateLock.lock()
+        defer { self.seedStateLock.unlock() }
         return self.sampleScaled(
             x: Double(pos.x) * self.scaledXZScale,
             y: Double(pos.y) * self.scaledYScale,
@@ -848,6 +862,8 @@ public final class InterpolatedNoise: DensityFunction {
     }
 
     func fillInterpolationColumn(into densities: inout [Double], blockX: Int32, startBlockY: Int32, blockZ: Int32, blockYStep: Int32) {
+        self.seedStateLock.lock()
+        defer { self.seedStateLock.unlock() }
         let scaledX = Double(blockX) * self.scaledXZScale
         var scaledY = Double(startBlockY) * self.scaledYScale
         let scaledZ = Double(blockZ) * self.scaledXZScale

@@ -57,6 +57,24 @@ supplies the whole chunk. Entries are reused for matching chunk shapes and rebui
 seed changes. If a configured backend cannot compile a density tree, terrain automatically retains
 the interpreted path.
 
+### Reseeding compiled graphs
+
+Generator-owned compiled density functions keep seed-independent code separate from mutable
+sampler state. ``WorldGenerator/setWorldSeed(_:)`` replaces Double Perlin permutations and origins
+inside stable, lock-protected noise objects and also refreshes the shared End-simplex and legacy
+interpolated-noise state. Compiled-function registries, biome search trees, and retained bulk
+samplers keep their identity; LLVM JIT modules and in-process WASM instances are not rebuilt.
+
+LLVM accesses generator-owned noises through their stable shared state. When a ``WASMRuntime`` is
+attached, generated modules import the same mutable noise state from the host, so an existing
+instance immediately observes a new seed. A standalone `wasmModule` emitted without a runtime
+remains self-contained and therefore represents the seed at module-generation time; the native
+Swift fallback attached to its compiled sampler still follows ``WorldGenerator/setWorldSeed(_:)``.
+
+Direct calls to the compiler with an independently constructed ``BakedNoise`` continue embedding
+an immutable snapshot. This preserves self-contained deployable WASM and fully embedded LLVM for
+callers that do not need reseeding.
+
 ### Tile-based biome generation
 
 - <doc:BiomeTileGeneration>

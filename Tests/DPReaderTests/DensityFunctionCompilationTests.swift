@@ -183,6 +183,39 @@ private func assertCompiledBufferMatches(
     }
 }
 
+#if canImport(CLLVM)
+@Test func testLLVMSharedSeedNoiseUpdatesWithoutRecompilation() throws {
+    var firstRandom = XoroshiroRandom(seed: 11)
+    let noise = BakedNoise(
+        fromKey: RegistryKey(referencing: "test:shared_llvm_seed_noise"),
+        withSampler: DoublePerlinNoise(
+            random: &firstRandom,
+            firstOctave: -5,
+            amplitudes: [1.0, 0.5, 0.25],
+            useModernInitialization: true
+        ),
+        usesSharedSeedStorage: true
+    )
+    let density = NoiseDensityFunction(noise: noise, scaleXZ: 0.125, scaleY: 0.25)
+    let compiled = try compile(densityFunction: density, strategy: .llvm)
+    let position = PosInt3D(x: 1_337, y: 47, z: -9_007)
+    let firstValue = compiled(position.x, position.y, position.z)
+    #expect(firstValue == density.sample(at: position))
+
+    var secondRandom = XoroshiroRandom(seed: 22)
+    noise.replaceSampler(with: DoublePerlinNoise(
+        random: &secondRandom,
+        firstOctave: -5,
+        amplitudes: [1.0, 0.5, 0.25],
+        useModernInitialization: true
+    ))
+    let secondValue = compiled(position.x, position.y, position.z)
+
+    #expect(secondValue == density.sample(at: position))
+    #expect(secondValue != firstValue)
+}
+#endif
+
 @Test func testCompiledDensityFunctionBulkStrategiesUseTheSameAPI() throws {
     let densityFunction = BinaryDensityFunction(
         firstOperand: YClampedGradient(fromY: -16, toY: 32, fromValue: -2, toValue: 4),

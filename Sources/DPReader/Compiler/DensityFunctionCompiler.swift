@@ -536,7 +536,10 @@ public func compile(
     let program = try buildDensityFunctionIR(densityFunction: root, registry: registry)
     switch strategy {
     case .wasm:
-        let module = try buildDensityFunctionWASMModule(program)
+        let module = try buildDensityFunctionWASMModule(
+            program,
+            embedSharedSeedStorage: runtime == nil
+        )
         if let runtime {
             let imports = WASMDensityFunctionImports(
                 sampleDensity: { index, x, y, z in
@@ -612,7 +615,11 @@ public func compile(
     }
 
     let program = try buildDensityFunctionIR(densityFunction: root, registry: registry)
-    let module = try buildDensityFunctionWASMModule(program, bulkContext: bufferContext)
+    let module = try buildDensityFunctionWASMModule(
+        program,
+        bulkContext: bufferContext,
+        embedSharedSeedStorage: runtime == nil
+    )
 
     if let runtime {
         let imports = WASMDensityFunctionImports(
@@ -692,7 +699,11 @@ func compileWASMClimateFunctions(
     }
 
     let program = try buildDensityFunctionIR(densityFunctions: wasmDensityFunctions, registry: registry)
-    let module = try buildDensityFunctionWASMModule(program, exportName: "sample_climate")
+    let module = try buildDensityFunctionWASMModule(
+        program,
+        exportName: "sample_climate",
+        embedSharedSeedStorage: false
+    )
     let imports = WASMDensityFunctionImports(
         sampleDensity: { index, x, y, z in
             precondition(index >= 0 && Int(index) < program.densityFunctions.count)
@@ -2044,7 +2055,10 @@ private func addEmbeddedNoiseStorage(
     [ObjectIdentifier: DensityFunctionCompilationContext.EmbeddedNoiseStorage],
     DensityFunctionCompilationContext.EmbeddedPerlinFunction?
 ) {
-    let bakedNoises = noises.compactMap { $0 as? BakedNoise }
+    let bakedNoises = noises.compactMap { noise -> BakedNoise? in
+        guard let baked = noise as? BakedNoise, !baked.usesSharedSeedStorage else { return nil }
+        return baked
+    }
     guard !bakedNoises.isEmpty else { return ([:], nil) }
     let int8Type = LLVMInt8TypeInContext(llvmContext)!
     var noiseStorage: [ObjectIdentifier: DensityFunctionCompilationContext.EmbeddedNoiseStorage] = [:]
