@@ -609,11 +609,13 @@ public final class GeneratedStructureHeightmapSampler {
     private var chunkSamplers: [ChunkKey: CachedChunkSampler] = [:]
     private var chunkSamplerUse: UInt64 = 0
     private let maximumCachedChunkSamplers = 16
+    #if DEBUG && !(os(WASI) || arch(wasm32))
     public private(set) var terrainDensityColumnEvaluationCount = 0
     public private(set) var terrainChunkSamplerConstructionNanos: UInt64 = 0
     public private(set) var terrainInterpolationNanos: UInt64 = 0
     public private(set) var terrainHeightCacheHits = 0
     public private(set) var terrainHeightCacheMisses = 0
+    #endif
 
     public init(
         worldGenerator: WorldGenerator,
@@ -633,51 +635,75 @@ public final class GeneratedStructureHeightmapSampler {
         let key = ColumnKey(x: x, z: z)
         if heightmap == .worldSurfaceWG, self.hasSeaLevelFluid {
             if let cached = self.terrainHeights[key] {
+                #if DEBUG && !(os(WASI) || arch(wasm32))
                 self.terrainHeightCacheHits += 1
+                #endif
                 return max(cached, self.seaLevel)
             }
             if let cached = self.worldSurfaceHeights[key] {
+                #if DEBUG && !(os(WASI) || arch(wasm32))
                 self.terrainHeightCacheHits += 1
+                #endif
                 return cached
             }
 
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             self.terrainHeightCacheMisses += 1
+            #endif
             let chunkSampler = try self.chunkSampler(for: x, z: z)
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             let previousEvaluationCount = chunkSampler.densityColumnEvaluationCount
+            #endif
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             let interpolationStart = DispatchTime.now().uptimeNanoseconds
+            #endif
             if let terrainHeight = chunkSampler.height(
                 atX: x,
                 z: z,
                 minimumTerrainY: self.seaLevel - 1
             ) {
+                #if DEBUG && !(os(WASI) || arch(wasm32))
                 self.terrainInterpolationNanos += DispatchTime.now().uptimeNanoseconds - interpolationStart
                 self.terrainDensityColumnEvaluationCount +=
                     chunkSampler.densityColumnEvaluationCount - previousEvaluationCount
+                #endif
                 self.terrainHeights[key] = terrainHeight
                 return terrainHeight
             }
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             self.terrainInterpolationNanos += DispatchTime.now().uptimeNanoseconds - interpolationStart
             self.terrainDensityColumnEvaluationCount +=
                 chunkSampler.densityColumnEvaluationCount - previousEvaluationCount
+            #endif
             self.worldSurfaceHeights[key] = self.seaLevel
             return self.seaLevel
         }
         let terrainHeight: Int32
         if let cached = self.terrainHeights[key] {
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             self.terrainHeightCacheHits += 1
+            #endif
             terrainHeight = cached
         } else {
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             self.terrainHeightCacheMisses += 1
+            #endif
             let chunkSampler = try self.chunkSampler(for: x, z: z)
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             let previousEvaluationCount = chunkSampler.densityColumnEvaluationCount
+            #endif
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             let interpolationStart = DispatchTime.now().uptimeNanoseconds
+            #endif
             guard let sampledHeight = chunkSampler.height(atX: x, z: z) else {
                 preconditionFailure("An unbounded terrain-height query must return a height")
             }
             terrainHeight = sampledHeight
+            #if DEBUG && !(os(WASI) || arch(wasm32))
             self.terrainInterpolationNanos += DispatchTime.now().uptimeNanoseconds - interpolationStart
             self.terrainDensityColumnEvaluationCount +=
                 chunkSampler.densityColumnEvaluationCount - previousEvaluationCount
+            #endif
             self.terrainHeights[key] = terrainHeight
         }
 
@@ -699,11 +725,15 @@ public final class GeneratedStructureHeightmapSampler {
            let oldest = self.chunkSamplers.min(by: { $0.value.lastUse < $1.value.lastUse }) {
             self.chunkSamplers.removeValue(forKey: oldest.key)
         }
+        #if DEBUG && !(os(WASI) || arch(wasm32))
         let constructionStart = DispatchTime.now().uptimeNanoseconds
+        #endif
         let sampler = try self.worldGenerator.terrainHeightSamplerForStructureStartValidation(
             at: PosInt2D(x: chunkKey.x, z: chunkKey.z)
         )
+        #if DEBUG && !(os(WASI) || arch(wasm32))
         self.terrainChunkSamplerConstructionNanos += DispatchTime.now().uptimeNanoseconds - constructionStart
+        #endif
         self.chunkSamplers[chunkKey] = CachedChunkSampler(sampler: sampler, lastUse: self.chunkSamplerUse)
         return sampler
     }
