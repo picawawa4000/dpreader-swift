@@ -253,10 +253,9 @@ private final class DensityFunctionIRBuilder {
             return self.append(.select(condition: above, whenTrue: upper, whenFalse: clampedLow))
         }
         if let gradient = function as? YClampedGradient {
-            let attributes = gradient.testingAttributes
             let y = self.append(.convertSignedIntToDouble(self.coordinates.y))
-            let fromY = self.constant(Double(attributes.fromY))
-            let toY = self.constant(Double(attributes.toY))
+            let fromY = self.constant(Double(gradient.gradientFromY))
+            let toY = self.constant(Double(gradient.gradientToY))
             let delta = self.append(.divide(
                 self.append(.subtract(y, fromY)),
                 self.append(.subtract(toY, fromY))
@@ -298,7 +297,6 @@ private final class DensityFunctionIRBuilder {
             return self.append(.sampleNoise(index: noiseIndex, x: sampleX, y: sampleY, z: sampleZ))
         }
         if let shift = function as? ShiftDensityFunction {
-            let attributes = shift.testingAttributes
             let x = self.append(.convertSignedIntToDouble(self.coordinates.x))
             let y = self.append(.convertSignedIntToDouble(self.coordinates.y))
             let z = self.append(.convertSignedIntToDouble(self.coordinates.z))
@@ -307,7 +305,7 @@ private final class DensityFunctionIRBuilder {
             let sampleX: Int
             let sampleY: Int
             let sampleZ: Int
-            switch attributes.shiftType {
+            switch shift.shiftKind {
             case .SHIFT_ALL:
                 sampleX = self.append(.multiply(x, quarter))
                 sampleY = self.append(.multiply(y, quarter))
@@ -322,7 +320,7 @@ private final class DensityFunctionIRBuilder {
                 sampleZ = zero
             }
             let noiseIndex = self.noises.count
-            self.noises.append(attributes.noise)
+            self.noises.append(shift.shiftNoise)
             let sampled = self.append(.sampleNoise(
                 index: noiseIndex,
                 x: sampleX,

@@ -634,8 +634,8 @@ private struct BulkDensityBufferEvaluator {
             return positions.map {
                 clampedMap(
                     value: Double($0.y),
-                    oldStart: Double(gradient.testingAttributes.fromY),
-                    oldEnd: Double(gradient.testingAttributes.toY),
+                    oldStart: Double(gradient.gradientFromY),
+                    oldEnd: Double(gradient.gradientToY),
                     newStart: gradient.minimumOutputValue,
                     newEnd: gradient.maximumOutputValue
                 )

@@ -1,5 +1,4 @@
 import Foundation
-import TestVisible
 
 /// Stores all of the registries needed for world generation.
 final class WorldGenerationRegistries {

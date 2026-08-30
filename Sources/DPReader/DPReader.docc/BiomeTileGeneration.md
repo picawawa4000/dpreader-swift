@@ -145,11 +145,11 @@ as comparative measurements, not portable guarantees.
 To reproduce the portable paths, run:
 
 ```shell
-swift test --filter benchmarkRealWorldBiomeTileGeneration
+USE_TEST_VISIBLE=1 swift test --filter benchmarkRealWorldBiomeTileGeneration
 ```
 
 To include LLVM when Homebrew LLVM is installed, run:
 
 ```shell
-DPREADER_ENABLE_LLVM=1 swift test --filter benchmarkRealWorldBiomeTileGeneration
+USE_TEST_VISIBLE=1 DPREADER_ENABLE_LLVM=1 swift test --filter benchmarkRealWorldBiomeTileGeneration
 ```

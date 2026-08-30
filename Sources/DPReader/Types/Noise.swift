@@ -1,8 +1,13 @@
 import Foundation
+#if USE_TEST_VISIBLE
 import TestVisible
+#endif
 
 /// Represents a definition of a noise.
-@TestVisible(property: "testingAttributes") public final class NoiseDefinition: Codable {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class NoiseDefinition: Codable {
     private let amplitudes: [Double]
     private let firstOctave: Int
     private var hashLow: UInt64? = nil, hashHigh: UInt64? = nil
@@ -135,7 +140,10 @@ import TestVisible
 /// ----- Noise (post 113.0) -----
 
 /// Represents a definition of a noise.
-@TestVisible(property: "testingAttributes") public final class ModernNoiseDefinition: Codable {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class ModernNoiseDefinition: Codable {
     private let octaves: [ModernDoublePerlinNoise.OctaveInfo]
     private let firstOctave, octaveCount: Int
     private let baseAmplitude: Double
@@ -293,4 +301,3 @@ import TestVisible
         case noSeed
     }
 }
-

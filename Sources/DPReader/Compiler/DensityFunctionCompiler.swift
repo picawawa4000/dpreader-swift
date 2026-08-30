@@ -4863,8 +4863,8 @@ extension YClampedGradient: CompilableDensityFunction {
         let lowerBound = context.constant(self.minimumOutputValue)
         let upperBound = context.constant(self.maximumOutputValue)
         let yValue = LLVMBuildSIToFP(context.builder, y, context.doubleType, "y_clamped_gradient.y")
-        let fromY = context.constant(Double(self.testingAttributes.fromY))
-        let reciprocalRange = context.constant(1.0 / Double(self.testingAttributes.toY - self.testingAttributes.fromY))
+        let fromY = context.constant(Double(self.gradientFromY))
+        let reciprocalRange = context.constant(1.0 / Double(self.gradientToY - self.gradientFromY))
         let progress = LLVMBuildFMul(
             context.builder,
             LLVMBuildFSub(context.builder, yValue, fromY, "y_clamped_gradient.offset"),

@@ -581,8 +581,8 @@ private final class BufferedDensityFunctionEvaluator {
         using function: YClampedGradient,
         domain: BufferedDensityEvaluationDomain
     ) {
-        let fromY = Double(function.testingAttributes.fromY)
-        let toY = Double(function.testingAttributes.toY)
+        let fromY = Double(function.gradientFromY)
+        let toY = Double(function.gradientToY)
         let fromValue = function.minimumOutputValue
         let toValue = function.maximumOutputValue
 
@@ -808,8 +808,8 @@ private final class BufferedDensityFunctionEvaluator {
         if let yClampedGradient = function as? YClampedGradient {
             return clampedMap(
                 value: Double(pos.y),
-                oldStart: Double(yClampedGradient.testingAttributes.fromY),
-                oldEnd: Double(yClampedGradient.testingAttributes.toY),
+                oldStart: Double(yClampedGradient.gradientFromY),
+                oldEnd: Double(yClampedGradient.gradientToY),
                 newStart: yClampedGradient.minimumOutputValue,
                 newEnd: yClampedGradient.maximumOutputValue
             )
@@ -981,8 +981,8 @@ private final class BufferedDensityFunctionEvaluator {
         if let yClampedGradient = function as? YClampedGradient {
             return clampedMap(
                 value: Double(pos.y),
-                oldStart: Double(yClampedGradient.testingAttributes.fromY),
-                oldEnd: Double(yClampedGradient.testingAttributes.toY),
+                oldStart: Double(yClampedGradient.gradientFromY),
+                oldEnd: Double(yClampedGradient.gradientToY),
                 newStart: yClampedGradient.minimumOutputValue,
                 newEnd: yClampedGradient.maximumOutputValue
             )

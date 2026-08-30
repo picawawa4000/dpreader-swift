@@ -1,9 +1,14 @@
+#if USE_TEST_VISIBLE
 import TestVisible
+#endif
 
 // Utilities for the implementation of `SplineDensityFunction`.
 // These are all internal for a reason.
 
-@TestVisible(property: "testingAttributes") internal final class SplineObject: Codable {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+internal final class SplineObject: Codable {
     private let input: any DensityFunction
     private let locations: [Float]
     private let values: [SplineSegment]

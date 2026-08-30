@@ -1,5 +1,7 @@
 import Foundation
+#if USE_TEST_VISIBLE
 import TestVisible
+#endif
 
 /// An abstraction for simple functions of noises that comprise the brunt of Minecraft's world generation.
 /// More specifically, they are functions that convert positions into numbers based on the world seed.
@@ -346,7 +348,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// A density function that references another density function via a namespaced ID.
-@TestVisible(property: "testingAttributes") public final class ReferenceDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class ReferenceDensityFunction: DensityFunction {
     public let targetKey: RegistryKey<DensityFunction>
     private var densityFunctionRegistry: Registry<DensityFunction>? = nil
 
@@ -387,7 +392,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// A density function that always returns the same value.
-@TestVisible(property: "testingAttributes") public final class ConstantDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class ConstantDensityFunction: DensityFunction {
     internal let value: Double
 
     public init(value: Double) {
@@ -422,7 +430,10 @@ public struct DensityFunctionSimplexNoise {
 
 /// A density function that performs one of multiple numerical operations
 /// on the output of another density function.
-@TestVisible(property: "testingAttributes") public final class UnaryDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class UnaryDensityFunction: DensityFunction {
     internal let operand: DensityFunction
     internal let operation: OperationType
 
@@ -506,7 +517,10 @@ public struct DensityFunctionSimplexNoise {
 
 /// A density function that performs one of multiple numerical operations
 /// on the output of two other density functions to combine them into a single number.
-@TestVisible(property: "testingAttributes") public final class BinaryDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class BinaryDensityFunction: DensityFunction {
     internal let first: any DensityFunction
     internal let second: any DensityFunction
     internal let operation: OperationType
@@ -609,7 +623,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// A density function that clamps the output of its input function into the given range.
-@TestVisible(property: "testingAttributes") public final class ClampDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class ClampDensityFunction: DensityFunction {
     private let input: any DensityFunction
     private let lowerBound: Double
     private let upperBound: Double
@@ -672,7 +689,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// A density function that produces a gradient based on the Y coordinate of the sampled position.
-@TestVisible(property: "testingAttributes") public final class YClampedGradient: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class YClampedGradient: DensityFunction {
     private let fromY: Int32
     private let toY: Int32
     private let fromValue: Double
@@ -726,6 +746,14 @@ public struct DensityFunctionSimplexNoise {
         return self.toValue
     }
 
+    var gradientFromY: Int32 {
+        return self.fromY
+    }
+
+    var gradientToY: Int32 {
+        return self.toY
+    }
+
     private enum CodingKeys: String, CodingKey {
         case fromY = "from_y"
         case toY = "to_y"
@@ -736,7 +764,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Based on the value of its input, selects one of two outputs. The only conditional density function.
-@TestVisible(property: "testingAttributes") public final class RangeChoice: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class RangeChoice: DensityFunction {
     private let minInclusive: Double
     private let maxExclusive: Double
     private let inputChoice: any DensityFunction
@@ -933,7 +964,10 @@ public struct DensityFunctionSimplexNoise {
 
 /// Samples a noise at a scaled position.
 /// Encapsulates "minecraft:shift", "minecraft:shift_a", and "minecraft:shift_b".
-@TestVisible(property: "testingAttributes") public final class ShiftDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class ShiftDensityFunction: DensityFunction {
     private let shiftType: ShiftType
     private let noise: DensityFunctionNoise
 
@@ -982,6 +1016,14 @@ public struct DensityFunctionSimplexNoise {
         case SHIFT_ZX = "minecraft:shift_b"
     }
 
+    var shiftKind: ShiftType {
+        return self.shiftType
+    }
+
+    var shiftNoise: DensityFunctionNoise {
+        return self.noise
+    }
+
     private enum CodingKeys: String, CodingKey {
         case noiseKey = "argument"
         case type = "type"
@@ -990,7 +1032,10 @@ public struct DensityFunctionSimplexNoise {
 
 /// Samples a noise at a scaled position.
 /// Simpler version of `ShiftedNoise`.
-@TestVisible(property: "testingAttributes") public final class NoiseDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class NoiseDensityFunction: DensityFunction {
     private let scaleXZ: Double
     private let scaleY: Double
     private let noise: DensityFunctionNoise
@@ -1056,7 +1101,10 @@ public struct DensityFunctionSimplexNoise {
 
 /// Samples a noise at a scaled and offset position.
 /// Completely different from `Shift`.
-@TestVisible(property: "testingAttributes") public final class ShiftedNoise: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class ShiftedNoise: DensityFunction {
     private let shiftX: DensityFunction
     private let shiftY: DensityFunction
     private let shiftZ: DensityFunction
@@ -1157,7 +1205,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Marks a cache. Does nothing by itself.
-@TestVisible(property: "testingAttributes") public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospectable {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospectable {
     public let type: CacheType
     public let argument: DensityFunction
 
@@ -1228,7 +1279,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Part of the blending algorithm that we don't care about.
-@TestVisible(property: "testingAttributes") public final class BlendAlpha: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class BlendAlpha: DensityFunction {
     public init() {}
 
     public init(from: Decoder) {}
@@ -1260,7 +1314,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Part of the blending algorithm that we don't care about.
-@TestVisible(property: "testingAttributes") public final class BlendOffset: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class BlendOffset: DensityFunction {
     public init() {}
 
     public init(from: Decoder) {}
@@ -1292,7 +1349,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Part of the blending algorithm that we don't care about.
-@TestVisible(property: "testingAttributes") public final class BlendDensity: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class BlendDensity: DensityFunction {
     let argument: DensityFunction
 
     public init(wrapping argument: DensityFunction) {
@@ -1337,7 +1397,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Bearding (structure terrain modification). Should not be referenced in data packs.
-@TestVisible(property: "testingAttributes") public final class BeardifierMarker: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class BeardifierMarker: DensityFunction {
     public init() {}
 
     public init(from: Decoder) {
@@ -1371,7 +1434,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Samples a specialised algorithm used for end islands.
-@TestVisible(property: "testingAttributes") public final class EndIslandsDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class EndIslandsDensityFunction: DensityFunction {
     private static let simplexCutoff = Double(Float(-0.9))
     private let sampler: DensityFunctionSimplexNoise
 
@@ -1440,7 +1506,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// According to the input value, scales some regions of the input noise. Only returns the absolute value.
-@TestVisible(property: "testingAttributes") public final class WeirdScaledSampler: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class WeirdScaledSampler: DensityFunction {
     private let input: any DensityFunction
     private let type: ScalingType
     private let noise: any DensityFunctionNoise
@@ -1533,7 +1602,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Samples a cubic spline.
-@TestVisible(property: "testingAttributes") public final class SplineDensityFunction: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class SplineDensityFunction: DensityFunction {
     private let spline: SplineSegment
 
     internal init(withSpline spline: SplineSegment) {
@@ -1570,7 +1642,10 @@ public struct DensityFunctionSimplexNoise {
 }
 
 /// Finds the top surface of its input (that is, the Y-coordinate at which the input exceeds 0.0).
-@TestVisible(property: "testingAttributes") public final class FindTopSurface: DensityFunction {
+#if USE_TEST_VISIBLE
+@TestVisible(property: "testingAttributes")
+#endif
+public final class FindTopSurface: DensityFunction {
     private let density: any DensityFunction
     private let upperBound: any DensityFunction
     private let lowerBound: Int
