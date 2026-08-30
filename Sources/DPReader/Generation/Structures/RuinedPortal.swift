@@ -190,7 +190,12 @@ public enum RuinedPortal {
                 (horizontalBounds.minX, horizontalBounds.maxZ), (horizontalBounds.maxX, horizontalBounds.maxZ)
             ] {
                 let state = context.blockSampler(PosInt3D(x: x, y: targetY, z: z))
-                let isSupport = !state.isAir && (setup.placement != .onOceanFloor || (state.id != "minecraft:water" && state.id != "minecraft:lava"))
+                // Vanilla's support check requires a solid block. Fluids do not support an
+                // on-land portal either: otherwise a portal floating on sea-level water stops
+                // one block too high instead of descending to the ocean floor.
+                let isSupport = !state.isAir
+                    && state.id != "minecraft:water"
+                    && state.id != "minecraft:lava"
                 if isSupport { supported += 1; if supported == 3 { break } }
             }
             if supported >= 3 { break }

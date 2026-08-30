@@ -62,4 +62,23 @@ struct RuinedPortalTests {
         #expect(chest?.lootTable == "minecraft:chests/ruined_portal")
         #expect(chest?.lootSeed == -3_655_315_866_665_580_896)
     }
+
+    @Test func seed123458SurfacePortalLootUsesTerrainHeight() throws {
+        let structure = try #require(Self.fixture.pack.structureRegistry.get(
+            RegistryKey(referencing: "minecraft:ruined_portal")
+        ))
+        let generated = try #require(try structure.generate(
+            worldSeed: Self.seed,
+            startChunk: PosInt2D(x: -21, z: 7),
+            context: Self.fixture.context
+        ))
+        guard case .ruinedPortal(let result) = generated else {
+            Issue.record("Expected ruined portal result")
+            return
+        }
+        let chest = result.lootContainers.first { $0.pos == PosInt3D(x: -335, y: 62, z: 116) }
+        #expect(chest?.block == "minecraft:chest")
+        #expect(chest?.lootTable == "minecraft:chests/ruined_portal")
+        #expect(chest?.lootSeed == 7_843_228_115_594_078_983)
+    }
 }
