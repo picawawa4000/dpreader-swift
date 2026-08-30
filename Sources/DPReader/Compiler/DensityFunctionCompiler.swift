@@ -2916,16 +2916,33 @@ func compileDensityFunctionIRBulkWithLLVM(
         let previousNode: LLVMValueRef? = useAlternativeNode
             ? LLVMBuildPhi(builder, int32Type, "biome.previous_node")!
             : nil
-        let yCount = context.int64Constant(UInt64(bufferContext.yCount))
-        let planeCount = context.int64Constant(UInt64(Int64(bufferContext.xCount) * Int64(bufferContext.yCount)))
-        let yOffset64 = LLVMBuildSRem(builder, index, yCount, "y.offset")!
-        let xOffset64 = LLVMBuildSRem(
-            builder,
-            LLVMBuildSDiv(builder, index, yCount, "xy.index")!,
-            context.int64Constant(UInt64(bufferContext.xCount)),
-            "x.offset"
-        )!
-        let zOffset64 = LLVMBuildSDiv(builder, index, planeCount, "z.offset")!
+        let yOffset64: LLVMValueRef
+        let xOffset64: LLVMValueRef
+        let zOffset64: LLVMValueRef
+        if bufferContext.yCount == 1,
+           bufferContext.xCount > 0,
+           bufferContext.xCount.nonzeroBitCount == 1 {
+            // Map tiles are horizontal planes. Keep the x/z coordinates as a carried-style
+            // power-of-two decomposition, rather than leaving a pair of 64-bit divisions in
+            // every scalar climate sample. This is the same loop shape used by the WASM bulk
+            // emitter, whose x pairing is selected for yCount == 1.
+            yOffset64 = context.int64Constant(0)
+            let xMask = context.int64Constant(UInt64(bufferContext.xCount - 1))
+            xOffset64 = LLVMBuildAnd(builder, index, xMask, "x.offset")!
+            let xShift = context.int64Constant(UInt64(bufferContext.xCount.trailingZeroBitCount))
+            zOffset64 = LLVMBuildLShr(builder, index, xShift, "z.offset")!
+        } else {
+            let yCount = context.int64Constant(UInt64(bufferContext.yCount))
+            let planeCount = context.int64Constant(UInt64(Int64(bufferContext.xCount) * Int64(bufferContext.yCount)))
+            yOffset64 = LLVMBuildSRem(builder, index, yCount, "y.offset")!
+            xOffset64 = LLVMBuildSRem(
+                builder,
+                LLVMBuildSDiv(builder, index, yCount, "xy.index")!,
+                context.int64Constant(UInt64(bufferContext.xCount)),
+                "x.offset"
+            )!
+            zOffset64 = LLVMBuildSDiv(builder, index, planeCount, "z.offset")!
+        }
         func coordinate(_ base: LLVMValueRef, _ offset: LLVMValueRef, step: Int32, name: String) -> LLVMValueRef {
             let offset32 = LLVMBuildTrunc(builder, offset, int32Type, "\(name).offset.i32")!
             let scaled = LLVMBuildMul(builder, offset32, context.int32Constant(step), "\(name).scaled")!
@@ -3010,6 +3027,8 @@ func compileDensityFunctionIRBulkWithLLVM(
         let native = unsafeBitCast(address, to: NativeCompiledDensityFunctionIRBulk.self)
         return { baseX, baseY, baseZ, output in
             let sampleCount = Int(validated.sampleCount)
+            // Each scalar sample evaluates the complete fused climate program. A 64×64 tile is
+            // already sufficiently expensive to amortize a small number of worker ranges.
             let minimumSamplesPerTask = 2_048
             let availableTasks = max(1, ProcessInfo.processInfo.activeProcessorCount)
             let taskCount = min(availableTasks, max(1, sampleCount / minimumSamplesPerTask))

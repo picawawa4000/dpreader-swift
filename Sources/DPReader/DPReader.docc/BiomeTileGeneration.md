@@ -55,11 +55,16 @@ run in a browser or Node. Calling a `.wasm` sampler from native Swift without a 
 the IR fallback; provide a runtime to execute WASM in-process, or deploy
 ``CompiledNoiseRouterBiomeBulkSampler/wasmModule`` to a WebAssembly host.
 
-LLVM has the best steady-state native throughput, but its JIT setup is much more expensive for the
-large fused climate-and-search program. Prefer it for a long-lived service which will render
-thousands of tiles with each shape and stride. DPReader uses LLVM's O1 pipeline for this fused bulk
-program: in this workload it substantially reduces setup time and performs better than the much
-slower-to-compile O3 pipeline.
+LLVM can be the faster native backend for final-density terrain, whose generation-cell bulk path
+reuses interpolation work. It is not automatically faster for this biome workload: its scalar
+fused climate-and-search loop is substantially slower than the paired-SIMD WASM module in Node.
+LLVM JIT setup is also much more expensive because every shape and stride builds, optimizes, and
+machine-compiles a complete six-climate-function-plus-biome-tree module. DPReader uses LLVM's O1
+pipeline for this fused bulk program; it avoids the still slower-to-compile O3 pipeline.
+For horizontal power-of-two map tiles, the LLVM loop specializes coordinate recovery to a mask and
+shift, avoiding the per-sample 64-bit division and remainder operations of the generic 3D path.
+It still uses a small parallel split because each scalar climate sample is expensive enough to
+amortize that work.
 
 Use ``WorldGenerator/generateBiomesInSquare(from:to:atY:in:scale:forceNoBaking:forceBaking:)``
 without compilation as a correctness reference or for occasional small queries. For exact 1:1
@@ -73,17 +78,71 @@ per-block sampling.
 seed `987654321` at each scale above. Each level contains 262,144 samples and all backends must
 produce the same palette-ID checksum. The bounds are `-4 * tileSide ..< 4 * tileSide` on both axes.
 
-One debug build on Apple Silicon produced these representative results after the reusable-output
-and LLVM-pipeline optimizations. Treat them as comparative measurements, not portable guarantees.
+### What the Test Actually Does
 
-| Level | Direct Swift | WASM in Node | LLVM | WASM compile | LLVM compile |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 64-block tiles, 1:1 | 17.80 s | 287 ms | 125 ms | 44 ms | 14.13 s |
-| 256-block tiles, 1:4 | 17.91 s | 284 ms | 132 ms | 43 ms | 15.00 s |
-| 1,024-block tiles, 1:16 | 16.72 s | 300 ms | 130 ms | 43 ms | 16.32 s |
+`benchmarkRealWorldBiomeTileGeneration` loads the checked-in `vanilla/1.21.11` data pack and
+constructs one overworld generator and one structure-placement sampler with world seed
+`987654321`. For each workload it creates a 64-by-64 output context (`yCount == 1`) and 64 tile
+origins, beginning at `(-4 * tileSide, 256, -4 * tileSide)` and advancing in Z-major, then X,
+order. The output index order is Z/X/Y, so each result is converted to a palette index and folded
+into a 32-bit FNV-1a hash (initial value `2166136261`).
 
-At these rates, LLVM's setup cost breaks even with WASM only after roughly six thousand tiles per
-shape. To reproduce the portable paths, run:
+The direct Swift loop is timed after one untimed reference call. It generates each square with
+`forceNoBaking: true`, checks the expected sample count, and records the 1:1 results in the exact
+X/Y/Z biome cache. The WASM sampler is emitted once per context; Node then reads each module,
+constructs its instance, and makes one untimed warm-up call before timing all 64 tiles. The LLVM
+sampler is likewise created once per context and warmed by `fill` before its timed loop. Module
+emission, Node compilation/instantiation, LLVM optimization/JIT, and warm-up are reported as
+setup but are not included in backend tile-generation times. Both compiled hashes must equal the
+direct Swift hash.
+
+After the biome loops, the same 8-by-8 world extent is used to enumerate eligible structure-set
+placements. The structure portion measures placement resolution plus lightweight biome and
+heightmap start validation only; it does not generate structure pieces, blocks, chunks, or loot.
+Its diagnostics report candidate/valid counts, callback time and sample counts, terrain-cache
+hits/misses, and the five slowest structure sets.
+
+The benchmark also samples and validates structure starts in the complete 8-by-8 tile extent.
+The efficient code flow is to cache dimension eligibility and seed-stable concentric-ring
+placements once, discard structure sets that cannot generate in the requested dimension, merge
+adjacent tile bounds, enumerate each intersecting placement region once, and then perform biome
+and terrain start validation on each candidate. Valid starts can be bucketed back into tiles when
+the caller needs per-tile results. This avoids walking every chunk, repeating placement regions at
+tile boundaries, and generating candidates only to reject them for belonging to another dimension.
+For terrain validation, retain a small working set of per-chunk height evaluators and cache the
+vertical density columns at generation-cell corners. Nearby center and footprint heights can then
+share both the baked density tree and interpolation inputs without generating a complete chunk.
+When the generated `WORLD_SURFACE_WG` is guaranteed to include sea-level fluid, omit footprint
+checks whose only condition is that this height reaches sea level; the condition is already true.
+For generated noise terrain, sample the height before testing the final biome rather than scanning
+every quart Y in a candidate column: start validity depends on the biome at the final generation
+position, and the exact check remains in place there.
+The benchmark prints biome and terrain callback time, their sample counts, and the slowest
+structure sets so that a change in validation ordering does not hide a newly dominant phase.
+It shares an exact-position biome cache with the generated 1:1 map tiles and then with structure
+validation. A cached map biome is used only when its X, Y, and Z all match the structure query;
+surface-height validation normally uses another Y, so the cache intentionally falls back rather
+than treating biomes as two-dimensional.
+Piece graphs, structure blocks, and loot stay deferred until a caller requests them.
+
+One debug build on Apple Silicon produced these representative steady-state results after the
+reusable-output and LLVM-pipeline optimizations. Compilation/setup is outside the timed
+tile-generation loops and is printed separately by the benchmark and recorded below. Treat them
+as comparative measurements, not portable guarantees.
+
+| Level | Direct Swift | WASM in Node | LLVM |
+| --- | ---: | ---: | ---: |
+| 64-block tiles, 1:1 | 19.06 s | 274 ms | 2.32 s |
+| 256-block tiles, 1:4 | 18.99 s | 279 ms | 2.38 s |
+| 1,024-block tiles, 1:16 | 17.39 s | 297 ms | 2.48 s |
+
+| Level | WASM Swift emission | Node compile/init/warm-up | LLVM JIT setup |
+| --- | ---: | ---: | ---: |
+| 64-block tiles, 1:1 | 46 ms | 14 ms | 14.33 s |
+| 256-block tiles, 1:4 | 47 ms | 10 ms | 14.85 s |
+| 1,024-block tiles, 1:16 | 48 ms | 11 ms | 13.73 s |
+
+To reproduce the portable paths, run:
 
 ```shell
 swift test --filter benchmarkRealWorldBiomeTileGeneration

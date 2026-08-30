@@ -529,30 +529,31 @@ private final class VanillaChunkTerrainInterpolator {
     /// Fills only the two z-corners needed for one terrain column. Heightmap validation asks for
     /// isolated columns, so evaluating all horizontal corners would otherwise repeat most of a
     /// chunk's density work without affecting the answer.
-    private func fillColumns(into buffer: inout [Double], atCellX cellX: Int32, aroundCellZ cellZ: Int) {
+    private func fillColumns(
+        into buffer: inout [Double],
+        atCellX cellX: Int32,
+        aroundCellZ cellZ: Int,
+        minimumSampleIndex: Int
+    ) {
         precondition(cellZ >= 0 && cellZ < self.horizontalCellCount)
-        let blockX = cellX * self.horizontalCellBlockCount
-        self.sampler.startBlockX = blockX
-        self.sampler.cellBlockX = 0
 
         buffer.withUnsafeMutableBufferPointer { bufferPointer in
             let bufferBase = bufferPointer.baseAddress!
             for localCellZ in cellZ...(cellZ + 1) {
-                let blockZ = self.columnSampleBlockZs[localCellZ]
                 let baseIndex = localCellZ * self.strideY
-                self.sampler.startBlockZ = blockZ
-                self.sampler.cellBlockZ = 0
-                self.sampler.cacheOnceUniqueIndex += 1
-
-                self.sampler.fill(into: &self.columnScratch, using: self.delegate, mode: .interpolationColumn)
+                let worldCellZ = self.sampler.startCellZ + Int32(localCellZ)
+                self.columnScratch = self.sampler.terrainHeightInterpolationColumn(
+                    atCellX: cellX,
+                    cellZ: worldCellZ,
+                    minimumSampleIndex: minimumSampleIndex,
+                    using: self.delegate
+                )
 
                 for index in 0..<self.strideY {
                     bufferBase[baseIndex + index] = self.columnScratch[index]
                 }
             }
         }
-
-        self.sampler.cacheOnceUniqueIndex += 1
     }
 
     @inline(__always) func fillStartColumns(atCellX cellX: Int32) {
@@ -563,12 +564,30 @@ private final class VanillaChunkTerrainInterpolator {
         self.fillColumns(into: &self.endDensityBuffer, atCellX: cellX)
     }
 
-    @inline(__always) func fillStartColumns(atCellX cellX: Int32, aroundCellZ cellZ: Int) {
-        self.fillColumns(into: &self.startDensityBuffer, atCellX: cellX, aroundCellZ: cellZ)
+    @inline(__always) func fillStartColumns(
+        atCellX cellX: Int32,
+        aroundCellZ cellZ: Int,
+        minimumSampleIndex: Int = 0
+    ) {
+        self.fillColumns(
+            into: &self.startDensityBuffer,
+            atCellX: cellX,
+            aroundCellZ: cellZ,
+            minimumSampleIndex: minimumSampleIndex
+        )
     }
 
-    @inline(__always) func fillEndColumns(atCellX cellX: Int32, aroundCellZ cellZ: Int) {
-        self.fillColumns(into: &self.endDensityBuffer, atCellX: cellX, aroundCellZ: cellZ)
+    @inline(__always) func fillEndColumns(
+        atCellX cellX: Int32,
+        aroundCellZ cellZ: Int,
+        minimumSampleIndex: Int = 0
+    ) {
+        self.fillColumns(
+            into: &self.endDensityBuffer,
+            atCellX: cellX,
+            aroundCellZ: cellZ,
+            minimumSampleIndex: minimumSampleIndex
+        )
     }
 
     @inline(__always) func onSampledCellCorners(cellY: Int, cellZ: Int) {
@@ -614,6 +633,11 @@ private final class VanillaChunkTerrainInterpolator {
 }
 
 final class VanillaChunkTerrainSampler: DensityFunctionBaker {
+    private struct InterpolationColumnKey: Hashable {
+        let cellX: Int32
+        let cellZ: Int32
+    }
+
     enum FillMode {
         case interpolationColumn
         case cell
@@ -662,6 +686,15 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     private var memo: [ObjectIdentifier: any DensityFunction] = [:]
     private var strippedTerrainSamplingMemo: [ObjectIdentifier: any DensityFunction] = [:]
     private var scratchBuffers: [[Double]] = []
+    private struct CachedInterpolationColumn {
+        var values: [Double]
+        /// The inclusive first populated vertical vertex; higher vertices are always present.
+        var firstPopulatedIndex: Int
+    }
+
+    private var terrainHeightInterpolationColumns: [InterpolationColumnKey: CachedInterpolationColumn] = [:]
+    private(set) var terrainHeightInterpolationColumnEvaluationCount = 0
+    private var interpolationColumnStartIndex = 0
     init(chunkPos: PosInt2D, minY: Int32, height: Int32, sizeHorizontal: Int, sizeVertical: Int) {
         self.chunkPos = chunkPos
         self.minY = minY
@@ -699,6 +732,47 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     private static func cellBlockCount(fromNoiseSize size: Int) -> Int32 {
         let shift = max(0, min(30, size + 1))
         return Int32(1 << shift)
+    }
+
+    /// Samples and retains an exact suffix of a generation-cell corner column used by isolated
+    /// height checks. The lower part stays lazy until a deep terrain query needs it.
+    func terrainHeightInterpolationColumn(
+        atCellX cellX: Int32,
+        cellZ: Int32,
+        minimumSampleIndex: Int,
+        using density: any DensityFunction
+    ) -> [Double] {
+        let key = InterpolationColumnKey(cellX: cellX, cellZ: cellZ)
+        let sampleCount = self.verticalCellCount + 1
+        precondition(minimumSampleIndex >= 0 && minimumSampleIndex < sampleCount)
+        var cached = self.terrainHeightInterpolationColumns[key] ?? CachedInterpolationColumn(
+            values: [Double](repeating: .nan, count: sampleCount),
+            firstPopulatedIndex: sampleCount
+        )
+        if cached.firstPopulatedIndex <= minimumSampleIndex {
+            return cached.values
+        }
+
+        self.startBlockX = cellX * self.horizontalCellBlockCount
+        self.startBlockZ = cellZ * self.horizontalCellBlockCount
+        self.cellBlockX = 0
+        self.cellBlockZ = 0
+        self.cacheOnceUniqueIndex += 1
+        let segmentStart = minimumSampleIndex
+        let segmentCount = cached.firstPopulatedIndex - segmentStart
+        var values = [Double](repeating: 0.0, count: segmentCount)
+        let previousStartIndex = self.interpolationColumnStartIndex
+        self.interpolationColumnStartIndex = segmentStart
+        self.fill(into: &values, using: density, mode: .interpolationColumn)
+        self.interpolationColumnStartIndex = previousStartIndex
+        self.cacheOnceUniqueIndex += 1
+        self.terrainHeightInterpolationColumnEvaluationCount += 1
+        for index in values.indices {
+            cached.values[segmentStart + index] = values[index]
+        }
+        cached.firstPopulatedIndex = segmentStart
+        self.terrainHeightInterpolationColumns[key] = cached
+        return cached.values
     }
 
     @inline(__always) private var blockX: Int32 {
@@ -741,7 +815,9 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         let blockZ = self.blockZ
         let scaledX = Double(blockX) * function.xzScaleValue
         let scaledZ = Double(blockZ) * function.xzScaleValue
-        var scaledY = Double(self.minimumCellY * self.verticalCellBlockCount) * function.yScaleValue
+        var scaledY = Double(
+            (self.minimumCellY + Int32(self.interpolationColumnStartIndex)) * self.verticalCellBlockCount
+        ) * function.yScaleValue
         let scaledYStep = Double(self.verticalCellBlockCount) * function.yScaleValue
         let noise = function.noiseSampler
         for index in densities.indices {
@@ -753,7 +829,10 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     @inline(__always) private func validateFillBufferSize(_ count: Int, mode: FillMode) {
         switch mode {
         case .interpolationColumn:
-            precondition(count == self.verticalCellCount + 1, "Unexpected interpolation density buffer size")
+            precondition(
+                count + self.interpolationColumnStartIndex <= self.verticalCellCount + 1,
+                "Unexpected interpolation density buffer size"
+            )
         case .cell:
             precondition(
                 count == Int(self.horizontalCellBlockCount * self.horizontalCellBlockCount * self.verticalCellBlockCount),
@@ -765,7 +844,9 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     @inline(__always) private func setSamplerPosForFillIndex(_ fillIndex: Int, mode: FillMode) {
         switch mode {
         case .interpolationColumn:
-            self.startBlockY = (Int32(fillIndex) + self.minimumCellY) * self.verticalCellBlockCount
+            self.startBlockY = (
+                Int32(fillIndex + self.interpolationColumnStartIndex) + self.minimumCellY
+            ) * self.verticalCellBlockCount
             self.sampleUniqueIndex += 1
             self.cellBlockY = 0
             self.index = fillIndex
@@ -1334,7 +1415,9 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             interpolatedNoise.fillInterpolationColumn(
                 into: &densities,
                 blockX: self.blockX,
-                startBlockY: self.minimumCellY * self.verticalCellBlockCount,
+                startBlockY: (
+                    self.minimumCellY + Int32(self.interpolationColumnStartIndex)
+                ) * self.verticalCellBlockCount,
                 blockZ: self.blockZ,
                 blockYStep: self.verticalCellBlockCount
             )
@@ -1584,8 +1667,9 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     func terrainHeight(
         atLocalX localX: Int32,
         localZ: Int32,
-        with terrainDensity: any DensityFunction
-    ) -> Int32 {
+        with terrainDensity: any DensityFunction,
+        minimumTerrainY: Int32? = nil
+    ) -> Int32? {
         precondition(localX >= 0 && localX < Int32(ProtoChunk.sideLength))
         precondition(localZ >= 0 && localZ < Int32(ProtoChunk.sideLength))
         precondition(Int32(self.horizontalCellCount) * self.horizontalCellBlockCount == Int32(ProtoChunk.sideLength))
@@ -1598,23 +1682,71 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         let directSamplingTerrainDensity = self.strippedTerrainSamplingFunction(from: terrainDensity)
         let terrainInterpolator = VanillaChunkTerrainInterpolator(delegate: directSamplingTerrainDensity, using: self)
         let worldCellX = self.startCellX + Int32(cellX)
+        // Most structure starts are at or above this level. Ocean floors below it use the exact
+        // lazy fallback, while common surface and shallow-ocean queries avoid lower cells.
+        let eagerMinimumY: Int32 = 32
+        let requiredMinimumCell = minimumTerrainY.map {
+            max(0, min(
+                self.verticalCellCount - 1,
+                Int(terrainFloorDiv($0 - self.minY, by: self.verticalCellBlockCount))
+            ))
+        }
+        let fallbackMinimumCell = requiredMinimumCell ?? 0
+        let upperOnlyMinimumCell = max(
+            0,
+            min(
+                self.verticalCellCount - 1,
+                max(
+                    fallbackMinimumCell,
+                    Int(terrainFloorDiv(eagerMinimumY - self.minY, by: self.verticalCellBlockCount))
+                )
+            )
+        )
+
+        func findHeight(from highestCellY: Int, through lowestCellY: Int) -> Int32? {
+            guard highestCellY >= lowestCellY else { return nil }
+            for cellY in stride(from: highestCellY, through: lowestCellY, by: -1) {
+                terrainInterpolator.onSampledCellCorners(cellY: cellY, cellZ: cellZ)
+                let baseY = (Int32(cellY) + self.minimumCellY) * self.verticalCellBlockCount
+                for localCellY in stride(from: Int(self.verticalCellBlockCount) - 1, through: 0, by: -1) {
+                    let worldY = baseY + Int32(localCellY)
+                    if let minimumTerrainY, worldY < minimumTerrainY {
+                        continue
+                    }
+                    terrainInterpolator.interpolateY(Double(localCellY) / Double(self.verticalCellBlockCount))
+                    terrainInterpolator.interpolateX(deltaX)
+                    terrainInterpolator.interpolateZ(deltaZ)
+                    if terrainInterpolator.currentDensity > 0 {
+                        return worldY + 1
+                    }
+                }
+            }
+            return nil
+        }
+
+        terrainInterpolator.fillStartColumns(
+            atCellX: worldCellX,
+            aroundCellZ: cellZ,
+            minimumSampleIndex: upperOnlyMinimumCell
+        )
+        terrainInterpolator.fillEndColumns(
+            atCellX: worldCellX + 1,
+            aroundCellZ: cellZ,
+            minimumSampleIndex: upperOnlyMinimumCell
+        )
+        if let height = findHeight(from: self.verticalCellCount - 1, through: upperOnlyMinimumCell) {
+            return height
+        }
+        guard upperOnlyMinimumCell > fallbackMinimumCell else {
+            return minimumTerrainY == nil ? self.minY : nil
+        }
 
         terrainInterpolator.fillStartColumns(atCellX: worldCellX, aroundCellZ: cellZ)
         terrainInterpolator.fillEndColumns(atCellX: worldCellX + 1, aroundCellZ: cellZ)
-
-        for cellY in stride(from: self.verticalCellCount - 1, through: 0, by: -1) {
-            terrainInterpolator.onSampledCellCorners(cellY: cellY, cellZ: cellZ)
-            let baseY = (Int32(cellY) + self.minimumCellY) * self.verticalCellBlockCount
-            for localCellY in stride(from: Int(self.verticalCellBlockCount) - 1, through: 0, by: -1) {
-                terrainInterpolator.interpolateY(Double(localCellY) / Double(self.verticalCellBlockCount))
-                terrainInterpolator.interpolateX(deltaX)
-                terrainInterpolator.interpolateZ(deltaZ)
-                if terrainInterpolator.currentDensity > 0 {
-                    return baseY + Int32(localCellY) + 1
-                }
-            }
+        if let height = findHeight(from: upperOnlyMinimumCell - 1, through: fallbackMinimumCell) {
+            return height
         }
-        return self.minY
+        return minimumTerrainY == nil ? self.minY : nil
     }
 
     @inline(__always) private func setGeneratedBlock(

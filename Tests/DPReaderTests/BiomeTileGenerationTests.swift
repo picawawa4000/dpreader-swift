@@ -42,7 +42,8 @@ private func benchmarkUncompiledBiomeTiles(
     generator: WorldGenerator,
     workload: BiomeTileWorkload,
     dimension: RegistryKey<DPReader.Dimension>,
-    palette: [RegistryKey<Biome>]
+    palette: [RegistryKey<Biome>],
+    cache: StructureValidationBiomeCache?
 ) throws -> (nanos: UInt64, hash: UInt32) {
     let paletteIDs = Dictionary(uniqueKeysWithValues: palette.enumerated().map { ($0.element, Int32($0.offset)) })
     let firstOrigin = workload.tileOrigins[0]
@@ -74,11 +75,58 @@ private func benchmarkUncompiledBiomeTiles(
         )
         let biomes = try #require(generated)
         #expect(biomes.count == Int(workload.sampleSide * workload.sampleSide))
-        for biome in biomes {
+        for (index, biome) in biomes.enumerated() {
             appendBiomeIDHash(try #require(paletteIDs[biome]), to: &hash)
+            guard workload.scale == 1, let cache else { continue }
+            let sampleX = origin.x + Int32(index % Int(workload.sampleSide))
+            let sampleZ = origin.z + Int32(index / Int(workload.sampleSide))
+            cache.insert(biome, at: PosInt3D(x: sampleX, y: origin.y, z: sampleZ))
         }
     }
     return (DispatchTime.now().uptimeNanoseconds - start, hash)
+}
+
+private final class StructureValidationBiomeCache {
+    private struct Key: Hashable {
+        let x: Int32
+        let y: Int32
+        let z: Int32
+    }
+
+    private struct Value {
+        let biome: RegistryKey<Biome>
+        let originatedInTile: Bool
+    }
+
+    private var values: [Key: Value] = [:]
+    private(set) var generatedTileHits = 0
+    private(set) var structureHits = 0
+    private(set) var misses = 0
+
+    func insert(_ biome: RegistryKey<Biome>, at position: PosInt3D) {
+        self.values[Key(x: position.x, y: position.y, z: position.z)] = Value(
+            biome: biome,
+            originatedInTile: true
+        )
+    }
+
+    func biome(at position: PosInt3D, generator: WorldGenerator, dimension: RegistryKey<DPReader.Dimension>) throws -> RegistryKey<Biome>? {
+        let key = Key(x: position.x, y: position.y, z: position.z)
+        if let cached = self.values[key] {
+            if cached.originatedInTile {
+                self.generatedTileHits += 1
+            } else {
+                self.structureHits += 1
+            }
+            return cached.biome
+        }
+        self.misses += 1
+        let biome = try generator.sampleBiome(at: position, in: dimension)
+        if let biome {
+            self.values[key] = Value(biome: biome, originatedInTile: false)
+        }
+        return biome
+    }
 }
 
 private func benchmarkCompiledBiomeTiles(
@@ -101,10 +149,143 @@ private func benchmarkCompiledBiomeTiles(
     return (DispatchTime.now().uptimeNanoseconds - start, hash)
 }
 
+private final class StructureValidationBenchmarkMetrics {
+    struct StructureSetMetrics {
+        var nanos: UInt64 = 0
+        var candidates = 0
+        var valid = 0
+    }
+
+    var biomeNanos: UInt64 = 0
+    var terrainNanos: UInt64 = 0
+    var biomeSamples = 0
+    var terrainSamples = 0
+    var biomeCacheHits = 0
+    var generatedTileBiomeCacheHits = 0
+    var biomeCacheMisses = 0
+    var structureSets: [String: StructureSetMetrics] = [:]
+}
+
+private func benchmarkValidatedStructureStarts(
+    sampler: StructurePlacementSampler,
+    context: StructureStartValidationContext,
+    terrain: GeneratedStructureHeightmapSampler,
+    metrics: StructureValidationBenchmarkMetrics,
+    structureSets: [(key: RegistryKey<StructureSet>, value: StructureSet)],
+    workload: BiomeTileWorkload
+) throws -> (
+    nanos: UInt64,
+    candidateCount: Int,
+    validCount: Int,
+    terrainColumnFills: Int,
+    biomeNanos: UInt64,
+    terrainNanos: UInt64,
+    biomeSamples: Int,
+    terrainSamples: Int,
+    terrainConstructionNanos: UInt64,
+    terrainInterpolationNanos: UInt64,
+    terrainCacheHits: Int,
+    terrainCacheMisses: Int,
+    biomeCacheHits: Int,
+    generatedTileBiomeCacheHits: Int,
+    biomeCacheMisses: Int,
+    hash: UInt32
+) {
+    var candidateCount = 0
+    var validCount = 0
+    var hash: UInt32 = 2_166_136_261
+    let minimumBlockX = workload.tileOrigins.map(\.x).min()!
+    let minimumBlockZ = workload.tileOrigins.map(\.z).min()!
+    let maximumBlockX = workload.tileOrigins.map(\.x).max()! + workload.tileWorldSide - 1
+    let maximumBlockZ = workload.tileOrigins.map(\.z).max()! + workload.tileWorldSide - 1
+    let minimumChunkX = floorDiv(minimumBlockX, by: 16)
+    let minimumChunkZ = floorDiv(minimumBlockZ, by: 16)
+    let maximumChunkX = floorDiv(maximumBlockX, by: 16)
+    let maximumChunkZ = floorDiv(maximumBlockZ, by: 16)
+
+    func validate(_ sample: StructurePlacementSample) throws {
+        candidateCount += 1
+        appendBiomeIDHash(sample.chunkPos.x, to: &hash)
+        appendBiomeIDHash(sample.chunkPos.z, to: &hash)
+        let structureStart = DispatchTime.now().uptimeNanoseconds
+        let structure = try sampler.resolveStructure(for: sample, validatingWith: context)
+        let structureNanos = DispatchTime.now().uptimeNanoseconds - structureStart
+        var setMetrics = metrics.structureSets[sample.structureSetKey.name] ?? .init()
+        setMetrics.nanos += structureNanos
+        setMetrics.candidates += 1
+        if let structure {
+            validCount += 1
+            setMetrics.valid += 1
+            for byte in structure.name.utf8 {
+                hash ^= UInt32(byte)
+                hash &*= 16_777_619
+            }
+        }
+        metrics.structureSets[sample.structureSetKey.name] = setMetrics
+    }
+
+    let initialTerrainColumns = terrain.terrainDensityColumnEvaluationCount
+    let initialBiomeNanos = metrics.biomeNanos
+    let initialTerrainNanos = metrics.terrainNanos
+    let initialBiomeSamples = metrics.biomeSamples
+    let initialTerrainSamples = metrics.terrainSamples
+    let initialTerrainConstructionNanos = terrain.terrainChunkSamplerConstructionNanos
+    let initialTerrainInterpolationNanos = terrain.terrainInterpolationNanos
+    let initialTerrainCacheHits = terrain.terrainHeightCacheHits
+    let initialTerrainCacheMisses = terrain.terrainHeightCacheMisses
+    let initialBiomeCacheHits = metrics.biomeCacheHits
+    let initialGeneratedTileBiomeCacheHits = metrics.generatedTileBiomeCacheHits
+    let initialBiomeCacheMisses = metrics.biomeCacheMisses
+    let start = DispatchTime.now().uptimeNanoseconds
+    for entry in structureSets {
+        switch entry.value.placement {
+        case .randomSpread(let placement):
+            let minimumRegionX = floorDiv(minimumChunkX, by: Int32(placement.spacing))
+            let maximumRegionX = floorDiv(maximumChunkX, by: Int32(placement.spacing))
+            let minimumRegionZ = floorDiv(minimumChunkZ, by: Int32(placement.spacing))
+            let maximumRegionZ = floorDiv(maximumChunkZ, by: Int32(placement.spacing))
+            for regionZ in minimumRegionZ...maximumRegionZ {
+                for regionX in minimumRegionX...maximumRegionX {
+                    if let sample = try sampler.sampleStructureSet(
+                        inRegion: PosInt2D(x: regionX, z: regionZ), for: entry.key
+                    ), sample.chunkPos.x >= minimumChunkX, sample.chunkPos.x <= maximumChunkX,
+                       sample.chunkPos.z >= minimumChunkZ, sample.chunkPos.z <= maximumChunkZ {
+                        try validate(sample)
+                    }
+                }
+            }
+        case .concentricRings:
+            for sample in try sampler.sampleAllPlacements(for: entry.key)
+            where sample.chunkPos.x >= minimumChunkX && sample.chunkPos.x <= maximumChunkX
+                && sample.chunkPos.z >= minimumChunkZ && sample.chunkPos.z <= maximumChunkZ {
+                try validate(sample)
+            }
+        }
+    }
+    return (
+        DispatchTime.now().uptimeNanoseconds - start,
+        candidateCount,
+        validCount,
+        terrain.terrainDensityColumnEvaluationCount - initialTerrainColumns,
+        metrics.biomeNanos - initialBiomeNanos,
+        metrics.terrainNanos - initialTerrainNanos,
+        metrics.biomeSamples - initialBiomeSamples,
+        metrics.terrainSamples - initialTerrainSamples,
+        terrain.terrainChunkSamplerConstructionNanos - initialTerrainConstructionNanos,
+        terrain.terrainInterpolationNanos - initialTerrainInterpolationNanos,
+        terrain.terrainHeightCacheHits - initialTerrainCacheHits,
+        terrain.terrainHeightCacheMisses - initialTerrainCacheMisses,
+        metrics.biomeCacheHits - initialBiomeCacheHits,
+        metrics.generatedTileBiomeCacheHits - initialGeneratedTileBiomeCacheHits,
+        metrics.biomeCacheMisses - initialBiomeCacheMisses,
+        hash
+    )
+}
+
 private func benchmarkBiomeTileWASMModulesInNode(
     modules: [[UInt8]],
     workloads: [BiomeTileWorkload]
-) throws -> [(nanos: UInt64, hash: UInt32)]? {
+) throws -> [(nanos: UInt64, setupNanos: UInt64, hash: UInt32)]? {
     let nodeCandidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
     guard let nodePath = nodeCandidates.first(where: FileManager.default.fileExists(atPath:)) else {
         return nil
@@ -122,12 +303,15 @@ private func benchmarkBiomeTileWASMModulesInNode(
     const fs = require('fs');
     const tileSides = [\(tileSides)];
     const results = process.argv.slice(1).map((path, workloadIndex) => {
-      const module = new WebAssembly.Module(fs.readFileSync(path));
+      const bytes = fs.readFileSync(path);
+      const setupStart = process.hrtime.bigint();
+      const module = new WebAssembly.Module(bytes);
       if (WebAssembly.Module.imports(module).length !== 0) throw new Error('unexpected WASM imports');
       const instance = new WebAssembly.Instance(module, {});
       const tileSide = tileSides[workloadIndex];
       const minimum = -4 * tileSide;
       instance.exports.sample_bulk(minimum, 256, minimum);
+      const setupNanos = process.hrtime.bigint() - setupStart;
       let hash = 2166136261;
       const start = process.hrtime.bigint();
       for (let tileZ = 0; tileZ < 8; tileZ++) {
@@ -139,9 +323,9 @@ private func benchmarkBiomeTileWASMModulesInNode(
           for (const id of ids) hash = Math.imul((hash ^ id) >>> 0, 16777619) >>> 0;
         }
       }
-      return [process.hrtime.bigint() - start, hash >>> 0];
+      return [process.hrtime.bigint() - start, setupNanos, hash >>> 0];
     });
-    process.stdout.write(results.map((result, index) => `${index} ${result[0]} ${result[1]}`).join('\\n'));
+    process.stdout.write(results.map((result, index) => `${index} ${result[0]} ${result[1]} ${result[2]}`).join('\\n'));
     """
     let process = Process()
     process.executableURL = URL(fileURLWithPath: nodePath)
@@ -162,11 +346,12 @@ private func benchmarkBiomeTileWASMModulesInNode(
     ).split(separator: "\n")
     return try lines.enumerated().map { expectedIndex, line in
         let fields = line.split(separator: " ")
-        #expect(fields.count == 3)
+        #expect(fields.count == 4)
         #expect(Int(fields[0]) == expectedIndex)
         return (
             nanos: try #require(UInt64(fields[1])),
-            hash: try #require(UInt32(fields[2]))
+            setupNanos: try #require(UInt64(fields[2])),
+            hash: try #require(UInt32(fields[3]))
         )
     }
 }
@@ -179,15 +364,64 @@ private func benchmarkBiomeTileWASMModulesInNode(
         .appendingPathComponent("vanilla/1.21.11")
     guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else { return }
 
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
     let generator = try WorldGenerator(
         withWorldSeed: 987_654_321,
-        usingDataPacks: [try DataPack(fromRootPath: vanillaDataPath)],
+        usingDataPacks: [pack],
         usingSettings: RegistryKey(referencing: "minecraft:overworld"),
         useBiomeSearchAlternative: true
     )
     let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    let structureSampler = StructurePlacementSampler(withWorldSeed: 987_654_321, usingDataPacks: [pack])
+    let terrainSettings = try generator.terrainSettingsForTesting()
+    let structureTerrain = GeneratedStructureHeightmapSampler(
+        worldGenerator: generator,
+        seaLevel: 63,
+        minimumWorldY: Int32(terrainSettings.minY),
+        maximumWorldY: Int32(terrainSettings.minY + terrainSettings.height - 1),
+        dimension: dimension
+    )
+    let structureMetrics = StructureValidationBenchmarkMetrics()
+    let biomeCache = StructureValidationBiomeCache()
+    let structureContext = StructureStartValidationContext(
+        dimension: dimension,
+        seaLevel: 63,
+        minimumWorldY: Int32(terrainSettings.minY),
+        maximumWorldY: Int32(terrainSettings.minY + terrainSettings.height - 1),
+        worldSurfaceIsAtLeastSeaLevel: true,
+        prefersHeightBeforeBiomeValidation: true,
+        heightmapSampler: { heightmap, x, z in
+            structureMetrics.terrainSamples += 1
+            let start = DispatchTime.now().uptimeNanoseconds
+            defer { structureMetrics.terrainNanos += DispatchTime.now().uptimeNanoseconds - start }
+            return try structureTerrain.height(heightmap, x, z)
+        },
+        biomeSampler: { position in
+            structureMetrics.biomeSamples += 1
+            let start = DispatchTime.now().uptimeNanoseconds
+            defer { structureMetrics.biomeNanos += DispatchTime.now().uptimeNanoseconds - start }
+            let initialHits = biomeCache.structureHits
+            let initialGeneratedTileHits = biomeCache.generatedTileHits
+            let initialMisses = biomeCache.misses
+            let biome = try biomeCache.biome(at: position, generator: generator, dimension: dimension)
+            structureMetrics.biomeCacheHits += biomeCache.structureHits - initialHits
+            structureMetrics.generatedTileBiomeCacheHits += biomeCache.generatedTileHits - initialGeneratedTileHits
+            structureMetrics.biomeCacheMisses += biomeCache.misses - initialMisses
+            return biome
+        }
+    )
+    let structureSets = try pack.structureSetRegistry.entries().filter {
+        try structureSampler.structureSetCanGenerate($0.key, in: dimension)
+    }
+    // Concentric-ring placements depend only on configuration and seed. Populate their sampler
+    // cache once instead of charging this stable setup to the first tile workload.
+    for entry in structureSets {
+        if case .concentricRings = entry.value.placement {
+            _ = try structureSampler.sampleAllPlacements(for: entry.key)
+        }
+    }
     var wasmSamplers: [CompiledNoiseRouterBiomeBulkSampler] = []
-    var wasmCompileNanos: [UInt64] = []
+    var wasmSetupNanos: [UInt64] = []
     for workload in realWorldBiomeTileWorkloads {
         let volume = CompiledDensityFunctionBufferContext(
             xCount: workload.sampleSide,
@@ -197,13 +431,13 @@ private func benchmarkBiomeTileWASMModulesInNode(
             yStep: 1,
             zStep: workload.scale
         )
-        let start = DispatchTime.now().uptimeNanoseconds
+        let setupStart = DispatchTime.now().uptimeNanoseconds
         wasmSamplers.append(try generator.makeBiomeIDBulkSampler(
             for: volume,
             in: dimension,
             strategy: .wasm
         ))
-        wasmCompileNanos.append(DispatchTime.now().uptimeNanoseconds - start)
+        wasmSetupNanos.append(DispatchTime.now().uptimeNanoseconds - setupStart)
     }
 
     var referenceHashes: [UInt32] = []
@@ -213,7 +447,8 @@ private func benchmarkBiomeTileWASMModulesInNode(
             generator: generator,
             workload: workload,
             dimension: dimension,
-            palette: sampler.palette
+            palette: sampler.palette,
+            cache: biomeCache
         )
         referenceHashes.append(result.hash)
         uncompiledNanos.append(result.nanos)
@@ -228,8 +463,19 @@ private func benchmarkBiomeTileWASMModulesInNode(
         #expect(wasmResults.map(\.hash) == referenceHashes)
     }
 
+    let structureResults = try realWorldBiomeTileWorkloads.map {
+        try benchmarkValidatedStructureStarts(
+            sampler: structureSampler,
+            context: structureContext,
+            terrain: structureTerrain,
+            metrics: structureMetrics,
+            structureSets: structureSets,
+            workload: $0
+        )
+    }
+
     #if canImport(CLLVM)
-    var llvmCompileNanos: [UInt64] = []
+    var llvmSetupNanos: [UInt64] = []
     var llvmResults: [(nanos: UInt64, hash: UInt32)] = []
     for workload in realWorldBiomeTileWorkloads {
         let volume = CompiledDensityFunctionBufferContext(
@@ -240,13 +486,13 @@ private func benchmarkBiomeTileWASMModulesInNode(
             yStep: 1,
             zStep: workload.scale
         )
-        let start = DispatchTime.now().uptimeNanoseconds
+        let setupStart = DispatchTime.now().uptimeNanoseconds
         let sampler = try generator.makeBiomeIDBulkSampler(
             for: volume,
             in: dimension,
             strategy: .llvm
         )
-        llvmCompileNanos.append(DispatchTime.now().uptimeNanoseconds - start)
+        llvmSetupNanos.append(DispatchTime.now().uptimeNanoseconds - setupStart)
         llvmResults.append(benchmarkCompiledBiomeTiles(sampler: sampler, workload: workload))
     }
     #expect(llvmResults.map(\.hash) == referenceHashes)
@@ -255,19 +501,32 @@ private func benchmarkBiomeTileWASMModulesInNode(
     for index in realWorldBiomeTileWorkloads.indices {
         let workload = realWorldBiomeTileWorkloads[index]
         #if canImport(CLLVM)
-        let llvmText = "LLVM \(llvmResults[index].nanos) ns (compile \(llvmCompileNanos[index]) ns)"
+        let llvmText = "LLVM \(llvmResults[index].nanos) ns (setup \(llvmSetupNanos[index]) ns)"
         #else
         let llvmText = "LLVM unavailable"
         #endif
         let wasmText = wasmResults.map {
-            "WASM/Node \($0[index].nanos) ns (compile \(wasmCompileNanos[index]) ns)"
-        } ?? "WASM/Node unavailable (module compilation succeeded in \(wasmCompileNanos[index]) ns)"
+            "WASM/Node \($0[index].nanos) ns (Swift emit \(wasmSetupNanos[index]) ns; Node compile/init \($0[index].setupNanos) ns)"
+        } ?? "WASM/Node unavailable (setup \(wasmSetupNanos[index]) ns)"
         print(
             "benchmarkRealWorldBiomeTileGeneration:", workload.label + ";",
             workload.sampleSide * workload.sampleSide * 64, "samples;",
             "uncompiled", uncompiledNanos[index], "ns;", wasmText + ";", llvmText + ";",
-            "checksum", referenceHashes[index]
+            "structure starts", structureResults[index].nanos, "ns",
+            "(\(structureResults[index].candidateCount) candidates; \(structureResults[index].validCount) valid;",
+            "\(structureResults[index].terrainColumnFills) terrain density column fills);",
+            "validation breakdown biome \(structureResults[index].biomeNanos) ns",
+            "(\(structureResults[index].biomeSamples) samples; \(structureResults[index].biomeCacheHits) structure hits; \(structureResults[index].generatedTileBiomeCacheHits) tile hits; \(structureResults[index].biomeCacheMisses) misses), terrain \(structureResults[index].terrainNanos) ns",
+            "(\(structureResults[index].terrainSamples) height requests; \(structureResults[index].terrainCacheHits) cache hits; \(structureResults[index].terrainCacheMisses) misses; construction \(structureResults[index].terrainConstructionNanos) ns; interpolation \(structureResults[index].terrainInterpolationNanos) ns);",
+            "checksums", referenceHashes[index], structureResults[index].hash
         )
     }
+    let slowestStructureSets = structureMetrics.structureSets.sorted { $0.value.nanos > $1.value.nanos }.prefix(5)
+    print(
+        "benchmarkRealWorldBiomeTileGeneration slowest structure sets:",
+        slowestStructureSets.map {
+            "\($0.key) \($0.value.nanos) ns (\($0.value.candidates) candidates; \($0.value.valid) valid)"
+        }.joined(separator: "; ")
+    )
 }
 #endif

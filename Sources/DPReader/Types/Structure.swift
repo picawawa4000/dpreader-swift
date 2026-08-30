@@ -5,6 +5,7 @@ public enum StructureGeneratedResult {
     case jungleTemple(JungleTempleGenerationResult)
     case mineshaft(MineshaftGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
+    case ruinedPortal(RuinedPortalGenerationResult)
     case stronghold(StrongholdGenerationResult)
     case woodlandMansion(WoodlandMansionGenerationResult)
     case jigsaw(JigsawStructureGenerationResult)
@@ -139,6 +140,11 @@ public final class Structure: Codable {
             return Mineshaft.generatePieceGraph(
                 type: settings.mineshaftType, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
+        case "minecraft:ruined_portal":
+            guard case .ruinedPortal(let settings) = self.settings else { return nil }
+            return try RuinedPortal.generatePieceGraph(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
+            )
         case "minecraft:desert_pyramid":
             return DesertPyramid.generatePieceGraph(
                 worldSeed: worldSeed,
@@ -195,6 +201,11 @@ public final class Structure: Codable {
             guard case .mineshaft(let settings) = self.settings else { return nil }
             return .mineshaft(Mineshaft.generate(
                 type: settings.mineshaftType, worldSeed: worldSeed, startChunk: startChunk, context: context
+            ))
+        case "minecraft:ruined_portal":
+            guard case .ruinedPortal(let settings) = self.settings else { return nil }
+            return .ruinedPortal(try RuinedPortal.generate(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             ))
         case "minecraft:desert_pyramid":
             guard let result = DesertPyramid.generate(
@@ -259,6 +270,11 @@ public final class Structure: Codable {
             return Mineshaft.generateLoot(
                 type: settings.mineshaftType, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
+        case "minecraft:ruined_portal":
+            guard case .ruinedPortal(let settings) = self.settings else { return nil }
+            return try RuinedPortal.generate(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
+            ).lootContainers
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
                 worldSeed: worldSeed,

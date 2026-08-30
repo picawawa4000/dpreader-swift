@@ -100,6 +100,27 @@ public final class StructurePlacementSampler {
         }
     }
 
+    /// Returns whether any entry in a structure set can pass biome eligibility in `dimension`.
+    ///
+    /// Call this before enumerating placement regions for a large area. The dimension eligibility
+    /// map is cached, so structure sets belonging exclusively to another dimension can be skipped
+    /// without producing and individually rejecting every candidate start.
+    public func structureSetCanGenerate(
+        _ structureSetKey: RegistryKey<StructureSet>,
+        in dimension: RegistryKey<Dimension>
+    ) throws -> Bool {
+        guard let structureSet = self.structureSetRegistry.get(structureSetKey) else {
+            throw Errors.structureSetNotFound(structureSetKey.name)
+        }
+        for weightedStructure in structureSet.structures {
+            let structureKey = RegistryKey<Structure>(referencing: weightedStructure.structure)
+            if try self.structureCanGenerate(structureKey, in: dimension) {
+                return true
+            }
+        }
+        return false
+    }
+
     public func resolveStructureSet(
         inRegion regionPos: PosInt2D,
         biome: RegistryKey<Biome>,

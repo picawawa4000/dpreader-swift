@@ -82,6 +82,18 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         #expect(try context.height(.oceanFloorWG, x: x, z: z) == expectedTerrain)
         #expect(try context.height(.worldSurfaceWG, x: x, z: z) == max(expectedTerrain, 63))
     }
+
+    let settings = try generator.terrainSettingsForTesting()
+    let sharedCellSampler = GeneratedStructureHeightmapSampler(
+        worldGenerator: generator,
+        seaLevel: 63,
+        minimumWorldY: Int32(settings.minY),
+        maximumWorldY: Int32(settings.minY + settings.height - 1),
+        dimension: RegistryKey(referencing: "minecraft:overworld")
+    )
+    _ = try sharedCellSampler.height(.oceanFloorWG, 0, 0)
+    _ = try sharedCellSampler.height(.oceanFloorWG, 1, 1)
+    #expect(sharedCellSampler.terrainDensityColumnEvaluationCount == 4)
 }
 
 #if DEBUG && !(os(WASI) || arch(wasm32))
@@ -115,6 +127,7 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         "\(side * side) starts in \(elapsed) ns",
         "(\(elapsed / UInt64(side * side))ns/start; checksum \(checksum))"
     )
+
 }
 
 @Test func benchmarkLargeScaleValidatedStructureStartSampling() async throws {

@@ -18,6 +18,11 @@ public struct StructureStartValidationContext {
     public let seaLevel: Int32
     public let minimumWorldY: Int32
     public let maximumWorldY: Int32
+    /// Whether every `WORLD_SURFACE_WG` height is guaranteed to be at least `seaLevel`.
+    public let worldSurfaceIsAtLeastSeaLevel: Bool
+    /// Whether generated height sampling is preferred to a conservative full vertical biome scan.
+    /// The exact biome is still checked at the eventual generation position.
+    public let prefersHeightBeforeBiomeValidation: Bool
 
     private let heightmapSampler: (StructureStartHeightmap, Int32, Int32) throws -> Int32
     private let biomeSampler: (PosInt3D) throws -> RegistryKey<Biome>?
@@ -27,6 +32,8 @@ public struct StructureStartValidationContext {
         seaLevel: Int32,
         minimumWorldY: Int32,
         maximumWorldY: Int32,
+        worldSurfaceIsAtLeastSeaLevel: Bool = false,
+        prefersHeightBeforeBiomeValidation: Bool = false,
         heightmapSampler: @escaping (StructureStartHeightmap, Int32, Int32) throws -> Int32,
         biomeSampler: @escaping (PosInt3D) throws -> RegistryKey<Biome>?
     ) {
@@ -35,6 +42,8 @@ public struct StructureStartValidationContext {
         self.seaLevel = seaLevel
         self.minimumWorldY = minimumWorldY
         self.maximumWorldY = maximumWorldY
+        self.worldSurfaceIsAtLeastSeaLevel = worldSurfaceIsAtLeastSeaLevel
+        self.prefersHeightBeforeBiomeValidation = prefersHeightBeforeBiomeValidation
         self.heightmapSampler = heightmapSampler
         self.biomeSampler = biomeSampler
     }
@@ -89,6 +98,9 @@ public struct StructureStartValidationContext {
             seaLevel: seaLevel,
             minimumWorldY: minimumWorldY,
             maximumWorldY: maximumWorldY,
+            worldSurfaceIsAtLeastSeaLevel:
+                dimension.name != "minecraft:end" && dimension.name != "minecraft:the_end",
+            prefersHeightBeforeBiomeValidation: true,
             heightmapSampler: terrain.height,
             biomeSampler: { position in
                 try worldGenerator.sampleBiome(at: position, in: dimension)
@@ -176,35 +188,45 @@ extension Structure {
 
         switch self.type {
         case "minecraft:desert_pyramid":
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
             let position = PosInt3D(x: centerX, y: y, z: centerZ)
             guard let biome = try context.biome(at: position), allowedBiomeNames.contains(biome.name) else {
                 return nil
             }
-            guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
-            guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ) >= context.seaLevel else { return nil }
-            guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 20) >= context.seaLevel else { return nil }
-            guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ &+ 20) >= context.seaLevel else { return nil }
+            if !context.worldSurfaceIsAtLeastSeaLevel {
+                guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 20) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ &+ 20) >= context.seaLevel else { return nil }
+            }
             return try makeValidatedStart(at: position, knownBiome: biome)
 
         case "minecraft:jungle_temple":
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
             let position = PosInt3D(x: centerX, y: y, z: centerZ)
             guard let biome = try context.biome(at: position), allowedBiomeNames.contains(biome.name) else {
                 return nil
             }
-            guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
-            guard try context.height(.worldSurfaceWG, x: startX &+ 11, z: startZ) >= context.seaLevel else { return nil }
-            guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 14) >= context.seaLevel else { return nil }
-            guard try context.height(.worldSurfaceWG, x: startX &+ 11, z: startZ &+ 14) >= context.seaLevel else { return nil }
+            if !context.worldSurfaceIsAtLeastSeaLevel {
+                guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: startX &+ 11, z: startZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 14) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: startX &+ 11, z: startZ &+ 14) >= context.seaLevel else { return nil }
+            }
             return try makeValidatedStart(at: position, knownBiome: biome)
 
         case "minecraft:woodland_mansion":
             let anchorX = startX &+ 7
             let anchorZ = startZ &+ 7
-            guard try biomeColumnCanMatch(x: anchorX, z: anchorZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: anchorX, z: anchorZ) else { return nil }
+            }
             var random = checkedRandomForChunkGeneration(
                 worldSeed: worldSeed,
                 chunkX: startChunk.x,
@@ -221,7 +243,9 @@ extension Structure {
             return try makeValidatedStart(at: PosInt3D(x: anchorX, y: y, z: anchorZ))
 
         case "minecraft:end_city":
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             var random = checkedRandomForChunkGeneration(
                 worldSeed: worldSeed,
                 chunkX: startChunk.x,
@@ -255,17 +279,23 @@ extension Structure {
                     }
                 }
             }
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             let y = try context.height(.oceanFloorWG, x: centerX, z: centerZ)
             return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:ocean_ruin", "minecraft:buried_treasure":
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             let y = try context.height(.oceanFloorWG, x: centerX, z: centerZ)
             return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:shipwreck":
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             let heightmap: StructureStartHeightmap = structureKey.name.hasSuffix("_beached")
                 ? .worldSurfaceWG
                 : .oceanFloorWG
@@ -273,7 +303,9 @@ extension Structure {
             return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
         case "minecraft:igloo", "minecraft:swamp_hut", "minecraft:ruined_portal":
-            guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            if !context.prefersHeightBeforeBiomeValidation {
+                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+            }
             let y = try context.height(.worldSurfaceWG, x: centerX, z: centerZ)
             return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
 
@@ -296,13 +328,15 @@ extension Structure {
                 random: &random
             )
             if settings.projectStartToHeightmap != nil {
-                guard try biomeColumnCanMatch(
-                    x: horizontalPosition.x,
-                    z: horizontalPosition.z,
-                    minimumY: y &+ context.minimumWorldY,
-                    maximumY: y &+ context.maximumWorldY &+ 1,
-                    preferredY: y &+ context.seaLevel
-                ) else { return nil }
+                if !context.prefersHeightBeforeBiomeValidation {
+                    guard try biomeColumnCanMatch(
+                        x: horizontalPosition.x,
+                        z: horizontalPosition.z,
+                        minimumY: y &+ context.minimumWorldY,
+                        maximumY: y &+ context.maximumWorldY &+ 1,
+                        preferredY: y &+ context.seaLevel
+                    ) else { return nil }
+                }
                 y &+= try context.height(.worldSurfaceWG, x: startX, z: startZ)
             }
             return try makeValidatedStart(
@@ -555,12 +589,31 @@ public final class GeneratedStructureHeightmapSampler {
         let z: Int32
     }
 
+    private struct ChunkKey: Hashable {
+        let x: Int32
+        let z: Int32
+    }
+
+    private struct CachedChunkSampler {
+        let sampler: StructureStartTerrainChunkSampler
+        var lastUse: UInt64
+    }
+
     private let worldGenerator: WorldGenerator
     private let seaLevel: Int32
     private let minimumWorldY: Int32
     private let maximumWorldY: Int32
     private let hasSeaLevelFluid: Bool
     private var terrainHeights: [ColumnKey: Int32] = [:]
+    private var worldSurfaceHeights: [ColumnKey: Int32] = [:]
+    private var chunkSamplers: [ChunkKey: CachedChunkSampler] = [:]
+    private var chunkSamplerUse: UInt64 = 0
+    private let maximumCachedChunkSamplers = 16
+    public private(set) var terrainDensityColumnEvaluationCount = 0
+    public private(set) var terrainChunkSamplerConstructionNanos: UInt64 = 0
+    public private(set) var terrainInterpolationNanos: UInt64 = 0
+    public private(set) var terrainHeightCacheHits = 0
+    public private(set) var terrainHeightCacheMisses = 0
 
     public init(
         worldGenerator: WorldGenerator,
@@ -578,11 +631,53 @@ public final class GeneratedStructureHeightmapSampler {
 
     public func height(_ heightmap: StructureStartHeightmap, _ x: Int32, _ z: Int32) throws -> Int32 {
         let key = ColumnKey(x: x, z: z)
+        if heightmap == .worldSurfaceWG, self.hasSeaLevelFluid {
+            if let cached = self.terrainHeights[key] {
+                self.terrainHeightCacheHits += 1
+                return max(cached, self.seaLevel)
+            }
+            if let cached = self.worldSurfaceHeights[key] {
+                self.terrainHeightCacheHits += 1
+                return cached
+            }
+
+            self.terrainHeightCacheMisses += 1
+            let chunkSampler = try self.chunkSampler(for: x, z: z)
+            let previousEvaluationCount = chunkSampler.densityColumnEvaluationCount
+            let interpolationStart = DispatchTime.now().uptimeNanoseconds
+            if let terrainHeight = chunkSampler.height(
+                atX: x,
+                z: z,
+                minimumTerrainY: self.seaLevel - 1
+            ) {
+                self.terrainInterpolationNanos += DispatchTime.now().uptimeNanoseconds - interpolationStart
+                self.terrainDensityColumnEvaluationCount +=
+                    chunkSampler.densityColumnEvaluationCount - previousEvaluationCount
+                self.terrainHeights[key] = terrainHeight
+                return terrainHeight
+            }
+            self.terrainInterpolationNanos += DispatchTime.now().uptimeNanoseconds - interpolationStart
+            self.terrainDensityColumnEvaluationCount +=
+                chunkSampler.densityColumnEvaluationCount - previousEvaluationCount
+            self.worldSurfaceHeights[key] = self.seaLevel
+            return self.seaLevel
+        }
         let terrainHeight: Int32
         if let cached = self.terrainHeights[key] {
+            self.terrainHeightCacheHits += 1
             terrainHeight = cached
         } else {
-            terrainHeight = try self.worldGenerator.terrainHeightForStructureStartValidation(atX: x, z: z)
+            self.terrainHeightCacheMisses += 1
+            let chunkSampler = try self.chunkSampler(for: x, z: z)
+            let previousEvaluationCount = chunkSampler.densityColumnEvaluationCount
+            let interpolationStart = DispatchTime.now().uptimeNanoseconds
+            guard let sampledHeight = chunkSampler.height(atX: x, z: z) else {
+                preconditionFailure("An unbounded terrain-height query must return a height")
+            }
+            terrainHeight = sampledHeight
+            self.terrainInterpolationNanos += DispatchTime.now().uptimeNanoseconds - interpolationStart
+            self.terrainDensityColumnEvaluationCount +=
+                chunkSampler.densityColumnEvaluationCount - previousEvaluationCount
             self.terrainHeights[key] = terrainHeight
         }
 
@@ -590,5 +685,26 @@ public final class GeneratedStructureHeightmapSampler {
             return max(terrainHeight, self.seaLevel)
         }
         return terrainHeight
+    }
+
+    private func chunkSampler(for x: Int32, z: Int32) throws -> StructureStartTerrainChunkSampler {
+        let chunkKey = ChunkKey(x: floorDiv(x, by: 16), z: floorDiv(z, by: 16))
+        self.chunkSamplerUse &+= 1
+        if var cached = self.chunkSamplers[chunkKey] {
+            cached.lastUse = self.chunkSamplerUse
+            self.chunkSamplers[chunkKey] = cached
+            return cached.sampler
+        }
+        if self.chunkSamplers.count >= self.maximumCachedChunkSamplers,
+           let oldest = self.chunkSamplers.min(by: { $0.value.lastUse < $1.value.lastUse }) {
+            self.chunkSamplers.removeValue(forKey: oldest.key)
+        }
+        let constructionStart = DispatchTime.now().uptimeNanoseconds
+        let sampler = try self.worldGenerator.terrainHeightSamplerForStructureStartValidation(
+            at: PosInt2D(x: chunkKey.x, z: chunkKey.z)
+        )
+        self.terrainChunkSamplerConstructionNanos += DispatchTime.now().uptimeNanoseconds - constructionStart
+        self.chunkSamplers[chunkKey] = CachedChunkSampler(sampler: sampler, lastUse: self.chunkSamplerUse)
+        return sampler
     }
 }

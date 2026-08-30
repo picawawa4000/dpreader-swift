@@ -115,6 +115,32 @@ private final class CompiledChunkTerrainDensity: DensityFunction {
     }
 }
 
+/// A reusable exact height evaluator for several structure checks inside one chunk.
+final class StructureStartTerrainChunkSampler {
+    private let sampler: VanillaChunkTerrainSampler
+    private let density: any DensityFunction
+
+    init(sampler: VanillaChunkTerrainSampler, density: any DensityFunction) {
+        self.sampler = sampler
+        self.density = density
+    }
+
+    func height(atX x: Int32, z: Int32, minimumTerrainY: Int32? = nil) -> Int32? {
+        let localX = x &- self.sampler.chunkPos.x &* 16
+        let localZ = z &- self.sampler.chunkPos.z &* 16
+        return self.sampler.terrainHeight(
+            atLocalX: localX,
+            localZ: localZ,
+            with: self.density,
+            minimumTerrainY: minimumTerrainY
+        )
+    }
+
+    var densityColumnEvaluationCount: Int {
+        self.sampler.terrainHeightInterpolationColumnEvaluationCount
+    }
+}
+
 @inline(__always)
 private func canonicalPredefinedBiomePreset(_ preset: String) -> String? {
     switch preset {
@@ -4133,15 +4159,24 @@ public final class WorldGenerator {
     /// or filling a complete chunk. The sampler still evaluates the exact four generation-cell
     /// corner columns that vanilla interpolation uses for this block column.
     func terrainHeightForStructureStartValidation(atX x: Int32, z: Int32) throws -> Int32 {
+        let chunkPos = PosInt2D(x: floorDiv(x, by: 16), z: floorDiv(z, by: 16))
+        return try self.terrainHeightSamplerForStructureStartValidation(at: chunkPos).height(
+            atX: x,
+            z: z
+        ) ?? Int32.min
+    }
+
+    /// Creates a reusable evaluator so nearby structure footprint checks share the baked density
+    /// tree and any generation-cell corner columns used by vanilla interpolation.
+    func terrainHeightSamplerForStructureStartValidation(
+        at chunkPos: PosInt2D
+    ) throws -> StructureStartTerrainChunkSampler {
         self.terrainGenerationLock.lock()
         defer { self.terrainGenerationLock.unlock() }
 
         let config = try self.validatedTerrainConfig(for: "Structure-start terrain-height validation")
         let minY = Int32(config.minY)
         let height = Int32(config.height)
-        let chunkPos = PosInt2D(x: floorDiv(x, by: 16), z: floorDiv(z, by: 16))
-        let localX = x &- chunkPos.x &* 16
-        let localZ = z &- chunkPos.z &* 16
         let chunkSampler = VanillaChunkTerrainSampler(
             chunkPos: chunkPos,
             minY: minY,
@@ -4158,10 +4193,9 @@ public final class WorldGenerator {
             sizeHorizontal: config.sizeHorizontal,
             sizeVertical: config.sizeVertical
         )
-        return chunkSampler.terrainHeight(
-            atLocalX: localX,
-            localZ: localZ,
-            with: sampledTerrainDensity
+        return StructureStartTerrainChunkSampler(
+            sampler: chunkSampler,
+            density: sampledTerrainDensity
         )
     }
 
