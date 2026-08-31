@@ -20,7 +20,7 @@ let llvmPrefix = ProcessInfo.processInfo.environment["DPREADER_ENABLE_LLVM"] == 
     : nil
 let useTestVisible = ProcessInfo.processInfo.environment["USE_TEST_VISIBLE"] == "1"
 
-var dpReaderDependencies: [Target.Dependency] = ["CryptoSwift"]
+var dpReaderDependencies: [Target.Dependency] = ["SwiftHash"]
 var dpReaderSwiftSettings: [SwiftSetting] = []
 var dpReaderLinkerSettings: [LinkerSetting] = []
 var dpReaderTestsSwiftSettings: [SwiftSetting] = []
@@ -77,7 +77,7 @@ targets.append(
 )
 
 var packageDependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/krzyzanowskim/CryptoSwift.git", from: "1.9.0"),
+    .package(url: "https://github.com/onmyway133/SwiftHash.git", from: "2.0.2"),
     .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
 ]
 if useTestVisible {

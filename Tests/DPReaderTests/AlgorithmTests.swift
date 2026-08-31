@@ -41,7 +41,7 @@ private func checkDouble(_ actualValue: Double, _ roundedExpectedValue: Int) -> 
 }
 
 @Test func testMD5() async throws {
-    let hashBytes = "octave_-11".bytes.md5()
+    let hashBytes = md5Bytes(of: "octave_-11")
     let combinedLowBytes = hashBytes[0..<8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     let combinedHighBytes = hashBytes[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     #expect(combinedLowBytes == 0x0fd787bfbc403ec3)

@@ -1,6 +1,14 @@
 import Foundation
-// For cross-platform String.md5
-import CryptoSwift
+import SwiftHash
+
+/// Returns the MD5 digest in the byte order used by Minecraft's random splitters.
+func md5Bytes(of string: String) -> [UInt8] {
+    let hexadecimal = Array(MD5(string).utf8)
+    precondition(hexadecimal.count == 32, "MD5 must produce a 16-byte digest")
+    return stride(from: 0, to: hexadecimal.count, by: 2).map { offset in
+        UInt8(String(decoding: hexadecimal[offset...(offset + 1)], as: UTF8.self), radix: 16)!
+    }
+}
 
 /// TODO: use `@TestVisible` for tests instead of `compareForTest`.
 
@@ -381,7 +389,7 @@ public struct XoroshiroRandomSplitter: RandomSplitter {
     }
 
     public func split(usingString string: String) -> ReturnedRandom {
-        let hashBytes = string.bytes.md5()
+        let hashBytes = md5Bytes(of: string)
         let lo = hashBytes[0..<8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         let hi = hashBytes[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         return XoroshiroRandom(seedLo: lo ^ self.seedLo, seedHi: hi ^ self.seedHi)

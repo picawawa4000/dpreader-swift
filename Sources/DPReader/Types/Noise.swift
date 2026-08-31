@@ -23,7 +23,7 @@ public final class NoiseDefinition: Codable {
     }
 
     public func initHashes(forID id: RegistryKey<NoiseDefinition>) {
-        let hashBytes = id.name.bytes.md5()
+        let hashBytes = md5Bytes(of: id.name)
         self.hashLow = hashBytes[0..<8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         self.hashHigh = hashBytes[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     }
@@ -206,7 +206,7 @@ public final class ModernNoiseDefinition: Codable {
     }
 
     public func initHashes(forID id: RegistryKey<NoiseDefinition>) {
-        let hashBytes = id.name.bytes.md5()
+        let hashBytes = md5Bytes(of: id.name)
         self.hashLow = hashBytes[0..<8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         self.hashHigh = hashBytes[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     }
