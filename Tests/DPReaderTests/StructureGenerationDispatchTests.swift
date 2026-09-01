@@ -243,6 +243,43 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
     #expect(treasureCounts == ["minecraft:iron_nugget": 3, "minecraft:iron_ingot": 18, "minecraft:lapis_lazuli": 9])
 }
 
+@Test func testSeed123458IglooLootReference() async throws {
+    let url = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/igloo.json")
+    let igloo = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let context = try oceanRuinTestContext(terrainTopY: 69)
+    #expect(try igloo.generateLoot(
+        worldSeed: 123_458, startChunk: PosInt2D(x: 229, z: 151), context: context
+    ) == [])
+    let containers = try #require(try igloo.generateLoot(
+        worldSeed: 123_458, startChunk: PosInt2D(x: 183, z: 224), context: context
+    ))
+    #expect(containers == [StructureLootContainer(
+        block: "minecraft:chest", pos: PosInt3D(x: 2_932, y: 52, z: 3_587),
+        lootTable: "minecraft:chests/igloo_chest", lootSeed: 732_956_429_499_200_025
+    )])
+    let lootURL = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/igloo_chest.json")
+    let lootTable = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: lootURL))
+    let items = try lootTable.generateLoot(withContext: LootContext(
+        random: CheckedRandom(seed: UInt64(bitPattern: containers[0].lootSeed))
+    ))
+    let counts = Dictionary(grouping: items, by: \.itemName).mapValues { $0.reduce(0) { $0 + $1.count } }
+    #expect(counts == ["minecraft:coal": 4, "minecraft:golden_apple": 1])
+}
+
+@Test func testSwampHutGenerationDispatch() async throws {
+    let url = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/swamp_hut.json")
+    let hut = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let generated = try #require(try hut.generate(
+        worldSeed: 123_458, startChunk: PosInt2D(x: 0, z: 0), context: structureDispatchContext()
+    ))
+    guard case .swampHut(let result) = generated else {
+        Issue.record("Expected swamp-hut generation result")
+        return
+    }
+    #expect(result.lootContainers.isEmpty)
+    #expect(result.graph.boundingBox.maxY - result.graph.boundingBox.minY == 6)
+}
+
 private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGenerationContext {
     let pack = try DataPack(
         fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"),

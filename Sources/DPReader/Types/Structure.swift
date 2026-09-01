@@ -3,11 +3,13 @@ public enum StructureGeneratedResult {
     case buriedTreasure(BuriedTreasureGenerationResult)
     case desertPyramid(DesertPyramidGenerationResult)
     case jungleTemple(JungleTempleGenerationResult)
+    case igloo(IglooGenerationResult)
     case mineshaft(MineshaftGenerationResult)
     case oceanRuin(OceanRuinGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
     case ruinedPortal(RuinedPortalGenerationResult)
     case shipwreck(ShipwreckGenerationResult)
+    case swampHut(SwampHutGenerationResult)
     case stronghold(StrongholdGenerationResult)
     case woodlandMansion(WoodlandMansionGenerationResult)
     case jigsaw(JigsawStructureGenerationResult)
@@ -158,6 +160,10 @@ public final class Structure: Codable {
             return try Shipwreck.generatePieceGraph(
                 settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
+        case "minecraft:igloo":
+            return try Igloo.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:swamp_hut":
+            return SwampHut.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generatePieceGraph(
                 worldSeed: worldSeed,
@@ -230,6 +236,11 @@ public final class Structure: Codable {
             return .shipwreck(try Shipwreck.generate(
                 settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             ))
+        case "minecraft:igloo":
+            return .igloo(try Igloo.generate(worldSeed: worldSeed, startChunk: startChunk, context: context))
+        case "minecraft:swamp_hut":
+            guard let result = SwampHut.generate(worldSeed: worldSeed, startChunk: startChunk, context: context) else { return nil }
+            return .swampHut(result)
         case "minecraft:desert_pyramid":
             guard let result = DesertPyramid.generate(
                 worldSeed: worldSeed,
@@ -308,6 +319,10 @@ public final class Structure: Codable {
             return try Shipwreck.generateLoot(
                 settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
+        case "minecraft:igloo":
+            return try Igloo.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:swamp_hut":
+            return SwampHut.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
                 worldSeed: worldSeed,
