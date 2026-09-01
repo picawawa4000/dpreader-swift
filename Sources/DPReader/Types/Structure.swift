@@ -4,6 +4,7 @@ public enum StructureGeneratedResult {
     case desertPyramid(DesertPyramidGenerationResult)
     case jungleTemple(JungleTempleGenerationResult)
     case mineshaft(MineshaftGenerationResult)
+    case oceanRuin(OceanRuinGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
     case ruinedPortal(RuinedPortalGenerationResult)
     case stronghold(StrongholdGenerationResult)
@@ -140,6 +141,11 @@ public final class Structure: Codable {
             return Mineshaft.generatePieceGraph(
                 type: settings.mineshaftType, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
+        case "minecraft:ocean_ruin":
+            guard case .oceanRuin(let settings) = self.settings else { return nil }
+            return try OceanRuin.generatePieceGraph(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
+            )
         case "minecraft:ruined_portal":
             guard case .ruinedPortal(let settings) = self.settings else { return nil }
             return try RuinedPortal.generatePieceGraph(
@@ -201,6 +207,11 @@ public final class Structure: Codable {
             guard case .mineshaft(let settings) = self.settings else { return nil }
             return .mineshaft(Mineshaft.generate(
                 type: settings.mineshaftType, worldSeed: worldSeed, startChunk: startChunk, context: context
+            ))
+        case "minecraft:ocean_ruin":
+            guard case .oceanRuin(let settings) = self.settings else { return nil }
+            return .oceanRuin(try OceanRuin.generate(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             ))
         case "minecraft:ruined_portal":
             guard case .ruinedPortal(let settings) = self.settings else { return nil }
@@ -269,6 +280,11 @@ public final class Structure: Codable {
             guard case .mineshaft(let settings) = self.settings else { return nil }
             return Mineshaft.generateLoot(
                 type: settings.mineshaftType, worldSeed: worldSeed, startChunk: startChunk, context: context
+            )
+        case "minecraft:ocean_ruin":
+            guard case .oceanRuin(let settings) = self.settings else { return nil }
+            return try OceanRuin.generateLoot(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
         case "minecraft:ruined_portal":
             guard case .ruinedPortal(let settings) = self.settings else { return nil }

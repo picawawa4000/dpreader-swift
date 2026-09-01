@@ -645,9 +645,9 @@ public final class OctavePerlinNoise {
     private let octaves: [Octave]
 
     public init<R: Random>(random rng: inout R, firstOctave: Int, amplitudes: [Double], useModernInitialization: Bool) {
-        if !useModernInitialization {
-            debugPrint("WARNING: OctavePerlinNoise.init(useModernInitialization:false) is not tested. Proceed with caution.")
-        }
+        //if !useModernInitialization {
+        //    debugPrint("WARNING: OctavePerlinNoise.init(useModernInitialization:false) is not tested. Proceed with caution.")
+        //}
 
         let numOctaves = amplitudes.count
         var octaves = Array<Octave>()

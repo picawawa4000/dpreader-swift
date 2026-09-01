@@ -156,6 +156,64 @@ private func structureDispatchContext() -> StructureGenerationContext {
     ])
 }
 
+private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerationContext {
+    let pack = try DataPack(
+        fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"),
+        loadingOptions: [
+            .noDensityFunctions,
+            .noNoises,
+            .noNoiseSettings,
+            .noDimensions,
+            .noBiomes,
+            .noStructureSets,
+            .noEnchantments
+        ]
+    )
+    return StructureGenerationContext(
+        seaLevel: 63,
+        minimumWorldY: -64,
+        usingDataPacks: [pack]
+    ) { position in
+        if position.y <= terrainTopY { return BlockState(id: "minecraft:sand") }
+        if position.y <= 63 { return BlockState(id: "minecraft:water") }
+        return BlockState(id: "minecraft:air")
+    }
+}
+
+@Test func testSeed123458OceanRuinLootReference() async throws {
+    let coldURL = repositoryRootURL()
+        .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/ocean_ruin_cold.json")
+    let cold = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: coldURL))
+    let first = try #require(try cold.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: -80, z: -14),
+        context: try oceanRuinTestContext(terrainTopY: 50)
+    ))
+    let expectedFirst = [
+        StructureLootContainer(block: "minecraft:suspicious_gravel", pos: PosInt3D(x: -1_284, y: 53, z: -220), lootTable: "minecraft:archaeology/ocean_ruin_cold", lootSeed: 210_021_809_879_268_742),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: -1_284, y: 51, z: -220), lootTable: "minecraft:chests/underwater_ruin_small", lootSeed: 7_060_055_725_571_229_747),
+        StructureLootContainer(block: "minecraft:suspicious_gravel", pos: PosInt3D(x: -1_284, y: 51, z: -221), lootTable: "minecraft:archaeology/ocean_ruin_cold", lootSeed: 4_705_947_991_733_436_050),
+        StructureLootContainer(block: "minecraft:suspicious_gravel", pos: PosInt3D(x: -1_280, y: 51, z: -221), lootTable: "minecraft:archaeology/ocean_ruin_cold", lootSeed: 6_281_515_458_314_742_408),
+        StructureLootContainer(block: "minecraft:suspicious_gravel", pos: PosInt3D(x: -1_280, y: 51, z: -222), lootTable: "minecraft:archaeology/ocean_ruin_cold", lootSeed: 3_572_718_140_151_180_765)
+    ]
+    for container in expectedFirst { #expect(first.contains(container)) }
+
+    let warmURL = repositoryRootURL()
+        .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/ocean_ruin_warm.json")
+    let warm = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: warmURL))
+    let second = try #require(try warm.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: -113, z: -12),
+        context: try oceanRuinTestContext(terrainTopY: 39)
+    ))
+    #expect(second.contains(StructureLootContainer(
+        block: "minecraft:chest",
+        pos: PosInt3D(x: -1_807, y: 40, z: -190),
+        lootTable: "minecraft:chests/underwater_ruin_small",
+        lootSeed: 2_708_431_354_643_074_529
+    )))
+}
+
 private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGenerationContext {
     let pack = try DataPack(
         fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"),
