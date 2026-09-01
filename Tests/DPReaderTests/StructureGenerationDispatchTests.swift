@@ -214,6 +214,35 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
     )))
 }
 
+@Test func testSeed123458ShipwreckLootReference() async throws {
+    let url = repositoryRootURL()
+        .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/shipwreck.json")
+    let shipwreck = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let containers = try #require(try shipwreck.generateLoot(
+        worldSeed: 123_458,
+        startChunk: PosInt2D(x: -303, z: 42),
+        context: try oceanRuinTestContext(terrainTopY: 46)
+    ))
+    #expect(containers == [
+        StructureLootContainer(
+            block: "minecraft:chest", pos: PosInt3D(x: -4_846, y: 51, z: 690),
+            lootTable: "minecraft:chests/shipwreck_treasure", lootSeed: 4_690_697_583_387_820_557
+        ),
+        StructureLootContainer(
+            block: "minecraft:chest", pos: PosInt3D(x: -4_845, y: 49, z: 696),
+            lootTable: "minecraft:chests/shipwreck_map", lootSeed: 8_822_147_397_372_835_995
+        )
+    ])
+    let treasureURL = repositoryRootURL()
+        .appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/shipwreck_treasure.json")
+    let treasureTable = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: treasureURL))
+    let treasureItems = try treasureTable.generateLoot(withContext: LootContext(
+        random: CheckedRandom(seed: UInt64(bitPattern: containers[0].lootSeed))
+    ))
+    let treasureCounts = Dictionary(grouping: treasureItems, by: \.itemName).mapValues { $0.reduce(0) { $0 + $1.count } }
+    #expect(treasureCounts == ["minecraft:iron_nugget": 3, "minecraft:iron_ingot": 18, "minecraft:lapis_lazuli": 9])
+}
+
 private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGenerationContext {
     let pack = try DataPack(
         fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"),

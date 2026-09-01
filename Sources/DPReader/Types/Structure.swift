@@ -7,6 +7,7 @@ public enum StructureGeneratedResult {
     case oceanRuin(OceanRuinGenerationResult)
     case oceanMonument(OceanMonumentGenerationResult)
     case ruinedPortal(RuinedPortalGenerationResult)
+    case shipwreck(ShipwreckGenerationResult)
     case stronghold(StrongholdGenerationResult)
     case woodlandMansion(WoodlandMansionGenerationResult)
     case jigsaw(JigsawStructureGenerationResult)
@@ -91,6 +92,8 @@ public final class Structure: Codable {
             return .oceanRuin(try OceanRuinStructureSettings(from: decoder))
         case "minecraft:ruined_portal":
             return .ruinedPortal(try RuinedPortalStructureSettings(from: decoder))
+        case "minecraft:shipwreck":
+            return .shipwreck(try ShipwreckStructureSettings(from: decoder))
         case
             "minecraft:buried_treasure",
             "minecraft:desert_pyramid",
@@ -99,7 +102,6 @@ public final class Structure: Codable {
             "minecraft:igloo",
             "minecraft:jungle_temple",
             "minecraft:ocean_monument",
-            "minecraft:shipwreck",
             "minecraft:stronghold",
             "minecraft:swamp_hut",
             "minecraft:woodland_mansion":
@@ -149,6 +151,11 @@ public final class Structure: Codable {
         case "minecraft:ruined_portal":
             guard case .ruinedPortal(let settings) = self.settings else { return nil }
             return try RuinedPortal.generatePieceGraph(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
+            )
+        case "minecraft:shipwreck":
+            guard case .shipwreck(let settings) = self.settings else { return nil }
+            return try Shipwreck.generatePieceGraph(
                 settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             )
         case "minecraft:desert_pyramid":
@@ -216,6 +223,11 @@ public final class Structure: Codable {
         case "minecraft:ruined_portal":
             guard case .ruinedPortal(let settings) = self.settings else { return nil }
             return .ruinedPortal(try RuinedPortal.generate(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
+            ))
+        case "minecraft:shipwreck":
+            guard case .shipwreck(let settings) = self.settings else { return nil }
+            return .shipwreck(try Shipwreck.generate(
                 settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             ))
         case "minecraft:desert_pyramid":
@@ -291,6 +303,11 @@ public final class Structure: Codable {
             return try RuinedPortal.generate(
                 settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
             ).lootContainers
+        case "minecraft:shipwreck":
+            guard case .shipwreck(let settings) = self.settings else { return nil }
+            return try Shipwreck.generateLoot(
+                settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context
+            )
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
                 worldSeed: worldSeed,
@@ -338,6 +355,7 @@ enum StructureSettings {
     case netherFossil(NetherFossilStructureSettings)
     case oceanRuin(OceanRuinStructureSettings)
     case ruinedPortal(RuinedPortalStructureSettings)
+    case shipwreck(ShipwreckStructureSettings)
 
     fileprivate func encodeAdditionalFields(to encoder: Encoder) throws {
         switch self {
@@ -352,6 +370,8 @@ enum StructureSettings {
         case .oceanRuin(let value):
             try value.encode(to: encoder)
         case .ruinedPortal(let value):
+            try value.encode(to: encoder)
+        case .shipwreck(let value):
             try value.encode(to: encoder)
         }
     }
@@ -535,6 +555,24 @@ public struct OceanRuinStructureSettings: Codable {
 public enum OceanRuinTemperature: String, Codable {
     case warm
     case cold
+}
+
+/// Whether a shipwreck is generated on a beach instead of the ocean floor.
+public struct ShipwreckStructureSettings: Codable {
+    let isBeached: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case isBeached = "is_beached"
+    }
+
+    init(isBeached: Bool = false) {
+        self.isBeached = isBeached
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.isBeached = try container.decodeIfPresent(Bool.self, forKey: .isBeached) ?? false
+    }
 }
 
 /// Weighted setup alternatives for a ruined portal.
