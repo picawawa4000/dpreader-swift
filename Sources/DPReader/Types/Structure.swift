@@ -2,7 +2,9 @@
 public enum StructureGeneratedResult {
     case buriedTreasure(BuriedTreasureGenerationResult)
     case desertPyramid(DesertPyramidGenerationResult)
+    case endCity(EndCityGenerationResult)
     case fortress(NetherFortressGenerationResult)
+    case netherFossil(NetherFossilGenerationResult)
     case jungleTemple(JungleTempleGenerationResult)
     case igloo(IglooGenerationResult)
     case mineshaft(MineshaftGenerationResult)
@@ -167,6 +169,11 @@ public final class Structure: Codable {
             return SwampHut.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:fortress":
             return NetherFortress.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:end_city":
+            return try EndCity.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:nether_fossil":
+            guard case .netherFossil(let settings) = self.settings else { return nil }
+            return try NetherFossil.generatePieceGraph(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generatePieceGraph(
                 worldSeed: worldSeed,
@@ -246,6 +253,12 @@ public final class Structure: Codable {
             return .swampHut(result)
         case "minecraft:fortress":
             return .fortress(NetherFortress.generate(worldSeed: worldSeed, startChunk: startChunk, context: context))
+        case "minecraft:end_city":
+            guard let result = try EndCity.generate(worldSeed: worldSeed, startChunk: startChunk, context: context) else { return nil }
+            return .endCity(result)
+        case "minecraft:nether_fossil":
+            guard case .netherFossil(let settings) = self.settings else { return nil }
+            return .netherFossil(try NetherFossil.generate(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context))
         case "minecraft:desert_pyramid":
             guard let result = DesertPyramid.generate(
                 worldSeed: worldSeed,
@@ -330,6 +343,11 @@ public final class Structure: Codable {
             return SwampHut.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:fortress":
             return NetherFortress.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:end_city":
+            return try EndCity.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:nether_fossil":
+            guard case .netherFossil(let settings) = self.settings else { return nil }
+            return NetherFossil.generateLoot(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
                 worldSeed: worldSeed,

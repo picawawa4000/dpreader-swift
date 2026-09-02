@@ -243,6 +243,41 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
     #expect(treasureCounts == ["minecraft:iron_nugget": 3, "minecraft:iron_ingot": 18, "minecraft:lapis_lazuli": 9])
 }
 
+@Test func testSeed123458NetherFossilDriedGhastReference() throws {
+    let pack = try DataPack(fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"))
+    let context = StructureGenerationContext(
+        seaLevel: 32, minimumWorldY: 0, maximumWorldY: 255, usingDataPacks: [pack]
+    ) { position in
+        // The reference fossil's support terrain is below Y=73; keep the
+        // recorded dried-ghast position air so the post-process can place it.
+        if position.y <= 73 && position != PosInt3D(x: -218, y: 73, z: 491) {
+            return BlockState(id: "minecraft:netherrack")
+        }
+        return BlockState(id: "minecraft:air")
+    }
+    let url = repositoryRootURL()
+        .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/nether_fossil.json")
+    let fossil = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+
+    let first = try #require(try fossil.generate(
+        worldSeed: 123_458, startChunk: PosInt2D(x: -14, z: 30), context: context
+    ))
+    guard case .netherFossil(let firstResult) = first else {
+        Issue.record("Expected a Nether fossil result")
+        return
+    }
+    #expect(firstResult.blocks.block(at: PosInt3D(x: -218, y: 73, z: 491)).id == "minecraft:dried_ghast")
+
+    let second = try #require(try fossil.generate(
+        worldSeed: 123_458, startChunk: PosInt2D(x: -12, z: 32), context: context
+    ))
+    guard case .netherFossil(let secondResult) = second else {
+        Issue.record("Expected a Nether fossil result")
+        return
+    }
+    #expect(!secondResult.blocks.allTouchedBlocks().contains { $0.1.id == "minecraft:dried_ghast" })
+}
+
 @Test func testSeed123458IglooLootReference() async throws {
     let url = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/igloo.json")
     let igloo = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
@@ -931,14 +966,14 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
 
 @Test func testStructureDispatchRejectsUnsupportedTypes() async throws {
     let structure = Structure(
-        type: "minecraft:end_city",
+        type: "minecraft:unsupported_structure",
         biomes: .rawID("minecraft:end_highlands"),
         spawnOverrides: [:],
         step: "surface_structures"
     )
     let context = structureDispatchContext()
 
-    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:end_city")) {
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:unsupported_structure")) {
         _ = try structure.generatePieceGraph(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),
@@ -946,7 +981,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
         )
     }
 
-    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:end_city")) {
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:unsupported_structure")) {
         _ = try structure.generate(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),
@@ -954,11 +989,27 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
         )
     }
 
-    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:end_city")) {
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:unsupported_structure")) {
         _ = try structure.generateLoot(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),
             context: context
         )
     }
+}
+
+@Test func testSeed123458EndCityReferenceLootContainers() async throws {
+    let structure = Structure(type: "minecraft:end_city", biomes: .rawID("minecraft:end_highlands"), spawnOverrides: [:], step: "surface_structures")
+    // The positions and seeds below are the End City entries in
+    // vanilla/vanilla_structure_ref.txt.  The listed positive-Z chest positions
+    // identify its chunk as (64, 24); the header's Z sign is stale.
+    let result = try #require(try structure.generate(worldSeed: 123_458, startChunk: PosInt2D(x: 64, z: 24), context: mansionTestContext(terrainTopY: 64)))
+    guard case .endCity(let city) = result else { Issue.record("Expected End City"); return }
+    #expect(city.lootContainers.sorted { $0.pos.x == $1.pos.x ? $0.pos.y < $1.pos.y : $0.pos.x < $1.pos.x } == [
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 1029, y: 90, z: 414), lootTable: "minecraft:chests/end_city_treasure", lootSeed: 1_531_354_062_817_683_618),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 1032, y: 142, z: 405), lootTable: "minecraft:chests/end_city_treasure", lootSeed: -2_383_628_156_103_950_367),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 1034, y: 142, z: 407), lootTable: "minecraft:chests/end_city_treasure", lootSeed: -1_607_583_170_481_175_037),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 1106, y: 132, z: 409), lootTable: "minecraft:chests/end_city_treasure", lootSeed: -2_121_263_389_488_661_811),
+        StructureLootContainer(block: "minecraft:chest", pos: PosInt3D(x: 1106, y: 132, z: 411), lootTable: "minecraft:chests/end_city_treasure", lootSeed: -7_934_366_909_957_453_390)
+    ])
 }
