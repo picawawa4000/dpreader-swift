@@ -305,6 +305,64 @@ private func mansionTestContext(terrainTopY: Int32 = 80) throws -> StructureGene
     }
 }
 
+@Test func testNetherFortressLayoutIsIndependentOfTerrain() async throws {
+    let fortress = Structure(
+        type: "minecraft:fortress",
+        biomes: .rawID("minecraft:nether_wastes"),
+        spawnOverrides: [:],
+        step: "underground_decoration"
+    )
+    let start = PosInt2D(x: -20, z: 29)
+    let lowTerrain = try #require(try fortress.generatePieceGraph(
+        worldSeed: 123_458, startChunk: start, context: try mansionTestContext(terrainTopY: 32)
+    ))
+    let highTerrain = try #require(try fortress.generatePieceGraph(
+        worldSeed: 123_458, startChunk: start, context: try mansionTestContext(terrainTopY: 96)
+    ))
+
+    #expect(lowTerrain.orientation == highTerrain.orientation)
+    #expect(lowTerrain.boundingBox == highTerrain.boundingBox)
+    #expect(lowTerrain.pieces.map(\.boundingBox) == highTerrain.pieces.map(\.boundingBox))
+    // Official 1.21.11 at this start has 127 children, including the start.
+    #expect(lowTerrain.pieces.count == 127)
+}
+
+@Test func testNetherTerrainAtFortressReferenceAreaIsDeterministic() throws {
+    let pack = try DataPack(fromRootPath: repositoryRootURL().appendingPathComponent("vanilla/1.21.11"))
+    let generator = try WorldGenerator(
+        withWorldSeed: 123_458,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:nether")
+    )
+    let chunkPosition = PosInt2D(x: -23, z: 28) // Contains the first reference chest.
+    let first = ProtoChunk()
+    let second = ProtoChunk()
+    try generator.generateInto(first, at: chunkPosition)
+    try generator.generateInto(second, at: chunkPosition)
+    // Match vanilla's terrain stages before comparing server terrain. Features
+    // such as basalt pillars are placed later and are not density terrain.
+    try generator.applySurfaceRules(to: first, at: chunkPosition)
+    try generator.applySurfaceRules(to: second, at: chunkPosition)
+    try generator.carve(first, at: chunkPosition)
+    try generator.carve(second, at: chunkPosition)
+
+    var terrainBlocks = 0
+    var lavaBlocks = 0
+    for y in Int32(0)..<128 {
+        for x in Int32(0)..<16 {
+            for z in Int32(0)..<16 {
+                let local = PosInt3D(x: x, y: y, z: z)
+                terrainBlocks += first.isTerrain(atLocal: local) ? 1 : 0
+                lavaBlocks += first.block(atLocal: local).id == "minecraft:lava" ? 1 : 0
+                #expect(first.block(atLocal: local) == second.block(atLocal: local))
+            }
+        }
+    }
+    #expect(terrainBlocks > 0)
+    #expect(lavaBlocks > 0)
+}
+
+
 @Test func testLoadedStructureDecorationParameters() async throws {
     let context = try mansionTestContext()
     let mansion = try #require(
@@ -873,14 +931,14 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
 
 @Test func testStructureDispatchRejectsUnsupportedTypes() async throws {
     let structure = Structure(
-        type: "minecraft:fortress",
-        biomes: .rawID("minecraft:nether_wastes"),
+        type: "minecraft:end_city",
+        biomes: .rawID("minecraft:end_highlands"),
         spawnOverrides: [:],
         step: "surface_structures"
     )
     let context = structureDispatchContext()
 
-    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:fortress")) {
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:end_city")) {
         _ = try structure.generatePieceGraph(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),
@@ -888,7 +946,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
         )
     }
 
-    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:fortress")) {
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:end_city")) {
         _ = try structure.generate(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),
@@ -896,7 +954,7 @@ private func loadMansionReferenceRooms() throws -> [MansionReferenceRoom] {
         )
     }
 
-    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:fortress")) {
+    #expect(throws: StructureGenerationError.unsupportedStructureType("minecraft:end_city")) {
         _ = try structure.generateLoot(
             worldSeed: 503815372,
             startChunk: PosInt2D(x: 0, z: 0),

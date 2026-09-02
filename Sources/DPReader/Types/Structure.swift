@@ -2,6 +2,7 @@
 public enum StructureGeneratedResult {
     case buriedTreasure(BuriedTreasureGenerationResult)
     case desertPyramid(DesertPyramidGenerationResult)
+    case fortress(NetherFortressGenerationResult)
     case jungleTemple(JungleTempleGenerationResult)
     case igloo(IglooGenerationResult)
     case mineshaft(MineshaftGenerationResult)
@@ -164,6 +165,8 @@ public final class Structure: Codable {
             return try Igloo.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:swamp_hut":
             return SwampHut.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:fortress":
+            return NetherFortress.generatePieceGraph(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generatePieceGraph(
                 worldSeed: worldSeed,
@@ -241,6 +244,8 @@ public final class Structure: Codable {
         case "minecraft:swamp_hut":
             guard let result = SwampHut.generate(worldSeed: worldSeed, startChunk: startChunk, context: context) else { return nil }
             return .swampHut(result)
+        case "minecraft:fortress":
+            return .fortress(NetherFortress.generate(worldSeed: worldSeed, startChunk: startChunk, context: context))
         case "minecraft:desert_pyramid":
             guard let result = DesertPyramid.generate(
                 worldSeed: worldSeed,
@@ -323,6 +328,8 @@ public final class Structure: Codable {
             return try Igloo.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:swamp_hut":
             return SwampHut.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
+        case "minecraft:fortress":
+            return NetherFortress.generateLoot(worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:desert_pyramid":
             return DesertPyramid.generateLoot(
                 worldSeed: worldSeed,
