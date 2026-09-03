@@ -17,7 +17,15 @@ public final class LootTable: Codable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.type = try c.decodeIfPresent(String.self, forKey: key("type"))
-        self.pools = try c.decode([LootPool].self, forKey: key("pools"))
+        switch self.type.map(addDefaultNamespace) {
+        case "minecraft:entity_interact", "minecraft:block_interact":
+            try decoder.requirePackVersions(.atLeast(.init(major: 82, minor: 0)), for: "loot table type \(self.type!)")
+        case "minecraft:villager_trade":
+            try decoder.requirePackVersions(.atLeast(.init(major: 95, minor: 0)), for: "loot table type minecraft:villager_trade")
+        default:
+            break
+        }
+        self.pools = try c.decodeIfPresent([LootPool].self, forKey: key("pools")) ?? []
         self.functions = try decodeItemModifiers(from: c, forKey: "functions")
         self.randomSequenceLocation = try c.decodeIfPresent(String.self, forKey: key("random_sequence"))
     }
@@ -183,6 +191,8 @@ func decodeLootEntry(from decoder: Decoder) throws -> LootEntry {
         return try LootTableEntry(from: decoder)
     case "minecraft:dynamic":
         return try DynamicEntry(from: decoder)
+    case "minecraft:slots":
+        return try SlotsEntry(from: decoder)
     case "minecraft:empty":
         return try EmptyEntry(from: decoder)
     case "minecraft:tag":
@@ -204,6 +214,7 @@ func encodeLootEntry(_ entry: LootEntry, to encoder: Encoder) throws {
     case let e as ItemEntry: try e.encode(to: encoder)
     case let e as LootTableEntry: try e.encode(to: encoder)
     case let e as DynamicEntry: try e.encode(to: encoder)
+    case let e as SlotsEntry: try e.encode(to: encoder)
     case let e as EmptyEntry: try e.encode(to: encoder)
     case let e as TagEntry: try e.encode(to: encoder)
     case let e as GroupEntry: try e.encode(to: encoder)
@@ -347,6 +358,26 @@ public final class DynamicEntry: SingletonLootEntry {
     public enum DynamicType: String, Codable {
         case shulkerBoxContents = "contents"
         case decoratedPotSherds = "sherds"
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let raw = try container.decode(String.self)
+            let value: Self?
+            switch addDefaultNamespace(raw) {
+            case "minecraft:contents": value = .shulkerBoxContents
+            case "minecraft:sherds": value = .decoratedPotSherds
+            default: value = nil
+            }
+            guard let value else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown dynamic drop '\(raw)'")
+            }
+            self = value
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode("minecraft:\(rawValue)")
+        }
     }
 
     public init(type: DynamicType, conditions: [LootCondition] = [], functions: [ItemModifier] = []) {
@@ -369,6 +400,15 @@ public final class DynamicEntry: SingletonLootEntry {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         _ = try c.decode(String.self, forKey: key("type"))
         self.type = try c.decode(DynamicType.self, forKey: key("name"))
+        if self.type == .shulkerBoxContents,
+           decoder.dpReaderPackFormat >= Version(major: 92, minor: 0),
+           decoder.dpReaderPackFormat < Version(major: 93, minor: 1) {
+            throw DecodingError.dataCorruptedError(
+                forKey: key("name"),
+                in: c,
+                debugDescription: "Dynamic drop 'contents' was unavailable from pack format 92.0 through 93.0; use a slots entry"
+            )
+        }
         try super.init(from: decoder)
     }
 
@@ -377,6 +417,82 @@ public final class DynamicEntry: SingletonLootEntry {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:dynamic", forKey: key("type"))
         try c.encode(type, forKey: key("name"))
+    }
+}
+
+/// A format-92 loot entry whose output comes from a validated slot source.
+public final class SlotsEntry: SingletonLootEntry {
+    let slotSource: JSONValue
+
+    public init(slotSource: JSONValue, conditions: [LootCondition] = [], functions: [ItemModifier] = []) {
+        self.slotSource = slotSource
+        super.init(conditions: conditions, functions: functions)
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 92, minor: 0)), for: "loot entry minecraft:slots")
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        _ = try container.decode(String.self, forKey: key("type"))
+        self.slotSource = try container.decode(JSONValue.self, forKey: key("slot_source"))
+        try Self.validate(slotSource, codingPath: decoder.codingPath + [key("slot_source")])
+        try super.init(from: decoder)
+    }
+
+    public override func encode(to encoder: Encoder) throws {
+        try super.encode(to: encoder)
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        try container.encode("minecraft:slots", forKey: key("type"))
+        try container.encode(slotSource, forKey: key("slot_source"))
+    }
+
+    private static func validate(_ source: JSONValue, codingPath: [CodingKey]) throws {
+        func invalid(_ message: String) throws -> Never {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath, debugDescription: message))
+        }
+        if case .array(let terms) = source {
+            guard !terms.isEmpty else { try invalid("An inline slot-source group must not be empty") }
+            for term in terms { try validate(term, codingPath: codingPath) }
+            return
+        }
+        guard case .object(let object) = source, let rawType = object["type"]?.stringValue else {
+            try invalid("A slot source must be an object with a type, or a non-empty list of slot sources")
+        }
+        switch addDefaultNamespace(rawType) {
+        case "minecraft:empty":
+            return
+        case "minecraft:group":
+            guard let terms = object["terms"]?.arrayValue, !terms.isEmpty else {
+                try invalid("minecraft:group slot source requires non-empty terms")
+            }
+            for term in terms { try validate(term, codingPath: codingPath) }
+        case "minecraft:slot_range":
+            let sources: Set<String> = ["block_entity", "this", "attacking_entity", "last_damage_player", "direct_attacker", "target_entity", "interacting_entity"]
+            guard let selected = object["source"]?.stringValue, sources.contains(selected) else {
+                try invalid("minecraft:slot_range has an invalid loot-context source")
+            }
+            guard let slots = object["slots"]?.stringValue, !slots.isEmpty else {
+                try invalid("minecraft:slot_range requires a non-empty slots range")
+            }
+        case "minecraft:contents":
+            let components: Set<String> = ["minecraft:bundle_contents", "minecraft:charged_projectiles", "minecraft:container"]
+            guard let component = object["component"]?.stringValue, components.contains(addDefaultNamespace(component)) else {
+                try invalid("minecraft:contents has an unsupported inventory component")
+            }
+            guard let nested = object["slot_source"] else { try invalid("minecraft:contents requires slot_source") }
+            try validate(nested, codingPath: codingPath)
+        case "minecraft:filtered":
+            guard object["item_filter"] != nil else { try invalid("minecraft:filtered slot source requires item_filter") }
+            guard let nested = object["slot_source"] else { try invalid("minecraft:filtered slot source requires slot_source") }
+            try validate(nested, codingPath: codingPath)
+        case "minecraft:limit_slots":
+            guard let limit = object["limit"]?.intValue, limit >= 0 else {
+                try invalid("minecraft:limit_slots requires a non-negative integer limit")
+            }
+            guard let nested = object["slot_source"] else { try invalid("minecraft:limit_slots requires slot_source") }
+            try validate(nested, codingPath: codingPath)
+        default:
+            try invalid("Unknown slot source type '\(rawType)'")
+        }
     }
 }
 
@@ -620,6 +736,61 @@ public final class BinomialLootNumberProvider: LootNumberProvider {
     }
 }
 
+/// A provider which adds the results of its child providers.
+public final class SumLootNumberProvider: LootNumberProvider {
+    let summands: [any LootNumberProvider]
+
+    public init(summands: [any LootNumberProvider]) { self.summands = summands }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 95, minor: 0)), for: "number provider minecraft:sum")
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        self.summands = try container.decode([LootNumberProviderInitializer].self, forKey: key("summands")).map(\.value)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        try container.encode("minecraft:sum", forKey: key("type"))
+        try container.encode(summands.map(LootNumberProviderInitializer.init), forKey: key("summands"))
+    }
+
+    public func getInt(fromContext context: LootContext) -> Int {
+        summands.reduce(0) { $0 + $1.getInt(fromContext: context) }
+    }
+
+    public func getFloat(fromContext context: LootContext) -> Float {
+        summands.reduce(0) { $0 + $1.getFloat(fromContext: context) }
+    }
+}
+
+/// A number provider backed by the enchantment-level loot parameter.
+public final class EnchantmentLevelLootNumberProvider: LootNumberProvider {
+    let amount: JSONValue
+
+    public init(amount: JSONValue) { self.amount = amount }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 42, minor: 0)), for: "number provider minecraft:enchantment_level")
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        self.amount = try container.decode(JSONValue.self, forKey: key("amount"))
+        try validateLevelBasedValue(
+            amount,
+            packFormat: decoder.dpReaderPackFormat,
+            codingPath: decoder.codingPath + [key("amount")]
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        try container.encode("minecraft:enchantment_level", forKey: key("type"))
+        try container.encode(amount, forKey: key("amount"))
+    }
+
+    public func getFloat(fromContext context: LootContext) -> Float {
+        Float(evaluateLevelBasedValue(amount, level: context.enchantmentLevel ?? 0))
+    }
+}
+
 // score and storage unimplemented here because they don't appear in vanilla
 // and can't be sampled without more knowledge of the world than we have
 // same with enchantment_level, except that one does appear in vanilla
@@ -669,6 +840,10 @@ func decodeLootNumberProvider(from decoder: Decoder) throws -> LootNumberProvide
         return try UniformLootNumberProvider(from: decoder)
     case "minecraft:binomial":
         return try BinomialLootNumberProvider(from: decoder)
+    case "minecraft:sum":
+        return try SumLootNumberProvider(from: decoder)
+    case "minecraft:enchantment_level":
+        return try EnchantmentLevelLootNumberProvider(from: decoder)
     default:
         throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown FloatProvider type: \(type)")
     }
@@ -680,6 +855,8 @@ func encodeLootNumberProvider(_ provider: LootNumberProvider, to encoder: Encode
     case let p as ConstantLootNumberProvider: try p.encode(to: encoder)
     case let p as UniformLootNumberProvider: try p.encode(to: encoder)
     case let p as BinomialLootNumberProvider: try p.encode(to: encoder)
+    case let p as SumLootNumberProvider: try p.encode(to: encoder)
+    case let p as EnchantmentLevelLootNumberProvider: try p.encode(to: encoder)
     default:
         let context = EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "Unsupported FloatProvider type")
         throw EncodingError.invalidValue(provider, context)
@@ -825,10 +1002,48 @@ public final class LootContext {
     public var random: any Random
     /// Datapack registries needed for enchantment-driven loot behavior.
     public let enchantmentResources: LootEnchantmentResources?
+    /// Level supplied while an enchantment effect is evaluating a loot table.
+    public let enchantmentLevel: Int?
+    /// Current tick value for each data-driven world clock.
+    public let worldClockTimes: [String: Int64]
 
-    public init(random: any Random, enchantmentResources: LootEnchantmentResources? = nil) {
+    public init(
+        random: any Random,
+        enchantmentResources: LootEnchantmentResources? = nil,
+        enchantmentLevel: Int? = nil,
+        worldClockTimes: [String: Int64] = [:]
+    ) {
         self.random = random
         self.enchantmentResources = enchantmentResources
+        self.enchantmentLevel = enchantmentLevel
+        self.worldClockTimes = Dictionary(uniqueKeysWithValues: worldClockTimes.map { (addDefaultNamespace($0.key), $0.value) })
+    }
+}
+
+private func evaluateLevelBasedValue(_ value: JSONValue, level: Int) -> Double {
+    if let constant = value.doubleValue { return constant }
+    guard case .object(let object) = value else { return 0 }
+    let type = addDefaultNamespace(object["type"]?.stringValue ?? "minecraft:linear")
+    switch type {
+    case "minecraft:linear":
+        let base = object["base"]?.doubleValue ?? 0
+        let perLevel = object["per_level_above_first"]?.doubleValue ?? 0
+        return base + perLevel * Double(max(0, level - 1))
+    case "minecraft:clamped":
+        let inner = object["value"].map { evaluateLevelBasedValue($0, level: level) } ?? 0
+        return max(object["min"]?.doubleValue ?? -Double.infinity, min(object["max"]?.doubleValue ?? Double.infinity, inner))
+    case "minecraft:fraction":
+        let numerator = object["numerator"].map { evaluateLevelBasedValue($0, level: level) } ?? 0
+        let denominator = object["denominator"].map { evaluateLevelBasedValue($0, level: level) } ?? 0
+        return denominator == 0 ? 0 : numerator / denominator
+    case "minecraft:levels_squared":
+        return Double(level * level) + (object["added"]?.doubleValue ?? 0)
+    case "minecraft:lookup":
+        let values = object["values"]?.arrayValue ?? []
+        if level > 0, level <= values.count { return evaluateLevelBasedValue(values[level - 1], level: level) }
+        return object["fallback"].map { evaluateLevelBasedValue($0, level: level) } ?? 0
+    default:
+        return 0
     }
 }
 
@@ -1116,13 +1331,27 @@ public final class RandomChanceLootCondition: LootCondition {
 
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
-        self.chance = try c.decode(LootNumberProviderInitializer.self, forKey: key("chance")).value
+        if decoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            self.chance = ConstantLootNumberProvider(value: try c.decode(Float.self, forKey: key("chance")))
+        } else {
+            self.chance = try c.decode(LootNumberProviderInitializer.self, forKey: key("chance")).value
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:random_chance", forKey: key("condition"))
-        try c.encode(LootNumberProviderInitializer(chance), forKey: key("chance"))
+        if encoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            guard let constant = chance as? ConstantLootNumberProvider else {
+                throw EncodingError.invalidValue(
+                    chance,
+                    .init(codingPath: encoder.codingPath, debugDescription: "random_chance.chance must be a constant number before pack format 42.0")
+                )
+            }
+            try c.encode(constant.value, forKey: key("chance"))
+        } else {
+            try c.encode(LootNumberProviderInitializer(chance), forKey: key("chance"))
+        }
     }
 
     public func check(withContext context: LootContext) throws -> Bool {
@@ -1135,25 +1364,56 @@ public final class RandomChanceWithEnchantedBonusLootCondition: LootCondition {
     let unenchantedChance: Float
     let enchantedChance: JSONValue
     let enchantment: String
+    let legacyChance: JSONValue?
 
     public init(unenchantedChance: Float, enchantedChance: JSONValue, enchantment: String) {
         self.unenchantedChance = unenchantedChance
         self.enchantedChance = enchantedChance
         self.enchantment = enchantment
+        self.legacyChance = nil
     }
 
     public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 42, minor: 0)), for: "loot condition minecraft:random_chance_with_enchanted_bonus")
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
-        self.unenchantedChance = try c.decode(Float.self, forKey: key("unenchanted_chance"))
-        self.enchantedChance = try c.decode(JSONValue.self, forKey: key("enchanted_chance"))
+        if decoder.dpReaderPackFormat < Version(major: 46, minor: 0) {
+            guard !c.contains(key("unenchanted_chance")), !c.contains(key("enchanted_chance")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("unenchanted_chance"), in: c, debugDescription: "unenchanted_chance/enchanted_chance require pack format 46.0 or newer")
+            }
+            let chance = try c.decode(JSONValue.self, forKey: key("chance"))
+            try validateLevelBasedValue(
+                chance,
+                packFormat: decoder.dpReaderPackFormat,
+                codingPath: decoder.codingPath + [key("chance")]
+            )
+            self.unenchantedChance = 0
+            self.enchantedChance = chance
+            self.legacyChance = chance
+        } else {
+            guard !c.contains(key("chance")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("chance"), in: c, debugDescription: "chance was removed in pack format 46.0; use unenchanted_chance and enchanted_chance")
+            }
+            self.unenchantedChance = try c.decode(Float.self, forKey: key("unenchanted_chance"))
+            self.enchantedChance = try c.decode(JSONValue.self, forKey: key("enchanted_chance"))
+            try validateLevelBasedValue(
+                enchantedChance,
+                packFormat: decoder.dpReaderPackFormat,
+                codingPath: decoder.codingPath + [key("enchanted_chance")]
+            )
+            self.legacyChance = nil
+        }
         self.enchantment = try c.decode(String.self, forKey: key("enchantment"))
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:random_chance_with_enchanted_bonus", forKey: key("condition"))
-        try c.encode(unenchantedChance, forKey: key("unenchanted_chance"))
-        try c.encode(enchantedChance, forKey: key("enchanted_chance"))
+        if let legacyChance, encoder.dpReaderPackFormat < Version(major: 46, minor: 0) {
+            try c.encode(legacyChance, forKey: key("chance"))
+        } else {
+            try c.encode(unenchantedChance, forKey: key("unenchanted_chance"))
+            try c.encode(enchantedChance, forKey: key("enchanted_chance"))
+        }
         try c.encode(enchantment, forKey: key("enchantment"))
     }
 
@@ -1176,6 +1436,7 @@ public final class EntityPropertiesLootCondition: LootCondition {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.predicate = try c.decodeIfPresent(JSONValue.self, forKey: key("predicate"))
         self.entity = try c.decode(String.self, forKey: key("entity"))
+        try validateLootEntityTarget(entity, decoder: decoder, key: "entity", container: c)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1216,6 +1477,7 @@ public final class EntityScoresLootCondition: LootCondition {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.scores = try c.decode([String: JSONValue].self, forKey: key("scores"))
         self.entity = try c.decode(String.self, forKey: key("entity"))
+        try validateLootEntityTarget(entity, decoder: decoder, key: "entity", container: c)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1438,16 +1700,29 @@ public final class ReferenceLootCondition: LootCondition {
 public final class TimeCheckLootCondition: LootCondition {
     let period: Int64?
     let value: JSONValue
+    let clock: String?
 
-    public init(period: Int64?, value: JSONValue) {
+    public init(period: Int64?, value: JSONValue, clock: String? = nil) {
         self.period = period
         self.value = value
+        self.clock = clock
     }
 
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.period = try c.decodeIfPresent(Int64.self, forKey: key("period"))
+        if let period, period <= 0 {
+            throw DecodingError.dataCorruptedError(forKey: key("period"), in: c, debugDescription: "time_check.period must be positive")
+        }
         self.value = try c.decode(JSONValue.self, forKey: key("value"))
+        if decoder.dpReaderPackFormat >= Version(major: 97, minor: 0) {
+            self.clock = try c.decode(String.self, forKey: key("clock"))
+        } else {
+            guard !c.contains(key("clock")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("clock"), in: c, debugDescription: "time_check.clock requires pack format 97.0 or newer")
+            }
+            self.clock = nil
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1455,10 +1730,21 @@ public final class TimeCheckLootCondition: LootCondition {
         try c.encode("minecraft:time_check", forKey: key("condition"))
         try c.encodeIfPresent(period, forKey: key("period"))
         try c.encode(value, forKey: key("value"))
+        try c.encodeIfPresent(clock, forKey: key("clock"))
     }
 
     public func check(withContext context: LootContext) throws -> Bool {
-        throw LootEvaluationError.unsupported("time_check is not needed for world-generation loot")
+        let clockID = addDefaultNamespace(clock ?? "minecraft:overworld")
+        guard var time = context.worldClockTimes[clockID] else {
+            throw LootEvaluationError.missingContext("No time was supplied for world clock \(clockID)")
+        }
+        if let period {
+            time = ((time % period) + period) % period
+        }
+        guard let integer = Int(exactly: time) else {
+            throw LootEvaluationError.invalidData("World-clock time does not fit in Int")
+        }
+        return checkIntRange(integer, against: value)
     }
 }
 
@@ -1499,6 +1785,7 @@ public final class EnchantmentActiveCheckLootCondition: LootCondition {
     }
 
     public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 42, minor: 0)), for: "loot condition minecraft:enchantment_active_check")
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.active = try c.decode(Bool.self, forKey: key("active"))
     }
@@ -1853,6 +2140,15 @@ public final class CopyComponentsItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.source = try c.decode(String.self, forKey: key("source"))
+        let oldSources: Set<String> = ["block_entity"]
+        let newSources: Set<String> = ["this", "attacker", "direct_attacker", "attacking_player", "target_entity", "interacting_entity", "tool"]
+        let allowed = decoder.dpReaderPackFormat >= Version(major: 87, minor: 1)
+            ? oldSources.union(newSources)
+            : oldSources
+        guard allowed.contains(source) else {
+            let suffix = newSources.contains(source) ? " (requires pack format 87.1 or newer)" : ""
+            throw DecodingError.dataCorruptedError(forKey: key("source"), in: c, debugDescription: "Invalid copy_components source '\(source)'\(suffix)")
+        }
         self.include = try c.decodeIfPresent([String].self, forKey: key("include"))
         self.exclude = try c.decodeIfPresent([String].self, forKey: key("exclude"))
     }
@@ -1894,6 +2190,9 @@ public final class CopyCustomDataItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.source = try c.decode(JSONValue.self, forKey: key("source"))
+        if case .string(let source) = self.source, source != "block_entity" {
+            try validateLootEntityTarget(source, decoder: decoder, key: "source", container: c)
+        }
         self.ops = try c.decode([CopyCustomDataOperation].self, forKey: key("ops"))
     }
 
@@ -1920,6 +2219,28 @@ public final class CopyNameItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.source = try c.decode(String.self, forKey: key("source"))
+        let legacySources: Set<String> = ["block_entity", "this", "killer", "killer_player"]
+        let currentSources: Set<String> = ["block_entity", "this", "attacking_entity", "last_damage_player"]
+        let addedSources: Set<String> = ["direct_attacker", "target_entity", "interacting_entity"]
+        let allowed: Set<String>
+        if decoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            allowed = legacySources
+        } else if decoder.dpReaderPackFormat < Version(major: 87, minor: 1) {
+            allowed = currentSources
+        } else {
+            allowed = currentSources.union(addedSources)
+        }
+        guard allowed.contains(source) else {
+            let suffix: String
+            if addedSources.contains(source) {
+                suffix = " (requires pack format 87.1 or newer)"
+            } else if legacySources.contains(source) || currentSources.contains(source) {
+                suffix = " (not valid in pack format \(decoder.dpReaderPackFormat))"
+            } else {
+                suffix = ""
+            }
+            throw DecodingError.dataCorruptedError(forKey: key("source"), in: c, debugDescription: "Invalid copy_name source '\(source)'\(suffix)")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1975,6 +2296,7 @@ public final class DiscardItemModifier: ConditionalItemModifier {
     }
 
     public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 91, minor: 0)), for: "item modifier minecraft:discard")
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
     }
@@ -1996,51 +2318,87 @@ public final class EnchantRandomlyItemModifier: ConditionalItemModifier {
     let options: JSONValue?
     let onlyCompatible: Bool
     let treasure: Bool
+    let includeAdditionalCostComponent: Bool
 
     public init(
         conditions: [LootCondition] = [],
         options: JSONValue? = nil,
         onlyCompatible: Bool = true,
-        treasure: Bool = false
+        treasure: Bool = false,
+        includeAdditionalCostComponent: Bool = false
     ) {
         self.conditions = conditions
         self.options = options
         self.onlyCompatible = onlyCompatible
         self.treasure = treasure
+        self.includeAdditionalCostComponent = includeAdditionalCostComponent
     }
 
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
-        self.options = try c.decodeIfPresent(JSONValue.self, forKey: key("options"))
-        self.onlyCompatible = try c.decodeIfPresent(Bool.self, forKey: key("only_compatible")) ?? true
-        self.treasure = try c.decodeIfPresent(Bool.self, forKey: key("treasure")) ?? false
+        if decoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            guard !c.contains(key("options")), !c.contains(key("only_compatible")) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key("options"), in: c,
+                    debugDescription: "enchant_randomly.options/only_compatible require pack format 42.0 or newer; use enchantments"
+                )
+            }
+            self.options = try c.decodeIfPresent(JSONValue.self, forKey: key("enchantments"))
+            self.onlyCompatible = true
+            self.treasure = try c.decodeIfPresent(Bool.self, forKey: key("treasure")) ?? false
+        } else {
+            guard !c.contains(key("enchantments")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("enchantments"), in: c, debugDescription: "enchant_randomly.enchantments was removed in pack format 42.0; use options")
+            }
+            guard !c.contains(key("treasure")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("treasure"), in: c, debugDescription: "enchant_randomly.treasure is not valid from pack format 42.0 onward")
+            }
+            self.options = try c.decodeIfPresent(JSONValue.self, forKey: key("options"))
+            if let options {
+                try validateRegistrySelector(options, field: "enchant_randomly.options", codingPath: decoder.codingPath + [key("options")])
+            }
+            self.onlyCompatible = try c.decodeIfPresent(Bool.self, forKey: key("only_compatible")) ?? true
+            self.treasure = false
+        }
+        self.includeAdditionalCostComponent = try c.decodeIfPresent(Bool.self, forKey: key("include_additional_cost_component")) ?? false
+        if c.contains(key("include_additional_cost_component")) {
+            try decoder.requirePackVersions(.atLeast(.init(major: 95, minor: 0)), for: "enchant_randomly.include_additional_cost_component")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:enchant_randomly", forKey: key("function"))
         try encodeLootConditions(conditions, to: &c, forKey: "conditions")
-        try c.encodeIfPresent(options, forKey: key("options"))
-        if onlyCompatible != true {
-            try c.encode(onlyCompatible, forKey: key("only_compatible"))
+        if encoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            try c.encodeIfPresent(options, forKey: key("enchantments"))
+            if treasure { try c.encode(true, forKey: key("treasure")) }
+        } else {
+            try c.encodeIfPresent(options, forKey: key("options"))
+            if onlyCompatible != true {
+                try c.encode(onlyCompatible, forKey: key("only_compatible"))
+            }
         }
-        if treasure != false {
-            try c.encode(treasure, forKey: key("treasure"))
+        if includeAdditionalCostComponent {
+            try c.encode(true, forKey: key("include_additional_cost_component"))
         }
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
         let resources = try requireEnchantmentResources(ctx)
         let allowTreasureForOptions: Bool
-        if case .string(let rawOptions)? = options, addDefaultNamespace(rawOptions.replacingOccurrences(of: "#", with: "")) == "minecraft:on_random_loot" {
+        if options == nil {
+            allowTreasureForOptions = true
+        } else if case .string(let rawOptions)? = options,
+                  addDefaultNamespace(rawOptions.replacingOccurrences(of: "#", with: "")) == "minecraft:on_random_loot" {
             allowTreasureForOptions = true
         } else {
             allowTreasureForOptions = treasure
         }
 
         let optionValues = try resolvedIdentifierList(
-            from: options ?? .string("#minecraft:in_enchanting_table"),
+            from: options ?? .string("#minecraft:on_random_loot"),
             itemName: stack.itemName,
             allowTreasure: allowTreasureForOptions,
             useOverrides: true,
@@ -2074,7 +2432,12 @@ public final class EnchantRandomlyItemModifier: ConditionalItemModifier {
 
         var enchantments = stack.enchantmentLevels
         enchantments[addDefaultNamespace(chosen)] = level
-        return stack.settingEnchantments(enchantments)
+        var result = stack.settingEnchantments(enchantments)
+        if includeAdditionalCostComponent {
+            let cost = 2 + Int(ctx.random.next(bound: UInt32(6 + level * 10))) + 3 * level
+            result = result.settingComponent("minecraft:additional_trade_cost", .integer(Int64(cost)))
+        }
+        return result
     }
 }
 
@@ -2084,25 +2447,46 @@ public final class EnchantWithLevelsItemModifier: ConditionalItemModifier {
     let levels: LootNumberProvider
     let options: JSONValue?
     let treasure: Bool
+    let includeAdditionalCostComponent: Bool
 
     public init(
         conditions: [LootCondition] = [],
         levels: LootNumberProvider,
         options: JSONValue? = nil,
-        treasure: Bool = true
+        treasure: Bool = true,
+        includeAdditionalCostComponent: Bool = false
     ) {
         self.conditions = conditions
         self.levels = levels
         self.options = options
         self.treasure = treasure
+        self.includeAdditionalCostComponent = includeAdditionalCostComponent
     }
 
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.levels = try c.decode(LootNumberProviderInitializer.self, forKey: key("levels")).value
-        self.options = try c.decodeIfPresent(JSONValue.self, forKey: key("options"))
-        self.treasure = try c.decodeIfPresent(Bool.self, forKey: key("treasure")) ?? true
+        if decoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            guard !c.contains(key("options")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("options"), in: c, debugDescription: "enchant_with_levels.options requires pack format 42.0 or newer")
+            }
+            self.options = nil
+            self.treasure = try c.decodeIfPresent(Bool.self, forKey: key("treasure")) ?? false
+        } else {
+            guard !c.contains(key("treasure")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("treasure"), in: c, debugDescription: "enchant_with_levels.treasure was removed in pack format 42.0")
+            }
+            self.options = try c.decodeIfPresent(JSONValue.self, forKey: key("options"))
+            if let options {
+                try validateRegistrySelector(options, field: "enchant_with_levels.options", codingPath: decoder.codingPath + [key("options")])
+            }
+            self.treasure = false
+        }
+        self.includeAdditionalCostComponent = try c.decodeIfPresent(Bool.self, forKey: key("include_additional_cost_component")) ?? false
+        if c.contains(key("include_additional_cost_component")) {
+            try decoder.requirePackVersions(.atLeast(.init(major: 95, minor: 0)), for: "enchant_with_levels.include_additional_cost_component")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2110,19 +2494,29 @@ public final class EnchantWithLevelsItemModifier: ConditionalItemModifier {
         try c.encode("minecraft:enchant_with_levels", forKey: key("function"))
         try encodeLootConditions(conditions, to: &c, forKey: "conditions")
         try c.encode(LootNumberProviderInitializer(levels), forKey: key("levels"))
-        try c.encodeIfPresent(options, forKey: key("options"))
-        if treasure != true {
-            try c.encode(treasure, forKey: key("treasure"))
+        if encoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+            if treasure { try c.encode(true, forKey: key("treasure")) }
+        } else {
+            try c.encodeIfPresent(options, forKey: key("options"))
+        }
+        if includeAdditionalCostComponent {
+            try c.encode(true, forKey: key("include_additional_cost_component"))
         }
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
         let resources = try requireEnchantmentResources(ctx)
         let enchantability = enchantabilityForWorldgenItem(stack.itemName)
+        let isRandomLootTag: Bool
+        if case .string(let rawOptions)? = options {
+            isRandomLootTag = addDefaultNamespace(rawOptions.replacingOccurrences(of: "#", with: "")) == "minecraft:on_random_loot"
+        } else {
+            isRandomLootTag = false
+        }
         let resolvedOptions = try resolvedIdentifierList(
             from: options,
             itemName: stack.itemName,
-            allowTreasure: treasure,
+            allowTreasure: treasure || isRandomLootTag,
             useOverrides: true,
             resources: resources
         )
@@ -2136,7 +2530,8 @@ public final class EnchantWithLevelsItemModifier: ConditionalItemModifier {
             return stack
         }
 
-        var effectiveLevel = levels.getInt(fromContext: ctx)
+        let requestedLevel = levels.getInt(fromContext: ctx)
+        var effectiveLevel = requestedLevel
         if effectiveLevel < 0 {
             effectiveLevel = 0
         }
@@ -2174,7 +2569,11 @@ public final class EnchantWithLevelsItemModifier: ConditionalItemModifier {
             effectiveLevel /= 2
         }
 
-        return stack.settingEnchantments(selectedEnchantments)
+        var result = stack.settingEnchantments(selectedEnchantments)
+        if includeAdditionalCostComponent {
+            result = result.settingComponent("minecraft:additional_trade_cost", .integer(Int64(requestedLevel)))
+        }
+        return result
     }
 }
 
@@ -2193,6 +2592,7 @@ public final class EnchantedCountIncreaseItemModifier: ConditionalItemModifier {
     }
 
     public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 42, minor: 0)), for: "item modifier minecraft:enchanted_count_increase")
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.enchantment = try c.decode(String.self, forKey: key("enchantment"))
@@ -2297,6 +2697,7 @@ public final class FillPlayerHeadItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.entity = try c.decode(String.self, forKey: key("entity"))
+        try validateLootEntityTarget(entity, decoder: decoder, key: "entity", container: c)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2325,8 +2726,25 @@ public final class FilteredItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.itemFilter = try c.decode(JSONValue.self, forKey: key("item_filter"))
-        self.onPass = try c.decodeIfPresent(ItemModifierInitializer.self, forKey: key("on_pass"))?.value
-        self.onFail = try c.decodeIfPresent(ItemModifierInitializer.self, forKey: key("on_fail"))?.value
+        if decoder.dpReaderPackFormat < Version(major: 91, minor: 0) {
+            guard !c.contains(key("on_pass")), !c.contains(key("on_fail")) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key("on_pass"), in: c,
+                    debugDescription: "filtered.on_pass/on_fail require pack format 91.0 or newer; use modifier in older formats"
+                )
+            }
+            self.onPass = try c.decode(ItemModifierInitializer.self, forKey: key("modifier")).value
+            self.onFail = nil
+        } else {
+            guard !c.contains(key("modifier")) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key("modifier"), in: c,
+                    debugDescription: "filtered.modifier was removed in pack format 91.0; use on_pass and on_fail"
+                )
+            }
+            self.onPass = try c.decodeIfPresent(ItemModifierInitializer.self, forKey: key("on_pass"))?.value
+            self.onFail = try c.decodeIfPresent(ItemModifierInitializer.self, forKey: key("on_fail"))?.value
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2334,8 +2752,15 @@ public final class FilteredItemModifier: ConditionalItemModifier {
         try c.encode("minecraft:filtered", forKey: key("function"))
         try encodeLootConditions(conditions, to: &c, forKey: "conditions")
         try c.encode(itemFilter, forKey: key("item_filter"))
-        try c.encodeIfPresent(onPass.map(ItemModifierInitializer.init), forKey: key("on_pass"))
-        try c.encodeIfPresent(onFail.map(ItemModifierInitializer.init), forKey: key("on_fail"))
+        if encoder.dpReaderPackFormat < Version(major: 91, minor: 0) {
+            guard let onPass else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "filtered.modifier is required before pack format 91.0"))
+            }
+            try c.encode(ItemModifierInitializer(onPass), forKey: key("modifier"))
+        } else {
+            try c.encodeIfPresent(onPass.map(ItemModifierInitializer.init), forKey: key("on_pass"))
+            try c.encodeIfPresent(onFail.map(ItemModifierInitializer.init), forKey: key("on_fail"))
+        }
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
@@ -2613,6 +3038,15 @@ public final class SetComponentsItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.components = try c.decode(JSONValue.self, forKey: key("components"))
+        if decoder.dpReaderPackFormat < Version(major: 43, minor: 0),
+           let componentObject = self.components.objectValue,
+           case .string? = componentObject["minecraft:custom_data"] ?? componentObject["custom_data"] {
+            throw DecodingError.dataCorruptedError(
+                forKey: key("components"),
+                in: c,
+                debugDescription: "SNBT-string minecraft:custom_data requires pack format 43.0 or newer"
+            )
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2706,6 +3140,9 @@ public final class SetCustomDataItemModifier: ConditionalItemModifier {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.tag = try c.decode(JSONValue.self, forKey: key("tag"))
+        if case .string = self.tag {
+            try decoder.requirePackVersions(.atLeast(.init(major: 43, minor: 0)), for: "SNBT-string set_custom_data.tag")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2727,6 +3164,7 @@ public final class SetCustomModelDataItemModifier: ConditionalItemModifier {
     let flags: JSONValue?
     let strings: JSONValue?
     let colors: JSONValue?
+    let legacyValue: LootNumberProvider?
 
     public init(
         conditions: [LootCondition] = [],
@@ -2740,21 +3178,55 @@ public final class SetCustomModelDataItemModifier: ConditionalItemModifier {
         self.flags = flags
         self.strings = strings
         self.colors = colors
+        self.legacyValue = nil
     }
 
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
-        self.floats = try c.decodeIfPresent(JSONValue.self, forKey: key("floats"))
-        self.flags = try c.decodeIfPresent(JSONValue.self, forKey: key("flags"))
-        self.strings = try c.decodeIfPresent(JSONValue.self, forKey: key("strings"))
-        self.colors = try c.decodeIfPresent(JSONValue.self, forKey: key("colors"))
+        if decoder.dpReaderPackFormat < Version(major: 59, minor: 0) {
+            for modernKey in ["floats", "flags", "strings", "colors"] where c.contains(key(modernKey)) {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key(modernKey), in: c,
+                    debugDescription: "set_custom_model_data.\(modernKey) requires pack format 59.0 or newer; use value"
+                )
+            }
+            self.legacyValue = try c.decode(LootNumberProviderInitializer.self, forKey: key("value")).value
+            self.floats = nil
+            self.flags = nil
+            self.strings = nil
+            self.colors = nil
+        } else {
+            guard !c.contains(key("value")) else {
+                throw DecodingError.dataCorruptedError(forKey: key("value"), in: c, debugDescription: "set_custom_model_data.value was removed in pack format 59.0")
+            }
+            self.legacyValue = nil
+            self.floats = try c.decodeIfPresent(JSONValue.self, forKey: key("floats"))
+            self.flags = try c.decodeIfPresent(JSONValue.self, forKey: key("flags"))
+            self.strings = try c.decodeIfPresent(JSONValue.self, forKey: key("strings"))
+            self.colors = try c.decodeIfPresent(JSONValue.self, forKey: key("colors"))
+            if let floats { try Self.validateListOperation(floats, field: "floats", element: { $0.doubleValue != nil || $0.objectValue != nil }, codingPath: decoder.codingPath) }
+            if let flags { try Self.validateListOperation(flags, field: "flags", element: { if case .bool = $0 { return true }; return false }, codingPath: decoder.codingPath) }
+            if let strings { try Self.validateListOperation(strings, field: "strings", element: { $0.stringValue != nil }, codingPath: decoder.codingPath) }
+            if let colors {
+                try Self.validateListOperation(
+                    colors,
+                    field: "colors",
+                    element: { Self.isColorOrProvider($0, packFormat: decoder.dpReaderPackFormat) },
+                    codingPath: decoder.codingPath
+                )
+            }
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:set_custom_model_data", forKey: key("function"))
         try encodeLootConditions(conditions, to: &c, forKey: "conditions")
+        if let legacyValue, encoder.dpReaderPackFormat < Version(major: 59, minor: 0) {
+            try c.encode(LootNumberProviderInitializer(legacyValue), forKey: key("value"))
+            return
+        }
         try c.encodeIfPresent(floats, forKey: key("floats"))
         try c.encodeIfPresent(flags, forKey: key("flags"))
         try c.encodeIfPresent(strings, forKey: key("strings"))
@@ -2762,12 +3234,87 @@ public final class SetCustomModelDataItemModifier: ConditionalItemModifier {
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
-        var customModelData: [String: JSONValue] = [:]
-        if let floats { customModelData["floats"] = floats }
-        if let flags { customModelData["flags"] = flags }
-        if let strings { customModelData["strings"] = strings }
-        if let colors { customModelData["colors"] = colors }
+        if let legacyValue {
+            return stack.settingComponent("minecraft:custom_model_data", .integer(Int64(legacyValue.getInt(fromContext: ctx))))
+        }
+        var customModelData = stack.components["minecraft:custom_model_data"]?.objectValue ?? [:]
+        if let floats { customModelData["floats"] = .array(Self.applyListOperation(floats, to: customModelData["floats"]?.arrayValue ?? [])) }
+        if let flags { customModelData["flags"] = .array(Self.applyListOperation(flags, to: customModelData["flags"]?.arrayValue ?? [])) }
+        if let strings { customModelData["strings"] = .array(Self.applyListOperation(strings, to: customModelData["strings"]?.arrayValue ?? [])) }
+        if let colors { customModelData["colors"] = .array(Self.applyListOperation(colors, to: customModelData["colors"]?.arrayValue ?? [])) }
         return stack.settingComponent("minecraft:custom_model_data", .object(customModelData))
+    }
+
+    private static func validateListOperation(
+        _ value: JSONValue,
+        field: String,
+        element isValidElement: (JSONValue) -> Bool,
+        codingPath: [CodingKey]
+    ) throws {
+        func invalid(_ detail: String) throws -> Never {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: codingPath + [key(field)],
+                debugDescription: "set_custom_model_data.\(field) \(detail)"
+            ))
+        }
+        guard case .object(let operation) = value,
+              let values = operation["values"]?.arrayValue else {
+            try invalid("must be a list operation object containing a values list")
+        }
+        guard values.allSatisfy(isValidElement) else {
+            try invalid("contains a value of the wrong type")
+        }
+        let mode = operation["mode"]?.stringValue ?? "replace_all"
+        guard ["replace_all", "replace_section", "insert", "append"].contains(mode) else {
+            try invalid("has unknown mode '\(mode)'")
+        }
+        for name in ["offset", "size"] where operation[name] != nil {
+            guard let integer = operation[name]?.intValue, integer >= 0 else {
+                try invalid("requires \(name) to be a non-negative integer")
+            }
+        }
+        if mode != "replace_section", operation["size"] != nil {
+            try invalid("may use size only with replace_section mode")
+        }
+        if mode == "replace_all" || mode == "append", operation["offset"] != nil {
+            try invalid("may use offset only with replace_section or insert mode")
+        }
+    }
+
+    private static func isColorOrProvider(_ value: JSONValue, packFormat: Version) -> Bool {
+        if value.doubleValue != nil || value.objectValue != nil { return true }
+        guard packFormat >= Version(major: 92, minor: 0) else { return false }
+        if let string = value.stringValue {
+            return string.count == 7 && string.first == "#" && string.dropFirst().allSatisfy(\.isHexDigit)
+        }
+        guard let components = value.arrayValue, components.count == 3 else { return false }
+        return components.allSatisfy {
+            guard let component = $0.doubleValue else { return false }
+            return component >= 0 && component <= 1
+        }
+    }
+
+    private static func applyListOperation(_ value: JSONValue, to existing: [JSONValue]) -> [JSONValue] {
+        guard case .object(let operation) = value else { return existing }
+        let values = operation["values"]?.arrayValue ?? []
+        let mode = operation["mode"]?.stringValue ?? "replace_all"
+        switch mode {
+        case "append":
+            return existing + values
+        case "insert":
+            let offset = min(operation["offset"]?.intValue ?? 0, existing.count)
+            var result = existing
+            result.insert(contentsOf: values, at: offset)
+            return result
+        case "replace_section":
+            let offset = min(operation["offset"]?.intValue ?? 0, existing.count)
+            let size = operation["size"]?.intValue ?? values.count
+            var result = existing
+            result.replaceSubrange(offset..<min(existing.count, offset + size), with: values)
+            return result
+        default:
+            return values
+        }
     }
 }
 
@@ -3077,6 +3624,7 @@ public final class SetLoreItemModifier: ConditionalItemModifier {
         self.lore = try c.decode([JSONValue].self, forKey: key("lore"))
         self.operation = try c.decode(JSONValue.self, forKey: key("operation"))
         self.entity = try c.decodeIfPresent(String.self, forKey: key("entity"))
+        try validateLootEntityTarget(entity, decoder: decoder, key: "entity", container: c)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -3123,6 +3671,7 @@ public final class SetNameItemModifier: ConditionalItemModifier {
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
         self.name = try c.decodeIfPresent(JSONValue.self, forKey: key("name"))
         self.entity = try c.decodeIfPresent(String.self, forKey: key("entity"))
+        try validateLootEntityTarget(entity, decoder: decoder, key: "entity", container: c)
         self.target = try c.decodeIfPresent(String.self, forKey: key("target")) ?? "custom_name"
     }
 
@@ -3209,61 +3758,127 @@ public final class SetPotionItemModifier: ConditionalItemModifier {
 /// An item modifier that selects one or more random dye colors.
 public final class SetRandomDyesItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
+    let numberOfDyes: any LootNumberProvider
 
     fileprivate static let feature = VersionedSchemaFeature(
         "item modifier minecraft:set_random_dyes",
         supportedVersions: .atLeast(.init(major: 95, minor: 0))
     )
 
-    public init(conditions: [LootCondition] = []) {
+    public init(conditions: [LootCondition] = [], numberOfDyes: any LootNumberProvider = ConstantLootNumberProvider(value: 1)) {
         self.conditions = conditions
+        self.numberOfDyes = numberOfDyes
     }
 
     public required init(from decoder: Decoder) throws {
         try decoder.require(SetRandomDyesItemModifier.feature)
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
+        self.numberOfDyes = try c.decode(LootNumberProviderInitializer.self, forKey: key("number_of_dyes")).value
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:set_random_dyes", forKey: key("function"))
         try encodeLootConditions(conditions, to: &c, forKey: "conditions")
+        try c.encode(LootNumberProviderInitializer(numberOfDyes), forKey: key("number_of_dyes"))
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
-        throw LootEvaluationError.unimplemented("set_random_dyes is not implemented")
+        let dyeColors: [Int] = [
+            16_383_998, 16_351_261, 13_061_821, 3_847_130,
+            16_701_501, 8_439_583, 15_961_002, 4_673_362,
+            10_329_495, 1_481_884, 8_991_416, 3_949_738,
+            8_606_770, 6_192_150, 11_546_150, 1_908_001
+        ]
+        var colors: [Int] = []
+        if let existing = stack.components["minecraft:dyed_color"]?.intValue { colors.append(existing) }
+        for _ in 0..<max(0, numberOfDyes.getInt(fromContext: ctx)) {
+            colors.append(dyeColors[Int(ctx.random.next(bound: UInt32(dyeColors.count)))])
+        }
+        guard !colors.isEmpty else { return stack }
+        var red = 0, green = 0, blue = 0, brightness = 0
+        for color in colors {
+            let r = (color >> 16) & 0xff, g = (color >> 8) & 0xff, b = color & 0xff
+            red += r; green += g; blue += b; brightness += max(r, max(g, b))
+        }
+        red /= colors.count; green /= colors.count; blue /= colors.count
+        let averageBrightness = brightness / colors.count
+        let maximum = max(red, max(green, blue))
+        if maximum > 0 {
+            red = red * averageBrightness / maximum
+            green = green * averageBrightness / maximum
+            blue = blue * averageBrightness / maximum
+        }
+        return stack.settingComponent("minecraft:dyed_color", .integer(Int64((red << 16) | (green << 8) | blue)))
     }
 }
 
 /// An item modifier that selects a random potion from configured options.
 public final class SetRandomPotionItemModifier: ConditionalItemModifier {
     public let conditions: [LootCondition]
+    let options: JSONValue?
 
     fileprivate static let feature = VersionedSchemaFeature(
         "item modifier minecraft:set_random_potion",
         supportedVersions: .atLeast(.init(major: 95, minor: 0))
     )
 
-    public init(conditions: [LootCondition] = []) {
+    public init(conditions: [LootCondition] = [], options: JSONValue? = nil) {
         self.conditions = conditions
+        self.options = options
     }
 
     public required init(from decoder: Decoder) throws {
         try decoder.require(SetRandomPotionItemModifier.feature)
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.conditions = try decodeLootConditions(from: c, forKey: "conditions")
+        self.options = try c.decodeIfPresent(JSONValue.self, forKey: key("options"))
+        if let options {
+            try validateRegistrySelector(options, field: "set_random_potion.options", codingPath: decoder.codingPath + [key("options")])
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:set_random_potion", forKey: key("function"))
         try encodeLootConditions(conditions, to: &c, forKey: "conditions")
+        try c.encodeIfPresent(options, forKey: key("options"))
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
-        throw LootEvaluationError.unimplemented("set_random_potion is not implemented")
+        let candidates: [String]
+        switch options {
+        case .string(let value)?:
+            guard !value.hasPrefix("#") else {
+                throw LootEvaluationError.missingContext("Potion tags require a potion registry and tag resolver")
+            }
+            candidates = [addDefaultNamespace(value)]
+        case .array(let values)?:
+            candidates = values.compactMap(\.stringValue).map(addDefaultNamespace)
+        case nil:
+            candidates = Self.vanillaPotionIDs
+        default:
+            candidates = []
+        }
+        guard !candidates.isEmpty else { return stack }
+        let potion = candidates[Int(ctx.random.next(bound: UInt32(candidates.count)))]
+        return stack.settingComponent("minecraft:potion_contents", .object(["potion": .string(potion)]))
     }
+
+    private static let vanillaPotionIDs = [
+        "minecraft:water", "minecraft:mundane", "minecraft:thick", "minecraft:awkward",
+        "minecraft:night_vision", "minecraft:long_night_vision", "minecraft:invisibility", "minecraft:long_invisibility",
+        "minecraft:leaping", "minecraft:long_leaping", "minecraft:strong_leaping", "minecraft:fire_resistance",
+        "minecraft:long_fire_resistance", "minecraft:swiftness", "minecraft:long_swiftness", "minecraft:strong_swiftness",
+        "minecraft:slowness", "minecraft:long_slowness", "minecraft:strong_slowness", "minecraft:turtle_master",
+        "minecraft:long_turtle_master", "minecraft:strong_turtle_master", "minecraft:water_breathing", "minecraft:long_water_breathing",
+        "minecraft:healing", "minecraft:strong_healing", "minecraft:harming", "minecraft:strong_harming",
+        "minecraft:poison", "minecraft:long_poison", "minecraft:strong_poison", "minecraft:regeneration",
+        "minecraft:long_regeneration", "minecraft:strong_regeneration", "minecraft:strength", "minecraft:long_strength",
+        "minecraft:strong_strength", "minecraft:weakness", "minecraft:long_weakness", "minecraft:slow_falling",
+        "minecraft:long_slow_falling", "minecraft:wind_charged", "minecraft:weaving", "minecraft:oozing", "minecraft:infested"
+    ]
 }
 
 /// A possible status effect and duration for suspicious stew.
@@ -3574,6 +4189,73 @@ private func resolvedIdentifierList(
         return resolved
     default:
         throw LootEvaluationError.invalidData("Expected identifier or identifier array")
+    }
+}
+
+private func validateRegistrySelector(_ value: JSONValue, field: String, codingPath: [CodingKey]) throws {
+    func invalid(_ detail: String) throws -> Never {
+        throw DecodingError.dataCorrupted(.init(codingPath: codingPath, debugDescription: "\(field) \(detail)"))
+    }
+    switch value {
+    case .string(let identifier):
+        guard !identifier.isEmpty, identifier != "#" else { try invalid("must not be empty") }
+    case .array(let identifiers):
+        guard !identifiers.isEmpty else { try invalid("must be a non-empty ID list") }
+        for identifier in identifiers {
+            guard case .string(let id) = identifier, !id.isEmpty, !id.hasPrefix("#") else {
+                try invalid("must contain only direct, non-empty registry IDs")
+            }
+        }
+    default:
+        try invalid("must be a registry ID, a non-empty ID list, or a hash-prefixed tag")
+    }
+}
+
+/// Validates the loot entity-target spelling on both sides of format 42.
+private func validateLootEntityTarget(
+    _ target: String?,
+    decoder: Decoder,
+    key keyName: String,
+    container: KeyedDecodingContainer<DynamicCodingKey>
+) throws {
+    guard let target else { return }
+    let replacements = [
+        "killer": "attacker",
+        "direct_killer": "direct_attacker",
+        "killer_player": "attacking_player"
+    ]
+    if decoder.dpReaderPackFormat >= Version(major: 42, minor: 0), let replacement = replacements[target] {
+        throw DecodingError.dataCorruptedError(
+            forKey: key(keyName),
+            in: container,
+            debugDescription: "Loot entity target '\(target)' was removed in pack format 42.0; use '\(replacement)'"
+        )
+    }
+    let reverseReplacements = Dictionary(uniqueKeysWithValues: replacements.map { ($0.value, $0.key) })
+    if decoder.dpReaderPackFormat < Version(major: 42, minor: 0), let replacement = reverseReplacements[target] {
+        throw DecodingError.dataCorruptedError(
+            forKey: key(keyName),
+            in: container,
+            debugDescription: "Loot entity target '\(target)' requires pack format 42.0 or newer; use '\(replacement)'"
+        )
+    }
+    let allowed: Set<String>
+    if decoder.dpReaderPackFormat < Version(major: 42, minor: 0) {
+        allowed = ["this", "killer", "direct_killer", "killer_player"]
+    } else if decoder.dpReaderPackFormat < Version(major: 82, minor: 0) {
+        allowed = ["this", "attacker", "direct_attacker", "attacking_player"]
+    } else {
+        allowed = ["this", "attacker", "direct_attacker", "attacking_player", "target_entity", "interacting_entity"]
+    }
+    guard allowed.contains(target) else {
+        let suffix = ["target_entity", "interacting_entity"].contains(target)
+            ? " (requires pack format 82.0 or newer)"
+            : ""
+        throw DecodingError.dataCorruptedError(
+            forKey: key(keyName),
+            in: container,
+            debugDescription: "Unknown loot entity target '\(target)' for pack format \(decoder.dpReaderPackFormat)\(suffix)"
+        )
     }
 }
 

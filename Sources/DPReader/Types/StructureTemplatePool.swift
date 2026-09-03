@@ -37,7 +37,13 @@ public enum StructurePoolProjection: String, Decodable {
 
 /// Data-driven pool elements understood by vanilla's jigsaw assembler.
 public indirect enum StructurePoolElement: Decodable {
-    case single(location: String, processors: StructureProcessorListReference?, projection: StructurePoolProjection, legacy: Bool)
+    case single(
+        location: String,
+        processors: StructureProcessorListReference?,
+        projection: StructurePoolProjection,
+        legacy: Bool,
+        overrideLiquidSettings: String? = nil
+    )
     case list(elements: [StructurePoolElement], projection: StructurePoolProjection)
     case feature(projection: StructurePoolProjection)
     case empty
@@ -47,11 +53,24 @@ public indirect enum StructurePoolElement: Decodable {
         let type = addDefaultNamespace(try c.decode(String.self, forKey: .elementType))
         switch type {
         case "minecraft:single_pool_element", "minecraft:legacy_single_pool_element":
+            let overrideLiquidSettings = try c.decodeIfPresent(String.self, forKey: .overrideLiquidSettings)
+            if c.contains(.overrideLiquidSettings) {
+                try decoder.requirePackVersions(.atLeast(.init(major: 46, minor: 0)), for: "single pool element override_liquid_settings")
+            }
+            if let overrideLiquidSettings,
+               overrideLiquidSettings != "apply_waterlogging" && overrideLiquidSettings != "ignore_waterlogging" {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .overrideLiquidSettings,
+                    in: c,
+                    debugDescription: "override_liquid_settings must be apply_waterlogging or ignore_waterlogging"
+                )
+            }
             self = .single(
                 location: addDefaultNamespace(try c.decode(String.self, forKey: .location)),
                 processors: try c.decodeIfPresent(StructureProcessorListReference.self, forKey: .processors),
                 projection: try c.decode(StructurePoolProjection.self, forKey: .projection),
-                legacy: type == "minecraft:legacy_single_pool_element"
+                legacy: type == "minecraft:legacy_single_pool_element",
+                overrideLiquidSettings: overrideLiquidSettings
             )
         case "minecraft:list_pool_element":
             let projection = try c.decode(StructurePoolProjection.self, forKey: .projection)
@@ -67,7 +86,7 @@ public indirect enum StructurePoolElement: Decodable {
 
     var projection: StructurePoolProjection {
         switch self {
-        case .single(_, _, let projection, _), .list(_, let projection), .feature(let projection): return projection
+        case .single(_, _, let projection, _, _), .list(_, let projection), .feature(let projection): return projection
         case .empty: return .rigid
         }
     }
@@ -76,7 +95,7 @@ public indirect enum StructurePoolElement: Decodable {
 
     var templateLocations: [String] {
         switch self {
-        case .single(let location, _, _, _): return [location]
+        case .single(let location, _, _, _, _): return [location]
         case .list(let elements, _): return elements.flatMap(\.templateLocations)
         case .feature, .empty: return []
         }
@@ -84,8 +103,14 @@ public indirect enum StructurePoolElement: Decodable {
 
     private func withProjection(_ projection: StructurePoolProjection) -> StructurePoolElement {
         switch self {
-        case .single(let location, let processors, _, let legacy):
-            return .single(location: location, processors: processors, projection: projection, legacy: legacy)
+        case .single(let location, let processors, _, let legacy, let overrideLiquidSettings):
+            return .single(
+                location: location,
+                processors: processors,
+                projection: projection,
+                legacy: legacy,
+                overrideLiquidSettings: overrideLiquidSettings
+            )
         case .list(let elements, _):
             return .list(elements: elements.map { $0.withProjection(projection) }, projection: projection)
         case .feature: return .feature(projection: projection)
@@ -93,7 +118,15 @@ public indirect enum StructurePoolElement: Decodable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case elementType = "element_type", location, processors, projection, elements }
+    var overrideLiquidSettings: String? {
+        if case .single(_, _, _, _, let value) = self { return value }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case elementType = "element_type", location, processors, projection, elements
+        case overrideLiquidSettings = "override_liquid_settings"
+    }
 }
 
 /// Processor lists can be an inline object or a registry identifier.

@@ -11,7 +11,7 @@ public final class Biome: Codable {
     let spawners: [String: [BiomeSpawnerEntry]]
     let spawnCosts: [String: BiomeSpawnCost]
 
-    // let effects: BiomeEffects
+    let effects: JSONValue
 
     public init(
         hasPrecipitation: Bool,
@@ -22,7 +22,8 @@ public final class Biome: Codable {
         features: [[String]],
         creatureSpawnProbability: Double? = nil,
         spawners: [String: [BiomeSpawnerEntry]],
-        spawnCosts: [String: BiomeSpawnCost]
+        spawnCosts: [String: BiomeSpawnCost],
+        effects: JSONValue = .object([:])
     ) {
         self.hasPrecipitation = hasPrecipitation
         self.temperature = temperature
@@ -33,6 +34,7 @@ public final class Biome: Codable {
         self.creatureSpawnProbability = creatureSpawnProbability
         self.spawners = spawners
         self.spawnCosts = spawnCosts
+        self.effects = effects
     }
 
     public init(from decoder: any Decoder) throws {
@@ -50,6 +52,8 @@ public final class Biome: Codable {
         self.creatureSpawnProbability = try? container.decode(Double.self, forKey: .creatureSpawnProbability)
         self.spawners = (try? container.decode([String: [BiomeSpawnerEntry]].self, forKey: .spawners)) ?? [:]
         self.spawnCosts = (try? container.decode([String: BiomeSpawnCost].self, forKey: .spawnCosts)) ?? [:]
+        self.effects = try container.decodeIfPresent(JSONValue.self, forKey: .effects) ?? .object([:])
+        try Self.validateEffects(effects, packFormat: decoder.dpReaderPackFormat, codingPath: decoder.codingPath + [CodingKeys.effects])
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -63,6 +67,7 @@ public final class Biome: Codable {
         try container.encodeIfPresent(self.creatureSpawnProbability, forKey: .creatureSpawnProbability)
         try container.encode(self.spawners, forKey: .spawners)
         try container.encode(self.spawnCosts, forKey: .spawnCosts)
+        try container.encode(self.effects, forKey: .effects)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -75,6 +80,48 @@ public final class Biome: Codable {
         case creatureSpawnProbability = "creature_spawn_probability"
         case spawners = "spawners"
         case spawnCosts = "spawn_costs"
+        case effects = "effects"
+    }
+
+    private static func validateEffects(_ effects: JSONValue, packFormat: Version, codingPath: [CodingKey]) throws {
+        guard case .object(let object) = effects else {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath, debugDescription: "Biome effects must be an object"))
+        }
+        if packFormat < Version(major: 68, minor: 0), object["dry_foliage_color"] != nil {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: codingPath, debugDescription: "dry_foliage_color requires pack format 68.0 or newer")
+            )
+        }
+        for key in ["water_color", "water_fog_color", "fog_color", "sky_color", "foliage_color", "dry_foliage_color", "grass_color"] {
+            guard let color = object[key] else { continue }
+            if packFormat < Version(major: 92, minor: 0) {
+                guard color.intValue != nil else {
+                    throw DecodingError.dataCorrupted(
+                        .init(codingPath: codingPath, debugDescription: "Biome effect \(key) must be an integer before pack format 92.0")
+                    )
+                }
+            } else {
+                let valid: Bool
+                switch color {
+                case .integer:
+                    valid = true
+                case .string(let value):
+                    valid = value.count == 7 && value.first == "#" && value.dropFirst().allSatisfy(\.isHexDigit)
+                case .array(let values):
+                    valid = values.count == 3 && values.allSatisfy { value in
+                        guard let component = value.doubleValue else { return false }
+                        return component >= 0 && component <= 1
+                    }
+                default:
+                    valid = false
+                }
+                guard valid else {
+                    throw DecodingError.dataCorrupted(
+                        .init(codingPath: codingPath, debugDescription: "Biome effect \(key) must be an RGB integer, #rrggbb string, or three-component float array")
+                    )
+                }
+            }
+        }
     }
 }
 

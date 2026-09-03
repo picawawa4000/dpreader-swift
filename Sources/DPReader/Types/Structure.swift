@@ -491,9 +491,10 @@ public struct JigsawStructureSettings: Codable {
             self.maxDistanceFromCenter = distance
             self.maxVerticalDistanceFromCenter = distance
         } else {
+            try decoder.requirePackVersions(.atLeast(.init(major: 82, minor: 0)), for: "object-valued jigsaw max_distance_from_center")
             let distance = try container.nestedContainer(keyedBy: DistanceCodingKeys.self, forKey: .maxDistanceFromCenter)
             self.maxDistanceFromCenter = try distance.decode(Int.self, forKey: .horizontal)
-            self.maxVerticalDistanceFromCenter = try distance.decodeIfPresent(Int.self, forKey: .vertical) ?? 4_064
+            self.maxVerticalDistanceFromCenter = try distance.decodeIfPresent(Int.self, forKey: .vertical) ?? 4_096
         }
         self.size = try container.decode(Int.self, forKey: .size)
         self.startHeight = try container.decode(StructureHeightProvider.self, forKey: .startHeight)
@@ -506,14 +507,47 @@ public struct JigsawStructureSettings: Codable {
             self.dimensionPadding = nil
             self.dimensionTopPadding = nil
         } else if let padding = try? container.decode(Int.self, forKey: .dimensionPadding) {
+            try decoder.requirePackVersions(.atLeast(.init(major: 43, minor: 0)), for: "jigsaw dimension_padding")
             self.dimensionPadding = padding
             self.dimensionTopPadding = padding
         } else {
+            try decoder.requirePackVersions(.atLeast(.init(major: 44, minor: 0)), for: "object-valued jigsaw dimension_padding")
             let padding = try container.nestedContainer(keyedBy: PaddingCodingKeys.self, forKey: .dimensionPadding)
             self.dimensionPadding = try padding.decodeIfPresent(Int.self, forKey: .bottom) ?? 0
             self.dimensionTopPadding = try padding.decodeIfPresent(Int.self, forKey: .top) ?? 0
         }
         self.liquidSettings = try container.decodeIfPresent(String.self, forKey: .liquidSettings)
+        if container.contains(.liquidSettings) {
+            try decoder.requirePackVersions(.atLeast(.init(major: 46, minor: 0)), for: "jigsaw liquid_settings")
+        }
+        if let dimensionPadding, dimensionPadding < 0 {
+            throw DecodingError.dataCorruptedError(forKey: .dimensionPadding, in: container, debugDescription: "Jigsaw dimension_padding.bottom must be non-negative")
+        }
+        if let dimensionTopPadding, dimensionTopPadding < 0 {
+            throw DecodingError.dataCorruptedError(forKey: .dimensionPadding, in: container, debugDescription: "Jigsaw dimension_padding.top must be non-negative")
+        }
+        if let liquidSettings, liquidSettings != "apply_waterlogging" && liquidSettings != "ignore_waterlogging" {
+            throw DecodingError.dataCorruptedError(
+                forKey: .liquidSettings,
+                in: container,
+                debugDescription: "Jigsaw liquid_settings must be apply_waterlogging or ignore_waterlogging"
+            )
+        }
+        guard (1...128).contains(self.maxDistanceFromCenter) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .maxDistanceFromCenter,
+                in: container,
+                debugDescription: "Jigsaw max_distance_from_center horizontal distance must be between 1 and 128"
+            )
+        }
+        let maximumVerticalDistance = decoder.dpReaderPackFormat >= Version(major: 82, minor: 0) ? 4_096 : 128
+        guard (1...maximumVerticalDistance).contains(self.maxVerticalDistanceFromCenter) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .maxDistanceFromCenter,
+                in: container,
+                debugDescription: "Jigsaw max_distance_from_center vertical distance must be between 1 and \(maximumVerticalDistance)"
+            )
+        }
     }
 
     public func encode(to encoder: any Encoder) throws {

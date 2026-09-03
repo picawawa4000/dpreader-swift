@@ -717,6 +717,8 @@ the density function compiler breaks TestVisible here so I'm just going to assum
     }
     """.data(using: .utf8)!
     let decoder = JSONDecoder()
+    let format103 = Version(major: 103, minor: 0)
+    decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(format103), selectedVersion: format103))
     let samplerType1 = try decoder.decode(DensityFunctionInitializer.self, from: type1Data).value
     let samplerType2 = try decoder.decode(DensityFunctionInitializer.self, from: type2Data).value
     let ws1 = samplerType1 as! WeirdScaledSampler

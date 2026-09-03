@@ -97,6 +97,10 @@ import Testing
     """.data(using: .utf8)!
 
     let decoder = JSONDecoder()
+    decoder.setDPReaderVersioning(PackVersioning(
+        supportedVersions: .exactly(Version(major: 81, minor: 0)),
+        selectedVersion: Version(major: 81, minor: 0)
+    ))
     let noiseRouter = try decoder.decode(NoiseRouter.self, from: data)
     #expect(noiseRouter.preliminarySurfaceLevel == nil)
     let initialDensity = try #require(noiseRouter.initialDensityWithoutJaggedness as? ConstantDensityFunction)

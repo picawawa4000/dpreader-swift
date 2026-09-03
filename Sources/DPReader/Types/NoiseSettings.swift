@@ -216,8 +216,27 @@ public final class NoiseRouter: Codable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.preliminarySurfaceLevel = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .preliminarySurfaceLevel)?.value
-        self.initialDensityWithoutJaggedness = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .initialDensityWithoutJaggedness)?.value
+        if decoder.dpReaderPackFormat >= Version(major: 82, minor: 0) {
+            if container.contains(.initialDensityWithoutJaggedness) {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .initialDensityWithoutJaggedness,
+                    in: container,
+                    debugDescription: "noise_router.initial_density_without_jaggedness was removed in pack format 82.0; use preliminary_surface_level"
+                )
+            }
+            self.preliminarySurfaceLevel = try container.decode(DensityFunctionInitializer.self, forKey: .preliminarySurfaceLevel).value
+            self.initialDensityWithoutJaggedness = nil
+        } else {
+            if container.contains(.preliminarySurfaceLevel) {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .preliminarySurfaceLevel,
+                    in: container,
+                    debugDescription: "noise_router.preliminary_surface_level requires pack format 82.0 or newer; use initial_density_without_jaggedness"
+                )
+            }
+            self.preliminarySurfaceLevel = nil
+            self.initialDensityWithoutJaggedness = try container.decode(DensityFunctionInitializer.self, forKey: .initialDensityWithoutJaggedness).value
+        }
         self.finalDensity = try container.decode(DensityFunctionInitializer.self, forKey: .finalDensity).value
         self.barrier = try container.decode(DensityFunctionInitializer.self, forKey: .barrier).value
         self.fluidLevelFloodedness = try container.decode(DensityFunctionInitializer.self, forKey: .fluidLevelFloodedness).value
@@ -535,11 +554,13 @@ public struct SurfaceRuleNoiseThresholdCondition: SurfaceRuleCondition, Codable 
     public let noise: String
     public let minThreshold: Double
     public let maxThreshold: Double
+    public let is3D: Bool
 
-    public init(noise: String, minThreshold: Double, maxThreshold: Double) {
+    public init(noise: String, minThreshold: Double, maxThreshold: Double, is3D: Bool = false) {
         self.noise = noise
         self.minThreshold = minThreshold
         self.maxThreshold = maxThreshold
+        self.is3D = is3D
     }
 
     public init(from decoder: Decoder) throws {
@@ -547,6 +568,10 @@ public struct SurfaceRuleNoiseThresholdCondition: SurfaceRuleCondition, Codable 
         self.noise = try container.decode(String.self, forKey: .noise)
         self.minThreshold = try container.decode(Double.self, forKey: .minThreshold)
         self.maxThreshold = try container.decode(Double.self, forKey: .maxThreshold)
+        self.is3D = try container.decodeIfPresent(Bool.self, forKey: .is3D) ?? false
+        if container.contains(.is3D) {
+            try decoder.requirePackVersions(.atLeast(.init(major: 105, minor: 0)), for: "noise_threshold.is_3d")
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -554,6 +579,7 @@ public struct SurfaceRuleNoiseThresholdCondition: SurfaceRuleCondition, Codable 
         case noise = "noise"
         case minThreshold = "min_threshold"
         case maxThreshold = "max_threshold"
+        case is3D = "is_3d"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -562,7 +588,47 @@ public struct SurfaceRuleNoiseThresholdCondition: SurfaceRuleCondition, Codable 
         try container.encode(noise, forKey: .noise)
         try container.encode(minThreshold, forKey: .minThreshold)
         try container.encode(maxThreshold, forKey: .maxThreshold)
+        if is3D { try container.encode(true, forKey: .is3D) }
     }
+}
+
+/// A short-lived format-101.2 surface rule which selected a block state from
+/// an evenly divided noise gradient. It was removed in format 105.
+public struct SurfaceRuleNoiseGradient: SurfaceRule, Codable {
+    public struct Entry: Codable {
+        public let state: BlockState?
+        public init(state: BlockState? = nil) { self.state = state }
+    }
+
+    public let noise: String
+    public let gradient: [Entry]
+
+    public init(noise: String, gradient: [Entry]) {
+        self.noise = noise
+        self.gradient = gradient
+    }
+
+    public init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(
+            .between(.init(major: 101, minor: 2), .init(major: 104, minor: Int.max)),
+            for: "surface rule minecraft:noise_gradient"
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.noise = try container.decode(String.self, forKey: .noise)
+        self.gradient = try container.decode([Entry].self, forKey: .gradient)
+        guard !gradient.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .gradient, in: container, debugDescription: "noise_gradient.gradient must be non-empty")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:noise_gradient", forKey: .type)
+        try container.encode(noise, forKey: .noise)
+        try container.encode(gradient, forKey: .gradient)
+    }
+
+    private enum CodingKeys: String, CodingKey { case type, noise, gradient }
 }
 
 /// A condition that negates another surface-rule condition.
@@ -826,6 +892,8 @@ private func decodeSurfaceRule(from decoder: Decoder) throws -> SurfaceRule {
         return try SurfaceRuleConditionRule(from: decoder)
     case "minecraft:block":
         return try SurfaceRuleBlock(from: decoder)
+    case "minecraft:noise_gradient":
+        return try SurfaceRuleNoiseGradient(from: decoder)
     case "minecraft:bandlands":
         return SurfaceRuleBandlands()
     case "minecraft:badlands":

@@ -122,7 +122,7 @@ public final class JigsawStructurePiece: StructurePiece {
         context: StructureGenerationContext
     ) {
         switch processor {
-        case .protectedBlocks:
+        case .protectedBlocks(_):
             return
         case .blockRot(let integrity, let rottableBlocks):
             blocks.removeAll { block in
@@ -543,7 +543,7 @@ private struct JigsawAssembler {
 
     private func jigsawsUnshuffled(in element: StructurePoolElement, origin: PosInt3D, rotation: JigsawRotation) -> [JigsawInfo] {
         switch element {
-        case .single(let location, _, _, _):
+        case .single(let location, _, _, _, _):
             guard let template = self.context.structureTemplate(named: location) else { return [] }
             let palette = template.palette(at: origin)
             // Vanilla's palette categorization sorts the template-local NBT block list before
@@ -590,7 +590,7 @@ private struct JigsawAssembler {
 
     private func bounds(of element: StructurePoolElement, origin: PosInt3D, rotation: JigsawRotation) -> BoundingBox? {
         switch element {
-        case .single(let location, _, _, _):
+        case .single(let location, _, _, _, _):
             guard let template = self.context.structureTemplate(named: location) else { return nil }
             return rotation.bounds(size: template.size, origin: origin)
         case .list(let elements, _):
@@ -791,14 +791,14 @@ private extension StructurePoolElement {
     var isEmpty: Bool { if case .empty = self { return true }; return false }
     var isLegacy: Bool {
         switch self {
-        case .single(_, _, _, let legacy): return legacy
+        case .single(_, _, _, let legacy, _): return legacy
         case .list(let elements, _): return elements.first?.isLegacy ?? false
         default: return false
         }
     }
     var singleEntries: [(location: String, processors: StructureProcessorListReference?, legacy: Bool)] {
         switch self {
-        case .single(let location, let processors, _, let legacy): return [(location, processors, legacy)]
+        case .single(let location, let processors, _, let legacy, _): return [(location, processors, legacy)]
         case .list(let elements, _): return elements.flatMap(\.singleEntries)
         default: return []
         }

@@ -9,7 +9,7 @@ enum StructureProcessor: Decodable {
     case rule([StructureProcessorRule])
     case blockRot(integrity: Float, rottableBlocks: String?)
     case capped(limit: Int, delegate: Box)
-    case protectedBlocks
+    case protectedBlocks(value: JSONValue)
 
     final class Box: Decodable {
         let value: StructureProcessor
@@ -27,13 +27,40 @@ enum StructureProcessor: Decodable {
                 rottableBlocks: try c.decodeIfPresent(String.self, forKey: .rottableBlocks)
             )
         case "minecraft:capped": self = .capped(limit: try c.decode(Int.self, forKey: .limit), delegate: try c.decode(Box.self, forKey: .delegate))
-        case "minecraft:protected_blocks": self = .protectedBlocks
+        case "minecraft:protected_blocks":
+            let value = try c.decode(JSONValue.self, forKey: .value)
+            if decoder.dpReaderPackFormat < Version(major: 101, minor: 2) {
+                guard case .string(let tag) = value, tag.hasPrefix("#") else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .value,
+                        in: c,
+                        debugDescription: "protected_blocks.value must be a hash-prefixed block tag before pack format 101.2"
+                    )
+                }
+            } else {
+                switch value {
+                case .string(let identifier) where !identifier.isEmpty && identifier != "#":
+                    break
+                case .array(let identifiers) where !identifiers.isEmpty && identifiers.allSatisfy({ value in
+                    guard case .string(let identifier) = value else { return false }
+                    return !identifier.isEmpty && !identifier.hasPrefix("#")
+                }):
+                    break
+                default:
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .value,
+                        in: c,
+                        debugDescription: "protected_blocks.value must be a block ID, list, or hash-prefixed block tag"
+                    )
+                }
+            }
+            self = .protectedBlocks(value: value)
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "Unknown structure processor: \(type)")
         }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type = "processor_type", rules, integrity, limit, delegate
+        case type = "processor_type", rules, integrity, limit, delegate, value
         case rottableBlocks = "rottable_blocks"
     }
 }

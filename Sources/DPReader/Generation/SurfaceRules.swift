@@ -160,6 +160,15 @@ final class SurfaceRuleApplicator {
         case let conditional as SurfaceRuleConditionRule:
             guard self.evaluate(condition: conditional.ifTrue, context: context) else { return nil }
             return self.evaluate(rule: conditional.thenRun, context: context)
+        case let gradient as SurfaceRuleNoiseGradient:
+            guard let sampled = self.sampleNoise(
+                addDefaultNamespace(gradient.noise),
+                x: Double(context.blockPosition.x),
+                y: Double(context.blockPosition.y),
+                z: Double(context.blockPosition.z)
+            ), !gradient.gradient.isEmpty else { return nil }
+            let normalized = max(0.0, min(0.999999999999, (sampled + 1.0) * 0.5))
+            return gradient.gradient[Int(normalized * Double(gradient.gradient.count))].state
         case is SurfaceRuleBandlands:
             let sampledOffset = (self.sampleNoise(
                 "minecraft:clay_bands_offset",
@@ -186,7 +195,9 @@ final class SurfaceRuleApplicator {
         case let value as SurfaceRuleNoiseThresholdCondition:
             guard let sampled = self.sampleNoise(
                 addDefaultNamespace(value.noise),
-                x: Double(context.blockPosition.x), y: 0, z: Double(context.blockPosition.z)
+                x: Double(context.blockPosition.x),
+                y: value.is3D ? Double(context.blockPosition.y) : 0,
+                z: Double(context.blockPosition.z)
             ) else { return false }
             return sampled >= value.minThreshold && sampled <= value.maxThreshold
         case let value as SurfaceRuleNotCondition:

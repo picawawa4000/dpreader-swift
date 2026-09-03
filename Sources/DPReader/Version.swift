@@ -8,12 +8,13 @@ import Foundation
 /// For formats before 82.0, the minor version will always be 0.
 public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, Sendable {
     /// The pack format used when a data pack has no readable metadata.
-    public static let assumedCurrent = Version(major: 92, minor: 0)
+    public static let assumedCurrent = Version(major: 107, minor: 1)
 
     public let major: Int
     public let minor: Int
 
     public init(major: Int, minor: Int) {
+        precondition(major >= 0 && minor >= 0, "Pack-format versions cannot be negative")
         self.major = major
         self.minor = minor
     }
@@ -29,13 +30,31 @@ public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, S
     public init(from decoder: Decoder) throws {
         if var unkeyed = try? decoder.unkeyedContainer() {
             let major = try unkeyed.decode(Int.self)
-            let minor = try unkeyed.decodeIfPresent(Int.self) ?? 0
+            let minor = try unkeyed.decode(Int.self)
+            guard unkeyed.isAtEnd else {
+                throw DecodingError.dataCorruptedError(
+                    in: unkeyed,
+                    debugDescription: "A full pack-format version must contain exactly [major, minor]"
+                )
+            }
+            guard major >= 0 && minor >= 0 else {
+                throw DecodingError.dataCorruptedError(
+                    in: unkeyed,
+                    debugDescription: "Pack-format versions cannot be negative"
+                )
+            }
             self = Version(major: major, minor: minor)
             return
         }
 
         if let singleValue = try? decoder.singleValueContainer() {
             if let integer = try? singleValue.decode(Int.self) {
+                guard integer >= 0 else {
+                    throw DecodingError.dataCorruptedError(
+                        in: singleValue,
+                        debugDescription: "Pack-format versions cannot be negative"
+                    )
+                }
                 self = Version(major: integer, minor: 0)
                 return
             }
@@ -52,6 +71,11 @@ public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, S
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.major = try container.decode(Int.self, forKey: .major)
         self.minor = try container.decodeIfPresent(Int.self, forKey: .minor) ?? 0
+        guard major >= 0 && minor >= 0 else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Pack-format versions cannot be negative")
+            )
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -76,6 +100,11 @@ public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, S
             )
         }
 
+        guard major >= 0 && minor >= 0 else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: [], debugDescription: "Pack-format versions cannot be negative")
+            )
+        }
         self.init(major: major, minor: minor)
     }
 

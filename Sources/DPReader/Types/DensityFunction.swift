@@ -962,6 +962,107 @@ public final class RangeChoice: DensityFunction {
     }
 }
 
+/// Selects one of several functions at ordered threshold boundaries.
+/// Introduced in data-pack format 104 as the general replacement for
+/// `weird_scaled_sampler`.
+public final class IntervalSelect: DensityFunction, DensityFunctionWrapperIntrospectable {
+    public let input: any DensityFunction
+    public let thresholds: [Double]
+    public let functions: [any DensityFunction]
+    private let lowered: RangeChoice
+
+    public init(input: any DensityFunction, thresholds: [Double], functions: [any DensityFunction]) {
+        precondition(!thresholds.isEmpty && functions.count == thresholds.count + 1)
+        self.input = input
+        self.thresholds = thresholds
+        self.functions = functions
+        self.lowered = Self.lower(input: input, thresholds: thresholds, functions: functions)
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 104, minor: 0)), for: "density function minecraft:interval_select")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let input = try container.decode(DensityFunctionInitializer.self, forKey: .input).value
+        let thresholds = try container.decode([Double].self, forKey: .thresholds)
+        let functions = try container.decode([DensityFunctionInitializer].self, forKey: .functions).map(\.value)
+        guard !thresholds.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .thresholds, in: container, debugDescription: "interval_select thresholds must be non-empty")
+        }
+        guard functions.count >= 2 else {
+            throw DecodingError.dataCorruptedError(forKey: .functions, in: container, debugDescription: "interval_select functions must contain at least two entries")
+        }
+        guard functions.count == thresholds.count + 1 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .functions,
+                in: container,
+                debugDescription: "interval_select requires exactly one more function than threshold"
+            )
+        }
+        self.input = input
+        self.thresholds = thresholds
+        self.functions = functions
+        self.lowered = Self.lower(input: input, thresholds: thresholds, functions: functions)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("minecraft:interval_select", forKey: .type)
+        try container.encode(AnyDensityFunctionEncoder(value: input), forKey: .input)
+        try container.encode(thresholds, forKey: .thresholds)
+        try container.encode(functions.map { AnyDensityFunctionEncoder(value: $0) }, forKey: .functions)
+    }
+
+    @inline(__always)
+    public func sample(at pos: PosInt3D) -> Double {
+        lowered.sample(at: pos)
+    }
+
+    public func lowerBoundValue() -> Double {
+        functions.map { $0.lowerBoundValue() }.min() ?? -Double.infinity
+    }
+
+    public func upperBoundValue() -> Double {
+        functions.map { $0.upperBoundValue() }.max() ?? Double.infinity
+    }
+
+    public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        try IntervalSelect(
+            input: input.bake(withBaker: baker),
+            thresholds: thresholds,
+            functions: functions.map { try $0.bake(withBaker: baker) }
+        )
+    }
+
+    var wrappedDensityFunction: any DensityFunction { lowered }
+
+    private static func lower(
+        input: any DensityFunction,
+        thresholds: [Double],
+        functions: [any DensityFunction]
+    ) -> RangeChoice {
+        var result: any DensityFunction = functions.last!
+        for index in thresholds.indices.reversed() {
+            result = RangeChoice(
+                inputChoice: input,
+                minInclusive: -Double.infinity,
+                maxExclusive: thresholds[index],
+                whenInRange: functions[index],
+                whenOutOfRange: result
+            )
+        }
+        return result as! RangeChoice
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type, input, thresholds, functions
+    }
+}
+
+private struct AnyDensityFunctionEncoder: Encodable {
+    let value: any DensityFunction
+    func encode(to encoder: Encoder) throws { try value.encode(to: encoder) }
+}
+
 /// Samples a noise at a scaled position.
 /// Encapsulates "minecraft:shift", "minecraft:shift_a", and "minecraft:shift_b".
 #if USE_TEST_VISIBLE
@@ -1659,11 +1760,19 @@ public final class FindTopSurface: DensityFunction {
     }
 
     public init(from decoder: any Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 82, minor: 0)), for: "density function minecraft:find_top_surface")
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.density = try container.decode(DensityFunctionInitializer.self, forKey: .density).value
         self.upperBound = try container.decode(DensityFunctionInitializer.self, forKey: .upperBound).value
         self.lowerBound = try container.decode(Int.self, forKey: .lowerBound)
         self.cellHeight = try container.decode(Int.self, forKey: .cellHeight)
+        guard self.cellHeight > 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .cellHeight,
+                in: container,
+                debugDescription: "find_top_surface.cell_height must be a positive integer"
+            )
+        }
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -1747,7 +1856,10 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
         switch typeKey {
         case "minecraft:constant":
             return try ConstantDensityFunction(from: decoder)
-        case "minecraft:abs", "minecraft:square", "minecraft:cube", "minecraft:half_negative", "minecraft:quarter_negative", "minecraft:squeeze", "minecraft:invert":
+        case "minecraft:abs", "minecraft:square", "minecraft:cube", "minecraft:half_negative", "minecraft:quarter_negative", "minecraft:squeeze":
+            return try UnaryDensityFunction(from: decoder)
+        case "minecraft:invert":
+            try decoder.requirePackVersions(.atLeast(.init(major: 82, minor: 0)), for: "density function minecraft:invert")
             return try UnaryDensityFunction(from: decoder)
         case "minecraft:add", "minecraft:mul", "minecraft:min", "minecraft:max":
             return try BinaryDensityFunction(from: decoder)
@@ -1757,6 +1869,8 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             return try YClampedGradient(from: decoder)
         case "minecraft:range_choice":
             return try RangeChoice(from: decoder)
+        case "minecraft:interval_select":
+            return try IntervalSelect(from: decoder)
         case "minecraft:shift", "minecraft:shift_a", "minecraft:shift_b":
             return try ShiftDensityFunction(from: decoder)
         case "minecraft:noise":
@@ -1777,6 +1891,7 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
         case "minecraft:end_islands":
             return EndIslandsDensityFunction(from: decoder)
         case "minecraft:weird_scaled_sampler":
+            try decoder.requirePackVersions(.atMost(.init(major: 103, minor: Int.max)), for: "density function minecraft:weird_scaled_sampler")
             return try WeirdScaledSampler(from: decoder)
         case "minecraft:spline":
             return try SplineDensityFunction(from: decoder)

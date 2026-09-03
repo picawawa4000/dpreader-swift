@@ -59,10 +59,16 @@ private func makeLootDecoder(packFormat: Version = .assumedCurrent) -> JSONDecod
 private func makeTemporaryPackRoot(packFormat: Version) throws -> URL {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root.appendingPathComponent("data"), withIntermediateDirectories: true)
+    let versionFields: String
+    if packFormat >= Version(major: 82, minor: 0) {
+        versionFields = "\"min_format\": [\(packFormat.major), \(packFormat.minor)], \"max_format\": [\(packFormat.major), \(packFormat.minor)]"
+    } else {
+        versionFields = "\"pack_format\": \(packFormat.major)"
+    }
     let metadata = """
     {
         "pack": {
-            "pack_format": \(packFormat.description),
+            \(versionFields),
             "description": "Test pack"
         }
     }
@@ -253,7 +259,7 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     #expect(itemEntry.functions[0] is SetCountItemModifier)
 }
 
-@Test func testDecodingEnchantWithLevelsTreasureFlag() throws {
+@Test func testFormat42RejectsRemovedEnchantWithLevelsTreasureFlag() throws {
     let data = """
     {
         "function": "minecraft:enchant_with_levels",
@@ -263,9 +269,10 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     }
     """.data(using: .utf8)!
 
-    let modifier = try JSONDecoder().decode(ItemModifierInitializer.self, from: data).value
-    let enchantWithLevels = modifier as! EnchantWithLevelsItemModifier
-    #expect(enchantWithLevels.treasure == false)
+    #expect(throws: DecodingError.self) {
+        _ = try makeLootDecoder(packFormat: Version(major: 42, minor: 0))
+            .decode(ItemModifierInitializer.self, from: data)
+    }
 }
 
 @Test func testSetPotionModifierEvaluation() throws {
@@ -307,7 +314,8 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
         "type": "minecraft:block",
         "functions": [
             {
-                "function": "minecraft:set_random_dyes"
+                "function": "minecraft:set_random_dyes",
+                "number_of_dyes": 1
             },
             {
                 "function": "minecraft:set_random_potion"
@@ -333,33 +341,20 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     #expect(table.functions[1] is SetRandomPotionItemModifier)
 }
 
-@Test func testNewLootFunctionsAreUnimplementedInPackFormat95() throws {
-    let functions: [(String, any ItemModifier.Type)] = [
-        ("minecraft:set_random_dyes", SetRandomDyesItemModifier.self),
-        ("minecraft:set_random_potion", SetRandomPotionItemModifier.self)
-    ]
+@Test func testNewLootFunctionsEvaluateInPackFormat95() throws {
+    let dyes = try makeLootDecoder(packFormat: Version(major: 95, minor: 0)).decode(
+        ItemModifierInitializer.self,
+        from: #"{"function":"minecraft:set_random_dyes","number_of_dyes":1}"#.data(using: .utf8)!
+    ).value
+    let dyed = try dyes.apply(to: ItemStack(itemName: "minecraft:leather_chestplate", count: 1), withContext: makeContext())
+    #expect(dyed.components["minecraft:dyed_color"]?.intValue != nil)
 
-    for (function, expectedType) in functions {
-        let data = """
-        {
-            "function": "\(function)"
-        }
-        """.data(using: .utf8)!
-
-        let modifier = try makeLootDecoder(packFormat: Version(major: 95, minor: 0)).decode(ItemModifierInitializer.self, from: data).value
-        #expect(type(of: modifier) == expectedType)
-
-        do {
-            _ = try modifier.apply(to: ItemStack(itemName: "minecraft:bundle", count: 1), withContext: makeContext())
-            Issue.record("Expected \(function) to be unimplemented during evaluation")
-        } catch let error as LootEvaluationError {
-            guard case .unimplemented(let message) = error else {
-                Issue.record("Expected unimplemented for \(function), got \(error)")
-                continue
-            }
-            #expect(message.contains(function.replacingOccurrences(of: "minecraft:", with: "")))
-        }
-    }
+    let potion = try makeLootDecoder(packFormat: Version(major: 95, minor: 0)).decode(
+        ItemModifierInitializer.self,
+        from: #"{"function":"minecraft:set_random_potion","options":"minecraft:water"}"#.data(using: .utf8)!
+    ).value
+    let updated = try potion.apply(to: ItemStack(itemName: "minecraft:potion", count: 1), withContext: makeContext())
+    #expect(updated.components["minecraft:potion_contents"] == .object(["potion": .string("minecraft:water")]))
 }
 
 @Test func testDataPackDecoderUsesPackMetadataFormat() throws {
