@@ -1,9 +1,21 @@
 import Foundation
 
 /// Errors encountered while building or querying a biome parameter tree.
-public enum BiomeSearchTreeError: Error {
+public enum BiomeSearchTreeError: Error, LocalizedError {
     case emptyEntries
     case missingBiome(String)
+    case unsupportedPackFormat(Version)
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyEntries:
+            return "Cannot build a biome search tree without entries"
+        case .missingBiome(let biome):
+            return "Biome search tree references missing biome \(biome)"
+        case .unsupportedPackFormat(let version):
+            return "Vanilla biome search trees are unavailable before pack format 13.0 (requested \(version))"
+        }
+    }
 }
 
 /// A nearest-neighbor search tree over Minecraft's six climate parameters.
@@ -471,13 +483,40 @@ private func populateFlatBiomeTree(
 }
 
 /// Builds a nearest-neighbor biome tree after resolving every entry against a biome registry.
-public func buildBiomeSearchTree(from biomeRegistry: Registry<Biome>, entries: [MultiNoiseBiomeSourceBiome]) throws -> BiomeSearchTree {
+public func buildBiomeSearchTree(
+    from biomeRegistry: Registry<Biome>,
+    entries: [MultiNoiseBiomeSourceBiome],
+    packFormat: Version = .assumedCurrent
+) throws -> BiomeSearchTree {
+    guard packFormat >= Version(major: 13, minor: 0) else {
+        throw BiomeSearchTreeError.unsupportedPackFormat(packFormat)
+    }
     var mapped: [(NoiseHypercube, RegistryKey<Biome>)] = []
     mapped.reserveCapacity(entries.count)
     for entry in entries {
-        let key = RegistryKey<Biome>(referencing: entry.biome)
+        // Pale Garden was added after the original overworld table.  A table
+        // generated for an older registry uses Dark Forest in its place.
+        let biomeName: String
+        if entry.biome == "minecraft:pale_garden",
+           packFormat < Version(major: 61, minor: 0)
+                || biomeRegistry.get(RegistryKey<Biome>(referencing: entry.biome)) == nil
+        {
+            biomeName = "minecraft:dark_forest"
+        } else {
+            biomeName = entry.biome
+        }
+
+        // Sulfur Caves is an optional table entry: packs predating the biome
+        // must continue to build their otherwise-complete vanilla tree.
+        if biomeName == "minecraft:sulfur_caves",
+           biomeRegistry.get(RegistryKey<Biome>(referencing: biomeName)) == nil
+        {
+            continue
+        }
+
+        let key = RegistryKey<Biome>(referencing: biomeName)
         guard biomeRegistry.get(key) != nil else {
-            throw BiomeSearchTreeError.missingBiome(entry.biome)
+            throw BiomeSearchTreeError.missingBiome(biomeName)
         }
         mapped.append((NoiseHypercube(from: entry.parameters), key))
     }
@@ -756,7 +795,26 @@ public func getPredefinedBiomeSearchTreeData(for preset: String) -> [MultiNoiseB
     }
 }
 
-private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome] {
+/// Returns vanilla climate-to-biome entries for `preset` as defined by a pack
+/// format.  Vanilla's overworld table did not exist before format 13.
+public func getPredefinedBiomeSearchTreeData(
+    for preset: String,
+    packFormat: Version
+) throws -> [MultiNoiseBiomeSourceBiome]? {
+    guard packFormat >= Version(major: 13, minor: 0) else {
+        throw BiomeSearchTreeError.unsupportedPackFormat(packFormat)
+    }
+    switch preset {
+    case "overworld", "minecraft:overworld":
+        return buildOverworldBiomeSearchTreeData(packFormat: packFormat)
+    case "nether", "minecraft:nether":
+        return NetherBiomeSearchTreeDataCache.cached
+    default:
+        return nil
+    }
+}
+
+private func buildOverworldBiomeSearchTreeData(packFormat: Version = .assumedCurrent) -> [MultiNoiseBiomeSourceBiome] {
     func range(_ min: Double, _ max: Double) -> BiomeParameterRange {
         return BiomeParameterRange(min: min, max: max)
     }
@@ -835,13 +893,17 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
         [THE_VOID, THE_VOID, THE_VOID, THE_VOID, THE_VOID]
     ]
 
+    let paleGardenOrDarkForest = packFormat >= Version(major: 61, minor: 0)
+        ? "minecraft:pale_garden"
+        : "minecraft:dark_forest"
+
     let nearMountainBiomes = [
         ["minecraft:snowy_plains", "minecraft:snowy_plains", "minecraft:snowy_plains", "minecraft:snowy_taiga", "minecraft:snowy_taiga"],
         ["minecraft:meadow", "minecraft:meadow", "minecraft:forest", "minecraft:taiga", "minecraft:old_growth_spruce_taiga"],
         // About the pale_garden entry: Cubiomes has it in specialNearMountainBiomes, whereas modern versions of Minecraft
         // have it as a normal near mountain biome to make it more common.
         // We agree with modern Minecraft here.
-        ["minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:pale_garden"],
+        ["minecraft:meadow", "minecraft:meadow", "minecraft:meadow", "minecraft:meadow", paleGardenOrDarkForest],
         ["minecraft:savanna_plateau", "minecraft:savanna_plateau", "minecraft:forest", "minecraft:forest", "minecraft:jungle"],
         ["minecraft:badlands", "minecraft:badlands", "minecraft:badlands", "minecraft:wooded_badlands", "minecraft:wooded_badlands"]
     ]
@@ -1168,6 +1230,26 @@ private func buildOverworldBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome]
             )
         )
     )
+
+    // Added after pack format 85.0.  Like the other underground biomes, this
+    // occupies the cave depth band; its climate ranges are intentionally
+    // broader than dripstone caves and use the negative weirdness slice.
+    if packFormat > Version(major: 85, minor: 0) {
+        entries.append(
+            MultiNoiseBiomeSourceBiome(
+                biome: "minecraft:sulfur_caves",
+                parameters: MultiNoiseBiomeSourceParameters(
+                    temperature: defaultRange,
+                    humidity: defaultRange,
+                    continentalness: combine(coastContinentalness, riverContinentalness),
+                    erosion: combine(erosionParameters[5], erosionParameters[6]),
+                    depth: range(0.2, 0.9),
+                    weirdness: range(-1.1, -0.85),
+                    offset: BiomeParameterRange(value: 0.0)
+                )
+            )
+        )
+    }
 
     return entries
 }

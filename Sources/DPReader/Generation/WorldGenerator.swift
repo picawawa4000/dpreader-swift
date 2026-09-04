@@ -2617,13 +2617,19 @@ public final class WorldGenerator {
         }
 
         if buildSearchTrees {
+            // The built-in climate table is versioned with the vanilla pack.
+            // Datapacks are documented to be ordered with vanilla last, so its
+            // selected format is the one that controls the predefined entries.
+            let vanillaPackFormat = self.datapacks.last?.packFormat ?? .assumedCurrent
             self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] = try buildBiomeSearchTree(
                 from: self.registries.biomeRegistry,
-                entries: getPredefinedBiomeSearchTreeData(for: "overworld")!
+                entries: try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: vanillaPackFormat)!,
+                packFormat: vanillaPackFormat
             )
             self.searchTrees[RegistryKey(referencing: "minecraft:nether")] = try buildBiomeSearchTree(
                 from: self.registries.biomeRegistry,
-                entries: getPredefinedBiomeSearchTreeData(for: "nether")!
+                entries: try getPredefinedBiomeSearchTreeData(for: "nether", packFormat: vanillaPackFormat)!,
+                packFormat: vanillaPackFormat
             )
             self.endBiomeDimensions.insert(RegistryKey(referencing: "minecraft:end"))
             self.endBiomeDimensions.insert(RegistryKey(referencing: "minecraft:the_end"))

@@ -592,3 +592,56 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
         #expect(foundBiome.name == biomeName)
     }
 }
+
+@Test func testVersionedVanillaBiomeTreeEntries() async throws {
+    let root = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla")
+
+    let oldPackURL = root.appendingPathComponent("1.21")
+    let paleGardenPackURL = root.appendingPathComponent("1.21.4")
+    let sulfurPackURL = root.appendingPathComponent("26.2")
+    guard FileManager.default.fileExists(atPath: oldPackURL.path),
+          FileManager.default.fileExists(atPath: paleGardenPackURL.path),
+          FileManager.default.fileExists(atPath: sulfurPackURL.path)
+    else { return }
+
+    do {
+        _ = try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: Version(major: 12, minor: 0))
+        #expect(Bool(false), "Biome tree generation must reject formats before 13")
+    } catch BiomeSearchTreeError.unsupportedPackFormat(let version) {
+        #expect(version == Version(major: 12, minor: 0))
+    }
+
+    let oldPack = try DataPack(fromRootPath: oldPackURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions])
+    let oldEntries = try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: oldPack.packFormat)!
+    #expect(oldEntries.contains { $0.biome == "minecraft:dark_forest" })
+    #expect(!oldEntries.contains { $0.biome == "minecraft:pale_garden" })
+    _ = try buildBiomeSearchTree(from: oldPack.biomeRegistry, entries: oldEntries, packFormat: oldPack.packFormat)
+    do {
+        _ = try buildBiomeSearchTree(from: oldPack.biomeRegistry, entries: oldEntries, packFormat: Version(major: 12, minor: 0))
+        #expect(Bool(false), "Biome tree building must reject formats before 13")
+    } catch BiomeSearchTreeError.unsupportedPackFormat {
+        // Expected.
+    }
+
+    let paleGardenPack = try DataPack(fromRootPath: paleGardenPackURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions])
+    let paleEntries = try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: paleGardenPack.packFormat)!
+    #expect(paleEntries.contains { $0.biome == "minecraft:pale_garden" })
+    _ = try buildBiomeSearchTree(from: paleGardenPack.biomeRegistry, entries: paleEntries, packFormat: paleGardenPack.packFormat)
+
+    let sulfurPack = try DataPack(fromRootPath: sulfurPackURL, loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions])
+    let sulfurEntries = try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: sulfurPack.packFormat)!
+    let sulfurEntry = sulfurEntries.first { $0.biome == "minecraft:sulfur_caves" }
+    #expect(sulfurEntry != nil)
+    if let sulfurEntry {
+        #expect(sulfurEntry.parameters.temperature.min == -1.0 && sulfurEntry.parameters.temperature.max == 1.0)
+        #expect(sulfurEntry.parameters.humidity.min == -1.0 && sulfurEntry.parameters.humidity.max == 1.0)
+        #expect(sulfurEntry.parameters.continentalness.min == -0.19 && sulfurEntry.parameters.continentalness.max == 0.55)
+        #expect(sulfurEntry.parameters.erosion.min == 0.45 && sulfurEntry.parameters.erosion.max == 1.0)
+        #expect(sulfurEntry.parameters.weirdness.min == -1.1 && sulfurEntry.parameters.weirdness.max == -0.85)
+    }
+    let sulfurTree = try buildBiomeSearchTree(from: sulfurPack.biomeRegistry, entries: sulfurEntries, packFormat: sulfurPack.packFormat)
+    #expect(!sulfurTree.nodes(with: RegistryKey(referencing: "minecraft:sulfur_caves")).isEmpty)
+}
