@@ -98,7 +98,7 @@ private func strongholdChestMarker(
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let tableURL = root.appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/stronghold_corridor.json")
-    let table = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: tableURL))
+    let table = try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: tableURL))
     let items = try table.generateLoot(
         withContext: LootContext(random: CheckedRandom(seed: UInt64(bitPattern: chest.lootSeed)))
     )

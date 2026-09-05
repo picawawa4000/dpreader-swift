@@ -19,15 +19,48 @@ public struct BlockState: Sendable, Equatable, Codable {
         ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"].contains(self.id)
     }
 
-    private enum CodingKeys: String, CodingKey {
+    public init(from decoder: any Decoder) throws {
+        if decoder.dpReaderPackFormat >= Version(major: 115, minor: 0) {
+            if let container = try? decoder.singleValueContainer(), let id = try? container.decode(String.self) {
+                self.id = addDefaultNamespace(id)
+                self.properties = nil
+                return
+            }
+            let container = try decoder.container(keyedBy: ModernCodingKeys.self)
+            self.id = addDefaultNamespace(try container.decode(String.self, forKey: .id))
+            self.properties = try container.decodeIfPresent([String: String].self, forKey: .properties)
+        } else {
+            let container = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            self.id = addDefaultNamespace(try container.decode(String.self, forKey: .id))
+            self.properties = try container.decodeIfPresent([String: String].self, forKey: .properties)
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        if encoder.dpReaderPackFormat >= Version(major: 115, minor: 0), properties == nil {
+            var container = encoder.singleValueContainer()
+            try container.encode(id)
+            return
+        }
+        if encoder.dpReaderPackFormat >= Version(major: 115, minor: 0) {
+            var container = encoder.container(keyedBy: ModernCodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encodeIfPresent(properties, forKey: .properties)
+        } else {
+            var container = encoder.container(keyedBy: LegacyCodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encodeIfPresent(properties, forKey: .properties)
+        }
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
         case id = "Name"
         case properties = "Properties"
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = addDefaultNamespace(try container.decode(String.self, forKey: .id))
-        self.properties = try container.decodeIfPresent([String: String].self, forKey: .properties)
+    private enum ModernCodingKeys: String, CodingKey {
+        case id
+        case properties
     }
 }
 

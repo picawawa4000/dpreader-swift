@@ -123,7 +123,7 @@ private func decodeLootTable(_ identifier: String, from root: URL = vanilla12111
         .appendingPathComponent(namespace)
         .appendingPathComponent("loot_table")
         .appendingPathComponent(path + ".json")
-    return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
+    return try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: url))
 }
 
 private func loadVanilla12111EnchantmentResources() throws -> LootEnchantmentResources {

@@ -109,11 +109,11 @@ private func aquiferTestSettings(
     let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/configured_carver")
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     for name in ["cave", "cave_extra_underground", "canyon", "nether_cave"] {
         let data = try Data(contentsOf: root.appendingPathComponent("\(name).json"))
         let decoded = try decoder.decode(ConfiguredCarver.self, from: data)
-        let roundTripped = try decoder.decode(ConfiguredCarver.self, from: JSONEncoder().encode(decoded))
+        let roundTripped = try decoder.decode(ConfiguredCarver.self, from: makeTestingJSONEncoder(.latestSupported).encode(decoded))
         #expect(roundTripped == decoded)
     }
 }
@@ -213,7 +213,7 @@ private func aquiferTestSettings(
       }
     }
     """
-    let carver = try JSONDecoder().decode(ConfiguredCarver.self, from: Data(json.utf8))
+    let carver = try makeTestingJSONDecoder(.latestSupported).decode(ConfiguredCarver.self, from: Data(json.utf8))
     let chunk = ProtoChunk()
     try chunk.configure(minY: 0, height: 64)
     for y in Int32(0)..<64 {

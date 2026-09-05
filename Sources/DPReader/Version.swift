@@ -7,8 +7,8 @@ import Foundation
 /// provided at https://minecraft.wiki/w/Pack_format#List_of_pack_formats.
 /// For formats before 82.0, the minor version will always be 0.
 public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, Sendable {
-    /// The pack format used when a data pack has no readable metadata.
-    public static let assumedCurrent = Version(major: 107, minor: 1)
+    /// The newest pack format supported by DPReader.
+    public static let latestSupported = Version(major: 119, minor: 0)
 
     public let major: Int
     public let minor: Int
@@ -176,12 +176,6 @@ public struct PackVersioning: Hashable, Sendable {
     public let supportedVersions: VersionRange
     public let selectedVersion: Version
 
-    /// Versioning used when no pack metadata is available.
-    public static let assumedCurrent = PackVersioning(
-        supportedVersions: .exactly(.assumedCurrent),
-        selectedVersion: .assumedCurrent
-    )
-
     public init(supportedVersions: VersionRange, selectedVersion: Version) {
         precondition(
             supportedVersions.contains(selectedVersion),
@@ -209,14 +203,16 @@ extension CodingUserInfoKey {
 }
 
 extension JSONDecoder {
-    func setDPReaderVersioning(_ versioning: PackVersioning) {
+    /// Configures the explicit pack format used while decoding DPReader schemas.
+    public func setDPReaderVersioning(_ versioning: PackVersioning) {
         userInfo[.dpReaderVersioning] = versioning
         userInfo[.dpReaderPackFormat] = versioning.selectedVersion
     }
 }
 
 extension JSONEncoder {
-    func setDPReaderVersioning(_ versioning: PackVersioning) {
+    /// Configures the explicit pack format used while encoding DPReader schemas.
+    public func setDPReaderVersioning(_ versioning: PackVersioning) {
         userInfo[.dpReaderVersioning] = versioning
         userInfo[.dpReaderPackFormat] = versioning.selectedVersion
     }
@@ -230,7 +226,7 @@ extension Decoder {
         if let packFormat = userInfo[.dpReaderPackFormat] as? Version {
             return PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat)
         }
-        return .assumedCurrent
+        preconditionFailure("DPReader JSON decoding requires an explicit pack format. Configure the decoder with setDPReaderVersioning(_:).")
     }
 
     var dpReaderPackFormat: Version {
@@ -262,7 +258,7 @@ extension Encoder {
         if let packFormat = userInfo[.dpReaderPackFormat] as? Version {
             return PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat)
         }
-        return .assumedCurrent
+        preconditionFailure("DPReader JSON encoding requires an explicit pack format. Configure the encoder with setDPReaderVersioning(_:).")
     }
 
     var dpReaderPackFormat: Version {

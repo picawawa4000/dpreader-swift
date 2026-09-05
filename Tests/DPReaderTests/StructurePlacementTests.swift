@@ -327,7 +327,7 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes]
     )
     let referenceData = try Data(contentsOf: cubiomesNetherComplexReferenceURL())
-    let reference = try JSONDecoder().decode(CubiomesNetherComplexReference.self, from: referenceData)
+    let reference = try makeTestingJSONDecoder(.latestSupported).decode(CubiomesNetherComplexReference.self, from: referenceData)
     #expect(reference.seed == 503815372)
     let sampler = StructurePlacementSampler(withWorldSeed: reference.seed, usingDataPacks: [pack])
 

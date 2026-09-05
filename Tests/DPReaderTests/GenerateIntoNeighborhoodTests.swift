@@ -87,7 +87,7 @@ private func loadCubiomesNeighborhoodReference() throws -> CubiomesNeighborhoodR
         .appendingPathComponent("Tests/Resources/Cubiomes/generate_into_chunk_34_16_seed_8608349533057813284.json")
 
     let data = try Data(contentsOf: referencePath)
-    let reference = try JSONDecoder().decode(CubiomesNeighborhoodReference.self, from: data)
+    let reference = try makeTestingJSONDecoder(.latestSupported).decode(CubiomesNeighborhoodReference.self, from: data)
     guard reference.seed == "8608349533057813284",
           reference.minecraftVersion == "1.21.11",
           reference.centerChunk.x == 34,
@@ -108,7 +108,7 @@ private func loadCubiomesTerrainHashReference() throws -> CubiomesTerrainHashRef
         .appendingPathComponent("Tests/Resources/Cubiomes/generate_into_chunk_1200_0_seed_123456789_17x17_hashes.json")
 
     let data = try Data(contentsOf: referencePath)
-    let reference = try JSONDecoder().decode(CubiomesTerrainHashReference.self, from: data)
+    let reference = try makeTestingJSONDecoder(.latestSupported).decode(CubiomesTerrainHashReference.self, from: data)
     guard reference.seed == "123456789",
           reference.minecraftVersion == "1.21.11",
           reference.centerChunk.x == 1200,

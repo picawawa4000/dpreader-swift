@@ -47,11 +47,11 @@ private func decodeLootTable(_ identifier: String, from root: URL = lootPackRoot
         .appendingPathComponent(namespace)
         .appendingPathComponent("loot_table")
         .appendingPathComponent(path + ".json")
-    return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
+    return try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: url))
 }
 
-private func makeLootDecoder(packFormat: Version = .assumedCurrent) -> JSONDecoder {
-    let decoder = JSONDecoder()
+private func makeLootDecoder(packFormat: Version) -> JSONDecoder {
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat))
     return decoder
 }
@@ -180,7 +180,7 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
 
 @Test func testEncodingForItemLootEntry() throws {
     let lootEntry: any LootEntry = ItemEntry(name: "minecraft:diamond", weight: 5, quality: 2)
-    let data = try JSONEncoder().encode(lootEntry)
+    let data = try makeTestingJSONEncoder(.latestSupported).encode(lootEntry)
     #expect(try checkJSON(data, [
         "type": "minecraft:item",
         "name": "minecraft:diamond",
@@ -191,7 +191,7 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
 
 @Test func testEncodingForLootTableLootEntry() throws {
     let lootEntry: any LootEntry = LootTableEntry(value: .name("test:chests/subtable"), weight: 3, quality: 1)
-    let data = try JSONEncoder().encode(lootEntry)
+    let data = try makeTestingJSONEncoder(.latestSupported).encode(lootEntry)
     #expect(try checkJSON(data, [
         "type": "minecraft:loot_table",
         "value": "test:chests/subtable",
@@ -243,7 +243,7 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     }
     """.data(using: .utf8)!
 
-    let table = try JSONDecoder().decode(LootTable.self, from: data)
+    let table = try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: data)
     #expect(table.type == "minecraft:block")
     #expect(table.randomSequenceLocation == "minecraft:blocks/example")
     #expect(table.functions.count == 1)
@@ -523,7 +523,7 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
 }
 
 @Test func testVanilla12111LootTablesAgainstCubiomesReference() throws {
-    let fixture = try JSONDecoder().decode(RealWorldLootFixture.self, from: Data(contentsOf: vanilla12111ReferenceURL))
+    let fixture = try makeTestingJSONDecoder(.latestSupported).decode(RealWorldLootFixture.self, from: Data(contentsOf: vanilla12111ReferenceURL))
     #expect(fixture.version == "1.21.11")
     let resources = try loadVanilla12111EnchantmentResources()
 

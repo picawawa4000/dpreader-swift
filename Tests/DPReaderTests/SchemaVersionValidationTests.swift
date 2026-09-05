@@ -4,7 +4,7 @@ import Testing
 
 private func schemaDecoder(_ major: Int, _ minor: Int = 0) -> JSONDecoder {
     let version = Version(major: major, minor: minor)
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(version), selectedVersion: version))
     return decoder
 }

@@ -140,7 +140,7 @@ private func structureDispatchContext() -> StructureGenerationContext {
 
     let lootURL = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/buried_treasure.json")
-    let lootTable = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: lootURL))
+    let lootTable = try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: lootURL))
     let items = try lootTable.generateLoot(withContext: LootContext(
         random: CheckedRandom(seed: UInt64(bitPattern: containers[0].lootSeed))
     ))
@@ -183,7 +183,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
 @Test func testSeed123458OceanRuinLootReference() async throws {
     let coldURL = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/ocean_ruin_cold.json")
-    let cold = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: coldURL))
+    let cold = try makeTestingJSONDecoder(.latestSupported).decode(Structure.self, from: Data(contentsOf: coldURL))
     let first = try #require(try cold.generateLoot(
         worldSeed: 123_458,
         startChunk: PosInt2D(x: -80, z: -14),
@@ -200,7 +200,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
 
     let warmURL = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/ocean_ruin_warm.json")
-    let warm = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: warmURL))
+    let warm = try makeTestingJSONDecoder(.latestSupported).decode(Structure.self, from: Data(contentsOf: warmURL))
     let second = try #require(try warm.generateLoot(
         worldSeed: 123_458,
         startChunk: PosInt2D(x: -113, z: -12),
@@ -217,7 +217,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
 @Test func testSeed123458ShipwreckLootReference() async throws {
     let url = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/shipwreck.json")
-    let shipwreck = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let shipwreck = try makeTestingJSONDecoder(.latestSupported).decode(Structure.self, from: Data(contentsOf: url))
     let containers = try #require(try shipwreck.generateLoot(
         worldSeed: 123_458,
         startChunk: PosInt2D(x: -303, z: 42),
@@ -235,7 +235,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
     ])
     let treasureURL = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/shipwreck_treasure.json")
-    let treasureTable = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: treasureURL))
+    let treasureTable = try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: treasureURL))
     let treasureItems = try treasureTable.generateLoot(withContext: LootContext(
         random: CheckedRandom(seed: UInt64(bitPattern: containers[0].lootSeed))
     ))
@@ -257,7 +257,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
     }
     let url = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/nether_fossil.json")
-    let fossil = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let fossil = try makeTestingJSONDecoder(.latestSupported).decode(Structure.self, from: Data(contentsOf: url))
 
     let first = try #require(try fossil.generate(
         worldSeed: 123_458, startChunk: PosInt2D(x: -14, z: 30), context: context
@@ -280,7 +280,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
 
 @Test func testSeed123458IglooLootReference() async throws {
     let url = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/igloo.json")
-    let igloo = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let igloo = try makeTestingJSONDecoder(.latestSupported).decode(Structure.self, from: Data(contentsOf: url))
     let context = try oceanRuinTestContext(terrainTopY: 69)
     #expect(try igloo.generateLoot(
         worldSeed: 123_458, startChunk: PosInt2D(x: 229, z: 151), context: context
@@ -293,7 +293,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
         lootTable: "minecraft:chests/igloo_chest", lootSeed: 732_956_429_499_200_025
     )])
     let lootURL = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/igloo_chest.json")
-    let lootTable = try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: lootURL))
+    let lootTable = try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: lootURL))
     let items = try lootTable.generateLoot(withContext: LootContext(
         random: CheckedRandom(seed: UInt64(bitPattern: containers[0].lootSeed))
     ))
@@ -303,7 +303,7 @@ private func oceanRuinTestContext(terrainTopY: Int32) throws -> StructureGenerat
 
 @Test func testSwampHutGenerationDispatch() async throws {
     let url = repositoryRootURL().appendingPathComponent("vanilla/1.21.11/data/minecraft/worldgen/structure/swamp_hut.json")
-    let hut = try JSONDecoder().decode(Structure.self, from: Data(contentsOf: url))
+    let hut = try makeTestingJSONDecoder(.latestSupported).decode(Structure.self, from: Data(contentsOf: url))
     let generated = try #require(try hut.generate(
         worldSeed: 123_458, startChunk: PosInt2D(x: 0, z: 0), context: structureDispatchContext()
     ))
@@ -438,7 +438,7 @@ private func loadMansionLootEnchantmentResources() throws -> LootEnchantmentReso
 private func decodeVanillaMansionLootTable() throws -> LootTable {
     let url = repositoryRootURL()
         .appendingPathComponent("vanilla/1.21.11/data/minecraft/loot_table/chests/woodland_mansion.json")
-    return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
+    return try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: url))
 }
 
 private func normalizeMansionLoot(_ items: [ItemStack]) -> [MansionNormalizedLootItem] {

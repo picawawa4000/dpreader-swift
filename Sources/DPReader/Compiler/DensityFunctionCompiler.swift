@@ -4116,7 +4116,7 @@ extension CacheMarker: CompilableDensityFunction {
                 z: z,
                 prefix: "cache_marker_flat_cache"
             )
-        case .cacheOnce, .cacheAllInCell, .interpolated:
+        case .cache, .cacheOnce, .cacheAllInCell, .interpolated:
             return try context.cachedCompile(self, x: x, y: y, z: z) {
                 try wrapped.compile(inContext: context, x: x, y: y, z: z)
             }

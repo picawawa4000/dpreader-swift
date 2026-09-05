@@ -486,7 +486,7 @@ private func populateFlatBiomeTree(
 public func buildBiomeSearchTree(
     from biomeRegistry: Registry<Biome>,
     entries: [MultiNoiseBiomeSourceBiome],
-    packFormat: Version = .assumedCurrent
+    packFormat: Version
 ) throws -> BiomeSearchTree {
     guard packFormat >= Version(major: 13, minor: 0) else {
         throw BiomeSearchTreeError.unsupportedPackFormat(packFormat)
@@ -783,18 +783,6 @@ private extension NoisePoint {
     }
 }
 
-/// Returns vanilla climate-to-biome entries for a supported dimension preset.
-public func getPredefinedBiomeSearchTreeData(for preset: String) -> [MultiNoiseBiomeSourceBiome]? {
-    switch preset {
-    case "overworld", "minecraft:overworld":
-        return OverworldBiomeSearchTreeDataCache.cached
-    case "nether", "minecraft:nether":
-        return NetherBiomeSearchTreeDataCache.cached
-    default:
-        return nil
-    }
-}
-
 /// Returns vanilla climate-to-biome entries for `preset` as defined by a pack
 /// format.  Vanilla's overworld table did not exist before format 13.
 public func getPredefinedBiomeSearchTreeData(
@@ -814,7 +802,7 @@ public func getPredefinedBiomeSearchTreeData(
     }
 }
 
-private func buildOverworldBiomeSearchTreeData(packFormat: Version = .assumedCurrent) -> [MultiNoiseBiomeSourceBiome] {
+private func buildOverworldBiomeSearchTreeData(packFormat: Version) -> [MultiNoiseBiomeSourceBiome] {
     func range(_ min: Double, _ max: Double) -> BiomeParameterRange {
         return BiomeParameterRange(min: min, max: max)
     }
@@ -1297,10 +1285,6 @@ private func buildNetherBiomeSearchTreeData() -> [MultiNoiseBiomeSourceBiome] {
             parameters: parameters(temperature: -0.5, humidity: 0.0, offset: 0.175)
         )
     ]
-}
-
-private enum OverworldBiomeSearchTreeDataCache {
-    static let cached: [MultiNoiseBiomeSourceBiome] = buildOverworldBiomeSearchTreeData()
 }
 
 private enum NetherBiomeSearchTreeDataCache {

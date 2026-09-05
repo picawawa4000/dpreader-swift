@@ -334,7 +334,7 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
         MultiNoiseBiomeSourceBiome(biome: "test:a", parameters: paramsA),
         MultiNoiseBiomeSourceBiome(biome: "test:b", parameters: paramsB)
     ]
-    let tree = try buildBiomeSearchTree(from: registry, entries: entries)
+    let tree = try buildBiomeSearchTree(from: registry, entries: entries, packFormat: .latestSupported)
 
     let pointA = NoisePoint(temperature: 0.1, humidity: 0.1, continentalness: 0.0, erosion: 0.0, weirdness: 0.0, depth: 0.0)
     let pointB = NoisePoint(temperature: 0.95, humidity: 0.9, continentalness: 0.0, erosion: 0.0, weirdness: 0.0, depth: 0.0)
@@ -363,7 +363,7 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
     let entries = [MultiNoiseBiomeSourceBiome(biome: "test:missing", parameters: params)]
 
     do {
-        _ = try buildBiomeSearchTree(from: registry, entries: entries)
+        _ = try buildBiomeSearchTree(from: registry, entries: entries, packFormat: .latestSupported)
         #expect(Bool(false))
     } catch let error as BiomeSearchTreeError {
         switch error {
@@ -450,7 +450,7 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
 
 #if canImport(CLLVM)
 @Test func testCompiledVanillaBiomeSearchTreeMatchesInterpretedTree() throws {
-    let entries = getPredefinedBiomeSearchTreeData(for: "overworld")!.map { entry in
+    let entries = try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: .latestSupported)!.map { entry in
         (NoiseHypercube(from: entry.parameters), RegistryKey<Biome>(referencing: entry.biome))
     }
     let tree = try BiomeSearchTree(entries: entries)
@@ -551,8 +551,8 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
     }
 
     let pack = try DataPack(fromRootPath: vanillaDataPath)
-    let entries = getPredefinedBiomeSearchTreeData(for: "overworld")!
-    let tree = try buildBiomeSearchTree(from: pack.biomeRegistry, entries: entries)
+    let entries = try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: pack.packFormat)!
+    let tree = try buildBiomeSearchTree(from: pack.biomeRegistry, entries: entries, packFormat: pack.packFormat)
 
     //let swampNodes = tree.nodes(with: RegistryKey(referencing: "minecraft:swamp"))
     //let mangroveSwampNodes = tree.nodes(with: RegistryKey(referencing: "minecraft:mangrove_swamp"))

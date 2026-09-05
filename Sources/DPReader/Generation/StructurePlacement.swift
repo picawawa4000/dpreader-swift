@@ -322,7 +322,7 @@ public final class StructurePlacementSampler {
                 return Set(biomes.map(\.biome))
             }
             guard let preset = multiNoise.preset else { return nil }
-            let packFormat = self.dataPackSources.last?.packFormat ?? .assumedCurrent
+            guard let packFormat = self.dataPackSources.last?.packFormat else { return nil }
             switch preset {
             case "minecraft:overworld":
                 guard let entries = try? getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: packFormat) else { return nil }

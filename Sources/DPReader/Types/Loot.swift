@@ -743,12 +743,15 @@ public final class SumLootNumberProvider: LootNumberProvider {
     public init(summands: [any LootNumberProvider]) { self.summands = summands }
 
     public required init(from decoder: Decoder) throws {
-        try decoder.requirePackVersions(.atLeast(.init(major: 95, minor: 0)), for: "number provider minecraft:sum")
+        try decoder.requirePackVersions(.between(.init(major: 95, minor: 0), .init(major: 116, minor: Int.max)), for: "number provider minecraft:sum")
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.summands = try container.decode([LootNumberProviderInitializer].self, forKey: key("summands")).map(\.value)
     }
 
     public func encode(to encoder: Encoder) throws {
+        guard encoder.dpReaderPackFormat < Version(major: 117, minor: 0) else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "minecraft:sum.summands was replaced by minecraft:sum.operands in pack format 117.0"))
+        }
         var container = encoder.container(keyedBy: DynamicCodingKey.self)
         try container.encode("minecraft:sum", forKey: key("type"))
         try container.encode(summands.map(LootNumberProviderInitializer.init), forKey: key("summands"))
@@ -761,6 +764,127 @@ public final class SumLootNumberProvider: LootNumberProvider {
     public func getFloat(fromContext context: LootContext) -> Float {
         summands.reduce(0) { $0 + $1.getFloat(fromContext: context) }
     }
+}
+
+/// An aggregate number provider added in format 117.  Format 119 renamed the
+/// operations while splitting the registry into integer and float variants.
+public final class AggregateLootNumberProvider: LootNumberProvider {
+    enum Operation: String, Equatable {
+        case sum = "minecraft:sum"
+        case product = "minecraft:product"
+        case minimum = "minecraft:minimum"
+        case maximum = "minecraft:maximum"
+        case add = "minecraft:add"
+        case multiply = "minecraft:mul"
+        case min = "minecraft:min"
+        case max = "minecraft:max"
+        case average = "minecraft:avg"
+    }
+
+    let operation: Operation
+    let inputs: [any LootNumberProvider]
+
+    init(operation: Operation, inputs: [any LootNumberProvider]) {
+        self.operation = operation
+        self.inputs = inputs
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 117, minor: 0)), for: "aggregate number provider")
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let type = addDefaultNamespace(try container.decode(String.self, forKey: key("type")))
+        guard let operation = Operation(rawValue: type) else {
+            throw DecodingError.dataCorruptedError(forKey: key("type"), in: container, debugDescription: "Unknown aggregate number provider type \(type)")
+        }
+        let decodedInputs: [any LootNumberProvider]
+        if decoder.dpReaderPackFormat < Version(major: 119, minor: 0) {
+            guard [.sum, .product, .minimum, .maximum].contains(operation) else {
+                throw DecodingError.dataCorruptedError(forKey: key("type"), in: container, debugDescription: "\(type) requires pack format 119.0 or newer")
+            }
+            decodedInputs = try decodeLootNumberProviderList(from: container, forKey: "operands")
+        } else {
+            guard [.add, .multiply, .min, .max, .average].contains(operation) else {
+                throw DecodingError.dataCorruptedError(forKey: key("type"), in: container, debugDescription: "\(type) was replaced by a split context provider in pack format 119.0")
+            }
+            decodedInputs = try decodeLootNumberProviderList(from: container, forKey: "inputs")
+        }
+        guard !decodedInputs.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: key(decoder.dpReaderPackFormat >= Version(major: 119, minor: 0) ? "inputs" : "operands"), in: container, debugDescription: "Aggregate number providers require at least one input")
+        }
+        self.operation = operation
+        self.inputs = decodedInputs
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        let packFormat = encoder.dpReaderPackFormat
+        let encodedOperation: Operation
+        let inputKey: String
+        if packFormat >= Version(major: 119, minor: 0) {
+            encodedOperation = switch operation {
+            case .sum, .add: .add
+            case .product, .multiply: .multiply
+            case .minimum, .min: .min
+            case .maximum, .max: .max
+            case .average: .average
+            }
+            inputKey = "inputs"
+        } else {
+            guard packFormat >= Version(major: 117, minor: 0) else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Aggregate number providers require pack format 117.0 or newer"))
+            }
+            guard operation != .add, operation != .multiply, operation != .min, operation != .max, operation != .average else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "The selected aggregate operation requires pack format 119.0 or newer"))
+            }
+            encodedOperation = operation
+            inputKey = "operands"
+        }
+        try container.encode(encodedOperation.rawValue, forKey: key("type"))
+        try container.encode(inputs.map(LootNumberProviderInitializer.init), forKey: key(inputKey))
+    }
+
+    public func getFloat(fromContext context: LootContext) -> Float {
+        let values = inputs.map { $0.getFloat(fromContext: context) }
+        switch operation {
+        case .sum, .add: return values.reduce(0, +)
+        case .product, .multiply: return values.reduce(1, *)
+        case .minimum, .min: return values.min() ?? 0
+        case .maximum, .max: return values.max() ?? 0
+        case .average: return values.reduce(0, +) / Float(values.count)
+        }
+    }
+
+    public func getInt(fromContext context: LootContext) -> Int {
+        let values = inputs.map { $0.getInt(fromContext: context) }
+        switch operation {
+        case .sum, .add: return values.reduce(0, +)
+        case .product, .multiply: return values.reduce(1, *)
+        case .minimum, .min: return values.min() ?? 0
+        case .maximum, .max: return values.max() ?? 0
+        case .average: return values.reduce(0, +) / values.count
+        }
+    }
+}
+
+/// A registry or tag reference accepted in provider lists from format 111 onward.
+/// DPReader currently evaluates only inline providers; an unresolved reference
+/// has the vanilla-default numeric fallback of zero in the local evaluator.
+public final class ReferenceLootNumberProvider: LootNumberProvider {
+    let identifier: String
+
+    init(identifier: String) { self.identifier = identifier }
+
+    public required init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.identifier = try container.decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(identifier)
+    }
+
+    public func getFloat(fromContext: LootContext) -> Float { 0 }
 }
 
 /// A number provider backed by the enchantment-level loot parameter.
@@ -819,6 +943,10 @@ private enum ProviderTypeKey: String, CodingKey {
 
 /// Decodes a concrete loot number provider from its `type`.
 func decodeLootNumberProvider(from decoder: Decoder) throws -> LootNumberProvider {
+    if let single = try? decoder.singleValueContainer(), let reference = try? single.decode(String.self) {
+        try decoder.requirePackVersions(.atLeast(.init(major: 111, minor: 0)), for: "number provider references")
+        return ReferenceLootNumberProvider(identifier: reference)
+    }
     if let single = try? decoder.singleValueContainer(), let v = try? single.decode(Float.self) {
         return ConstantLootNumberProvider(value: v)
     }
@@ -841,7 +969,12 @@ func decodeLootNumberProvider(from decoder: Decoder) throws -> LootNumberProvide
     case "minecraft:binomial":
         return try BinomialLootNumberProvider(from: decoder)
     case "minecraft:sum":
+        if decoder.dpReaderPackFormat >= Version(major: 117, minor: 0) {
+            return try AggregateLootNumberProvider(from: decoder)
+        }
         return try SumLootNumberProvider(from: decoder)
+    case "minecraft:product", "minecraft:minimum", "minecraft:maximum", "minecraft:add", "minecraft:mul", "minecraft:min", "minecraft:max", "minecraft:avg":
+        return try AggregateLootNumberProvider(from: decoder)
     case "minecraft:enchantment_level":
         return try EnchantmentLevelLootNumberProvider(from: decoder)
     default:
@@ -856,11 +989,27 @@ func encodeLootNumberProvider(_ provider: LootNumberProvider, to encoder: Encode
     case let p as UniformLootNumberProvider: try p.encode(to: encoder)
     case let p as BinomialLootNumberProvider: try p.encode(to: encoder)
     case let p as SumLootNumberProvider: try p.encode(to: encoder)
+    case let p as AggregateLootNumberProvider: try p.encode(to: encoder)
     case let p as EnchantmentLevelLootNumberProvider: try p.encode(to: encoder)
+    case let p as ReferenceLootNumberProvider: try p.encode(to: encoder)
     default:
         let context = EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "Unsupported FloatProvider type")
         throw EncodingError.invalidValue(provider, context)
     }
+}
+
+/// Decodes the flexible element-or-list-or-tag form accepted by provider lists
+/// since format 111.  Tags and element references are preserved as references;
+/// only inline values are evaluated by DPReader's local loot evaluator.
+private func decodeLootNumberProviderList(
+    from container: KeyedDecodingContainer<DynamicCodingKey>,
+    forKey name: String
+) throws -> [any LootNumberProvider] {
+    let codingKey = key(name)
+    if let values = try? container.decode([LootNumberProviderInitializer].self, forKey: codingKey) {
+        return values.map(\.value)
+    }
+    return [try container.decode(LootNumberProviderInitializer.self, forKey: codingKey).value]
 }
 
 /// A lightweight JSON value container used by loot payloads.
@@ -1205,6 +1354,10 @@ func decodeLootCondition(from decoder: Decoder) throws -> LootCondition {
     case "minecraft:time_check":
         return try TimeCheckLootCondition(from: decoder)
     case "minecraft:value_check":
+        try decoder.requirePackVersions(.atMost(.init(major: 118, minor: Int.max)), for: "loot condition minecraft:value_check")
+        return try ValueCheckLootCondition(from: decoder)
+    case "minecraft:int_value_check", "minecraft:float_value_check":
+        try decoder.requirePackVersions(.atLeast(.init(major: 119, minor: 0)), for: "split value-check loot conditions")
         return try ValueCheckLootCondition(from: decoder)
     case "minecraft:enchantment_active_check":
         return try EnchantmentActiveCheckLootCondition(from: decoder)
@@ -1766,7 +1919,7 @@ public final class ValueCheckLootCondition: LootCondition {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
-        try c.encode("minecraft:value_check", forKey: key("condition"))
+        try c.encode(encoder.dpReaderPackFormat >= Version(major: 119, minor: 0) ? "minecraft:int_value_check" : "minecraft:value_check", forKey: key("condition"))
         try c.encode(LootNumberProviderInitializer(value), forKey: key("value"))
         try c.encode(range, forKey: key("range"))
     }

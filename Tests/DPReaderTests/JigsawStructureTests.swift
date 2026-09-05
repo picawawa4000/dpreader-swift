@@ -102,7 +102,7 @@ private func decodeVanillaJigsawLootTable(_ identifier: String) throws -> LootTa
         .appendingPathComponent(namespace)
         .appendingPathComponent("loot_table")
         .appendingPathComponent(path + ".json")
-    return try JSONDecoder().decode(LootTable.self, from: Data(contentsOf: url))
+    return try makeTestingJSONDecoder(.latestSupported).decode(LootTable.self, from: Data(contentsOf: url))
 }
 
 @Suite(.serialized)

@@ -21,7 +21,7 @@ import Testing
         weirdness: ConstantDensityFunction(value: 15.0)
     )
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(noiseRouter)
     #expect(try checkJSON(data, [
         "preliminary_surface_level": 1.0,
@@ -63,7 +63,7 @@ import Testing
     }
     """.data(using: .utf8)!
 
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let noiseRouter = try decoder.decode(NoiseRouter.self, from: data)
     #expect(noiseRouter.finalDensity is ReferenceDensityFunction)
     let finalDensity = noiseRouter.finalDensity as! ReferenceDensityFunction
@@ -96,7 +96,7 @@ import Testing
     }
     """.data(using: .utf8)!
 
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     decoder.setDPReaderVersioning(PackVersioning(
         supportedVersions: .exactly(Version(major: 81, minor: 0)),
         selectedVersion: Version(major: 81, minor: 0)
@@ -152,7 +152,7 @@ import Testing
         surfaceRule: surfaceRule
     )
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(noiseSettings)
     #expect(try checkJSON(data, [
         "legacy_random_source": true,
@@ -281,7 +281,7 @@ import Testing
     }
     """.data(using: .utf8)!
 
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let noiseSettings = try decoder.decode(NoiseSettings.self, from: data)
     #expect(noiseSettings.legacyRandomSource == false)
     #expect(noiseSettings.minY == -32)
@@ -309,7 +309,7 @@ import Testing
         )
     ])
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(surfaceRule)
     #expect(try checkJSON(data, [
         "type": "minecraft:sequence",
@@ -386,7 +386,7 @@ import Testing
     }
     """.data(using: .utf8)!
 
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let iSurfaceRule = try decoder.decode(SurfaceRuleInitializer.self, from: data).value
     guard let surfaceRule = iSurfaceRule as? SurfaceRuleConditionRule else {
         throw Errors.surfaceRuleWrongType("surface_rule did not decode as SurfaceRuleConditionRule")

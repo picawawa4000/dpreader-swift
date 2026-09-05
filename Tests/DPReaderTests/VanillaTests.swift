@@ -63,6 +63,19 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     #expect(biome == RegistryKey<Biome>(referencing: "minecraft:sparse_jungle"))
 }
 
+@Test func testVanilla263Pre1Loads() throws {
+    let vanillaDataPath = URL(fileURLWithPath: #file)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("vanilla/26.3-pre-1")
+    guard FileManager.default.fileExists(atPath: vanillaDataPath.path) else {
+        throw Errors.noVanillaDataFound
+    }
+
+    let pack = try DataPack(fromRootPath: vanillaDataPath)
+    #expect(pack.packFormat == Version(major: 119, minor: 0))
+}
+
 @Test func testVanillaBatchGeneration() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()

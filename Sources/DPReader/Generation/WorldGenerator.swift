@@ -1283,7 +1283,7 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
             baked = ChunkFlatCache(wrapping: bakedArgument, bounds: self.bounds)
         case .cache2D:
             baked = ChunkCache2D(wrapping: bakedArgument, bounds: self.bounds)
-        case .cacheOnce, .cacheAllInCell:
+        case .cache, .cacheOnce, .cacheAllInCell:
             baked = ChunkPositionCache(wrapping: bakedArgument, bounds: self.bounds)
         case .interpolated:
             baked = ChunkInterpolatedCache(
@@ -2620,7 +2620,9 @@ public final class WorldGenerator {
             // The built-in climate table is versioned with the vanilla pack.
             // Datapacks are documented to be ordered with vanilla last, so its
             // selected format is the one that controls the predefined entries.
-            let vanillaPackFormat = self.datapacks.last?.packFormat ?? .assumedCurrent
+            guard let vanillaPackFormat = self.datapacks.last?.packFormat else {
+                throw WorldGenerationErrors.dataPackVersionRequired
+            }
             self.searchTrees[RegistryKey(referencing: "minecraft:overworld")] = try buildBiomeSearchTree(
                 from: self.registries.biomeRegistry,
                 entries: try getPredefinedBiomeSearchTreeData(for: "overworld", packFormat: vanillaPackFormat)!,
@@ -2654,7 +2656,11 @@ public final class WorldGenerator {
                 } else if let biomes = biomeSource.biomes {
                     // Build search tree from biomes
                     do {
-                        let tree = try buildBiomeSearchTree(from: self.registries.biomeRegistry, entries: biomes)
+                        let tree = try buildBiomeSearchTree(
+                            from: self.registries.biomeRegistry,
+                            entries: biomes,
+                            packFormat: vanillaPackFormat
+                        )
                         self.searchTrees[key] = tree
                     } catch {
                         print("WARNING: Could not build biome search tree for dimension \(key.name): \(error)!")
@@ -6198,6 +6204,7 @@ public struct NoisePoint: Sendable, Equatable {
 }
 
 enum WorldGenerationErrors: Error {
+    case dataPackVersionRequired
     case densityFunctionNotPresent(String)
     case noiseNotPresent(String)
     case noiseSettingsNotPresent(String)

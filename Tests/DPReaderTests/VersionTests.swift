@@ -21,6 +21,51 @@ private func makePackRoot(withPackMetadata metadata: String) throws -> URL {
     #expect(!range.contains(Version(major: 95, minor: 1)))
 }
 
+@Test func testLatestSupportedPackFormatIs119() {
+    #expect(Version.latestSupported == Version(major: 119, minor: 0))
+}
+
+@Test func testDataPackRequiresExplicitMetadataVersion() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("data"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    do {
+        _ = try DataPack(
+            fromRootPath: root,
+            loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructures, .noStructureSets, .noEnchantments],
+            decodingVersion: .latestSupported
+        )
+        Issue.record("Expected a data pack without pack.mcmeta to be rejected")
+    } catch let error as DataPack.LoadingErrors {
+        guard case .invalidPackMetadata(let message) = error else {
+            Issue.record("Expected invalidPackMetadata, got \(error)")
+            return
+        }
+        #expect(message.contains("pack.mcmeta"))
+        #expect(message.contains("declare"))
+    }
+}
+
+@Test func testDataPackSupportsLatestPackFormat() throws {
+    let root = try makePackRoot(withPackMetadata: """
+    {
+        "pack": {
+            "min_format": [119, 0],
+            "max_format": [119, 0],
+            "description": "26.3-pre-1 test pack"
+        }
+    }
+    """)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let pack = try DataPack(
+        fromRootPath: root,
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions, .noBiomes, .noStructures, .noStructureSets, .noEnchantments]
+    )
+    #expect(pack.packFormat == .latestSupported)
+}
+
 @Test func testDataPackUsesHighestDeclaredVersionByDefault() throws {
     let root = try makePackRoot(withPackMetadata: """
     {

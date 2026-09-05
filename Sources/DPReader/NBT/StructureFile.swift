@@ -73,12 +73,12 @@ public struct StructureTemplate {
         return value >> 16
     }
 
-    public init(fromFileAt url: URL) throws {
+    public init(fromFileAt url: URL, packFormat: Version? = nil) throws {
         let root = try NBTDecoder().decodeRoot(fromFileAt: url)
-        try self.init(fromRootTag: root)
+        try self.init(fromRootTag: root, packFormat: packFormat)
     }
 
-    public init(fromRootTag root: NBTTag.Root) throws {
+    public init(fromRootTag root: NBTTag.Root, packFormat: Version? = nil) throws {
         guard case .compound(let rootValues) = root.tag else {
             throw StructureTemplateDecodingError.invalidRoot
         }
@@ -86,25 +86,25 @@ public struct StructureTemplate {
         self.size = try StructureTemplate.decodeInt3(rootValues["size"], fieldName: "size")
 
         if let palettesTag = rootValues["palettes"] {
-            self.palettes = try StructureTemplate.decodePalettes(palettesTag)
+            self.palettes = try StructureTemplate.decodePalettes(palettesTag, packFormat: packFormat)
         } else {
-            self.palettes = [try StructureTemplate.decodePalette(rootValues["palette"], fieldName: "palette")]
+            self.palettes = [try StructureTemplate.decodePalette(rootValues["palette"], fieldName: "palette", packFormat: packFormat)]
         }
 
         self.blocks = try StructureTemplate.decodeBlocks(rootValues["blocks"])
         self.entities = try StructureTemplate.decodeEntities(rootValues["entities"])
     }
 
-    private static func decodePalettes(_ tag: NBTTag) throws -> [[BlockState]] {
+    private static func decodePalettes(_ tag: NBTTag, packFormat: Version?) throws -> [[BlockState]] {
         guard case .list(let paletteTags) = tag else {
             throw StructureTemplateDecodingError.typeMismatch(fieldName: "palettes", expected: "list", actual: tag.typeDescription)
         }
         return try paletteTags.enumerated().map { index, paletteTag in
-            try decodePalette(paletteTag, fieldName: "palettes[\(index)]")
+            try decodePalette(paletteTag, fieldName: "palettes[\(index)]", packFormat: packFormat)
         }
     }
 
-    private static func decodePalette(_ tag: NBTTag?, fieldName: String) throws -> [BlockState] {
+    private static func decodePalette(_ tag: NBTTag?, fieldName: String, packFormat: Version?) throws -> [BlockState] {
         guard let tag else {
             throw StructureTemplateDecodingError.missingField(fieldName)
         }
@@ -119,11 +119,14 @@ public struct StructureTemplate {
                     actual: entry.typeDescription
                 )
             }
-            guard case .string(let rawName)? = values["Name"] else {
-                throw StructureTemplateDecodingError.missingField("\(fieldName)[\(index)].Name")
+            let modernBlockStateFormat = packFormat.map { $0 >= Version(major: 115, minor: 0) } ?? false
+            let idKey = modernBlockStateFormat ? "id" : "Name"
+            let propertiesKey = modernBlockStateFormat ? "properties" : "Properties"
+            guard case .string(let rawName)? = values[idKey] else {
+                throw StructureTemplateDecodingError.missingField("\(fieldName)[\(index)].\(idKey)")
             }
             let name = addDefaultNamespace(rawName)
-            let properties = try decodeStringMap(values["Properties"], fieldName: "\(fieldName)[\(index)].Properties")
+            let properties = try decodeStringMap(values[propertiesKey], fieldName: "\(fieldName)[\(index)].\(propertiesKey)")
             if let properties {
                 return BlockState(id: name, properties: properties)
             }

@@ -433,7 +433,7 @@ private struct BulkDensityFunctionInventory {
             switch marker.type {
             case .flatCache: return (.flat, marker.argument)
             case .cache2D: return (.cache2D, marker.argument)
-            case .interpolated, .cacheAllInCell, .cacheOnce: return nil
+            case .interpolated, .cache, .cacheAllInCell, .cacheOnce: return nil
             }
         }
         if let cache = function as? WorldScaleFlatCache { return (.flat, cache.wrappedDensityFunction) }

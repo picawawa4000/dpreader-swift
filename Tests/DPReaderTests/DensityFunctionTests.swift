@@ -51,7 +51,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
 
 @Test func testEncodingForReference() async throws {
     let densityFunction = ReferenceDensityFunction(target: "minecraft:continentalness")
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(densityFunction)
     #expect(try checkJSON(data, "\"minecraft:continentalness\""))
 }
@@ -59,7 +59,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
 /// Don't use the full notation; only use the shorthand (it's more legible).
 @Test func testEncodingForConstant() async throws {
     let densityFunction = ConstantDensityFunction(value: 0.5)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(densityFunction)
     #expect(try checkJSON(data, 0.5))
 }
@@ -73,7 +73,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let quarterNegative = UnaryDensityFunction(operand: input, type: .QUARTER_NEGATIVE)
     let squeeze = UnaryDensityFunction(operand: input, type: .SQUEEZE)
     let invert = UnaryDensityFunction(operand: input, type: .INVERT)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let absData = try encoder.encode(abs)
     let squareData = try encoder.encode(square)
     let cubeData = try encoder.encode(cube)
@@ -118,7 +118,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let multiply = BinaryDensityFunction(firstOperand: a, secondOperand: b, type: .MULTIPLY)
     let maximum = BinaryDensityFunction(firstOperand: a, secondOperand: b, type: .MAXIMUM)
     let minimum = BinaryDensityFunction(firstOperand: a, secondOperand: b, type: .MINIMUM)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let addData = try encoder.encode(add)
     let mulData = try encoder.encode(multiply)
     let maxData = try encoder.encode(maximum)
@@ -148,7 +148,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
 @Test func testEncodingForClamp() async throws {
     let input = ConstantDensityFunction(value: 0.7)
     let clamp = ClampDensityFunction(input: input, lowerBound: -1.0, upperBound: 1.0)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(clamp)
     #expect(try checkJSON(data, [
         "type": "minecraft:clamp",
@@ -160,7 +160,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
 
 @Test func testEncodingForYClampedGradient() async throws {
     let grad = YClampedGradient(fromY: 0, toY: 64, fromValue: -1.0, toValue: 1.0)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(grad)
     #expect(try checkJSON(data, [
         "type": "minecraft:y_clamped_gradient",
@@ -176,7 +176,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let inRange = ConstantDensityFunction(value: 10.0)
     let outRange = ConstantDensityFunction(value: -10.0)
     let rangeChoice = RangeChoice(inputChoice: input, minInclusive: 0.0, maxExclusive: 1.0, whenInRange: inRange, whenOutOfRange: outRange)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(rangeChoice)
     #expect(try checkJSON(data, [
         "type": "minecraft:range_choice",
@@ -192,7 +192,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let shift = ShiftDensityFunction(noiseKey: "minecraft:some_noise", shiftType: .SHIFT_ALL)
     let shiftA = ShiftDensityFunction(noiseKey: "minecraft:noise_a", shiftType: .SHIFT_XZ)
     let shiftB = ShiftDensityFunction(noiseKey: "minecraft:noise_b", shiftType: .SHIFT_ZX)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(shift)
     let dataA = try encoder.encode(shiftA)
     let dataB = try encoder.encode(shiftB)
@@ -212,7 +212,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
 
 @Test func testEncodingForNoise() async throws {
     let noise = NoiseDensityFunction(noiseKey: "minecraft:noise", scaleXZ: 0.25, scaleY: 0.5)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(noise)
     #expect(try checkJSON(data, [
         "type": "minecraft:noise",
@@ -227,7 +227,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let sy = ConstantDensityFunction(value: 2.0)
     let sz = ConstantDensityFunction(value: 3.0)
     let shifted = ShiftedNoise(noiseKey: "minecraft:noise", shiftX: sx, shiftY: sy, shiftZ: sz, scaleXZ: 0.25, scaleY: 0.5)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(shifted)
     print(String(data: data, encoding: .utf8)!)
     #expect(try checkJSON(data, [
@@ -248,7 +248,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let cacheOnce = CacheMarker(type: .cacheOnce, wrapping: ConstantDensityFunction(value: 0.5))
     let cacheAllInCell = CacheMarker(type: .cacheAllInCell, wrapping: ConstantDensityFunction(value: 0.5))
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let interpolatedData = try encoder.encode(interpolated)
     let flatCacheData = try encoder.encode(flatCache)
     let cache2DData = try encoder.encode(cache2D)
@@ -286,7 +286,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let beardifier = BeardifierMarker()
     let endIslands = EndIslandsDensityFunction()
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let blendAlphaData = try encoder.encode(blendAlpha)
     let blendOffsetData = try encoder.encode(blendOffset)
     let blendDensityData = try encoder.encode(blendDensity)
@@ -308,7 +308,7 @@ fileprivate final class CountingDensityFunction: DensityFunction {
     let input = ConstantDensityFunction(value: 1.0)
     let samplerScaleTunnels = WeirdScaledSampler(type: .scaleTunnels, withInput: input, withNoiseFromKey: "minecraft:noise")
     let samplerScaleCaves = WeirdScaledSampler(type: .scaleCaves, withInput: input, withNoiseFromKey: "minecraft:noise")
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let dataTunnels = try encoder.encode(samplerScaleTunnels)
     let dataCaves = try encoder.encode(samplerScaleCaves)
     #expect(try checkJSON(dataTunnels, [
@@ -340,7 +340,7 @@ fileprivate func createTestSpline(sampledAt value: Double) -> SplineSegment {
 @Test func testEncodingForSpline() async throws {
     let spline = createTestSpline(sampledAt: 1.5)
     let splineFunc = SplineDensityFunction(withSpline: spline)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(splineFunc)
     #expect(try checkJSON(data, [
         "type": "minecraft:spline",
@@ -371,7 +371,7 @@ fileprivate func createTestSpline(sampledAt value: Double) -> SplineSegment {
     let sampledDensityFunction = YClampedGradient(fromY: 0, toY: 256, fromValue: -10.0, toValue: 10.0)
     let upperBoundDensityFunction = ConstantDensityFunction(value: 256.0)
     let findTopSurface = FindTopSurface(density: sampledDensityFunction, upperBound: upperBoundDensityFunction, lowerBound: 0, cellHeight: 8)
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let data = try encoder.encode(findTopSurface)
     print(String(data: data, encoding: .utf8) ?? "nil")
     #expect(try checkJSON(data, [
@@ -398,7 +398,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
     let data = """
         "minecraft:erosion"
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let densityFunction = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     #expect((densityFunction as! ReferenceDensityFunction).targetKey.name == "minecraft:erosion")
 }
@@ -413,7 +413,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
             "value": 0.5
         }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let shorthandDensityFunction = try decoder.decode(DensityFunctionInitializer.self, from: shorthandData).value
     let fullDensityFunction = try decoder.decode(DensityFunctionInitializer.self, from: fullData).value
     #expect((shorthandDensityFunction as! ConstantDensityFunction).testingAttributes.value == 0.5)
@@ -442,7 +442,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
     let invertData = """
         {"type": "minecraft:invert", "argument": 3.5}
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let absDensity = try decoder.decode(DensityFunctionInitializer.self, from: absData).value
     let squareDensity = try decoder.decode(DensityFunctionInitializer.self, from: squareData).value
     let cubeDensity = try decoder.decode(DensityFunctionInitializer.self, from: cubeData).value
@@ -485,7 +485,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "argument2": 2.0
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let densityFunction = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let binary = densityFunction as! BinaryDensityFunction
     #expect(binary.testingAttributes.operation == BinaryDensityFunction.OperationType.ADD)
@@ -502,7 +502,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "max": 5.0
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let clamp = df as! ClampDensityFunction
     #expect((clamp.testingAttributes.input as! ConstantDensityFunction).testingAttributes.value == 3.0)
@@ -520,7 +520,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "to_value": 0.75
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let grad = df as! YClampedGradient
     #expect(grad.testingAttributes.fromY == -10)
@@ -540,7 +540,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "when_out_of_range": 3.0
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let rc = df as! RangeChoice
     #expect((rc.testingAttributes.inputChoice as! ConstantDensityFunction).testingAttributes.value == 0.5)
@@ -557,7 +557,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "argument": "minecraft:example_noise"
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let shift = df as! ShiftDensityFunction
     #expect(shift.testingAttributes.shiftType == ShiftDensityFunction.ShiftType.SHIFT_ALL)
@@ -573,7 +573,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "noise": "minecraft:noise_example"
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let noise = df as! NoiseDensityFunction
     #expect(noise.testingAttributes.scaleXZ == 0.25)
@@ -593,7 +593,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "noise": "minecraft:shifted_noise_example"
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let sn = df as! ShiftedNoise
     #expect((sn.testingAttributes.shiftX as! ConstantDensityFunction).testingAttributes.value == 1.0)
@@ -637,7 +637,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
     }
     """.data(using: .utf8)!
 
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let interpolated = try decoder.decode(DensityFunctionInitializer.self, from: interpolatedData).value
     let flatCache = try decoder.decode(DensityFunctionInitializer.self, from: flatCacheData).value
     let cache2D = try decoder.decode(DensityFunctionInitializer.self, from: cache2DData).value
@@ -682,7 +682,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
     {"type": "minecraft:end_islands"}
     """.data(using: .utf8)!
 
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let blendAlpha = try decoder.decode(DensityFunctionInitializer.self, from: blendAlphaData).value
     let blendOffset = try decoder.decode(DensityFunctionInitializer.self, from: blendOffsetData).value
     let blendDensity = try decoder.decode(DensityFunctionInitializer.self, from: blendDensityData).value
@@ -716,7 +716,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "noise": "minecraft:noise"
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let format103 = Version(major: 103, minor: 0)
     decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(format103), selectedVersion: format103))
     let samplerType1 = try decoder.decode(DensityFunctionInitializer.self, from: type1Data).value
@@ -757,7 +757,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         }
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: splineData).value
     let splineFunc = df as! SplineDensityFunction
     let spline = splineFunc.testingAttributes.spline
@@ -807,7 +807,7 @@ the density function compiler breaks TestVisible here so I'm just going to assum
         "cell_height": 8
     }
     """.data(using: .utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let df = try decoder.decode(DensityFunctionInitializer.self, from: data).value
     let fts = df as! FindTopSurface
     let density = fts.testingAttributes.density as! YClampedGradient

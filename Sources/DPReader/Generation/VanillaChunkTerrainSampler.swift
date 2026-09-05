@@ -1858,7 +1858,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
                     return WorldScaleFlatCache(wrapping: transformedArgument)
                 case .cache2D:
                     return WorldScaleCache2D(wrapping: transformedArgument)
-                case .interpolated, .cacheOnce, .cacheAllInCell:
+                case .interpolated, .cache, .cacheOnce, .cacheAllInCell:
                     return transformedArgument
                 }
             }
@@ -2117,7 +2117,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
             baked = VanillaChunkFlatCache(wrapping: bakedArgument, using: self)
         case .cache2D:
             baked = VanillaChunkCache2D(wrapping: bakedArgument)
-        case .cacheOnce:
+        case .cache, .cacheOnce:
             baked = VanillaChunkCacheOnce(wrapping: bakedArgument, using: self)
         case .cacheAllInCell:
             baked = VanillaChunkCellCache(wrapping: bakedArgument, using: self)

@@ -2142,7 +2142,7 @@ private func benchmarkDensityFunctionWASMInNode(
     guard process.terminationStatus == 0 else {
         throw TerrainTestErrors.wasmBenchmarkFailed(error)
     }
-    return (try JSONDecoder().decode(NodeWASMBulkBenchmarkResult.self, from: output), module.count)
+    return (try makeTestingJSONDecoder(.latestSupported).decode(NodeWASMBulkBenchmarkResult.self, from: output), module.count)
 }
 
 private struct ProfiledBenchmarkBufferContext: Codable {
@@ -2253,7 +2253,7 @@ private func writeBufferedDensityFunctionProfilingLog(
         profile: report
     )
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(log)
     let url = try bufferedDensityFunctionProfilingLogURL(label: label)

@@ -266,14 +266,8 @@ public final class DataPack {
     private static func loadConfiguration(fromRootPath rootPath: URL, decodingVersion: Version?) throws -> LoadingConfiguration {
         let metadataURL = rootPath.appendingPathComponent("pack.mcmeta")
         guard FileManager.default.fileExists(atPath: metadataURL.path) else {
-            let selectedVersion = decodingVersion ?? Version.assumedCurrent
-            let supportedVersions = VersionRange.exactly(.assumedCurrent)
-            guard supportedVersions.contains(selectedVersion) else {
-                throw LoadingErrors.unsupportedPackVersion(selected: selectedVersion, supported: supportedVersions)
-            }
-            return LoadingConfiguration(
-                versioning: PackVersioning(supportedVersions: supportedVersions, selectedVersion: selectedVersion),
-                overlayDirectories: []
+            throw LoadingErrors.invalidPackMetadata(
+                "missing required pack.mcmeta; every data pack must declare its supported pack format"
             )
         }
 
@@ -502,7 +496,7 @@ public final class DataPack {
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.producesRelativePathURLs]) {
             for case let filepath as URL in enumerator {
                 if !Self.shouldDecodeStructureTemplate(at: filepath) { continue }
-                let template = try StructureTemplate(fromFileAt: filepath)
+                let template = try StructureTemplate(fromFileAt: filepath, packFormat: packFormat)
                 let id = RegistryKey<StructureTemplate>(referencing: DataPack.namespacedID(fromNamespace: namespace, relativeTo: root, withURL: filepath))
                 self.structureTemplateRegistry.register(template, forKey: id)
             }
@@ -663,7 +657,11 @@ private struct PackMetadataPack: Decodable {
 
     func makeVersioning(decodingVersion: Version?) throws -> PackVersioning {
         let supportedVersions = try supportedVersionRange
-        let selectedVersion = decodingVersion ?? packFormat ?? maxFormat?.selectionVersion ?? minFormat?.selectionVersion ?? .assumedCurrent
+        guard let selectedVersion = decodingVersion ?? packFormat ?? maxFormat?.selectionVersion ?? minFormat?.selectionVersion else {
+            throw DataPack.LoadingErrors.invalidPackMetadata(
+                "expected pack_format, supported_formats, or min_format/max_format"
+            )
+        }
         guard supportedVersions.contains(selectedVersion) else {
             throw DataPack.LoadingErrors.unsupportedPackVersion(selected: selectedVersion, supported: supportedVersions)
         }

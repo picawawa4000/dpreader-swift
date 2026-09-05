@@ -32,6 +32,6 @@ In addition to directly generating chunks at a 1:1 scale, DPReader can generate 
 - ``NoiseHypercube``
 - ``NoisePoint``
 - ``ParameterRange``
-- ``buildBiomeSearchTree(from:entries:)``
-- ``getPredefinedBiomeSearchTreeData(for:)``
+- ``buildBiomeSearchTree(from:entries:packFormat:)``
+- ``getPredefinedBiomeSearchTreeData(for:packFormat:)``
 - ``BiomeSearchTreeError``

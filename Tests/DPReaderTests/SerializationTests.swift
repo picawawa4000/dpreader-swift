@@ -8,14 +8,14 @@ fileprivate enum Errors: Error {
     case structurePlacementWrongType(String)
 }
 
-private func makeNoiseDecoder(packFormat: Version = .assumedCurrent) -> JSONDecoder {
-    let decoder = JSONDecoder()
+private func makeNoiseDecoder(packFormat: Version) -> JSONDecoder {
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     decoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat))
     return decoder
 }
 
-private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEncoder {
-    let encoder = JSONEncoder()
+private func makeNoiseEncoder(packFormat: Version) -> JSONEncoder {
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     encoder.setDPReaderVersioning(PackVersioning(supportedVersions: .exactly(packFormat), selectedVersion: packFormat))
     return encoder
 }
@@ -36,7 +36,8 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
     let json = """
         {
             "amplitude_modifiers": [1.5, 1.0],
-            "base_octave": -10
+            "base_octave": -10,
+            "octave_count": 2
         }
     """.data(using: .utf8)!
     let decoder = makeNoiseDecoder(packFormat: Version(major: 113, minor: 0))
@@ -57,9 +58,16 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
     #expect(legacyJSON["amplitude_modifiers"] == nil)
     #expect(legacyJSON["base_octave"] == nil)
 
-    let renamedJSON = try JSONSerialization.jsonObject(with: makeNoiseEncoder(packFormat: Version(major: 113, minor: 0)).encode(noise)) as! [String: Any]
+    let modernNoise = NoiseDefinition(
+        baseOctave: -10,
+        octaveCount: 2,
+        amplitudeModifiers: [1.5, 1.0],
+        forID: RegistryKey(referencing: "test:example")
+    )
+    let renamedJSON = try JSONSerialization.jsonObject(with: makeNoiseEncoder(packFormat: Version(major: 113, minor: 0)).encode(modernNoise)) as! [String: Any]
     #expect(renamedJSON["amplitude_modifiers"] != nil)
     #expect(renamedJSON["base_octave"] as? Int == -10)
+    #expect(renamedJSON["octave_count"] as? Int == 2)
     #expect(renamedJSON["amplitudes"] == nil)
     #expect(renamedJSON["firstOctave"] == nil)
 }
@@ -98,7 +106,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
             }
         }
     """.data(using: String.Encoding.utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let biome = try decoder.decode(Biome.self, from: json)
 
     #expect(biome.hasPrecipitation == true)
@@ -113,7 +121,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
     #expect(biome.spawners["creature"]?.first?.type == "minecraft:sheep")
     #expect(biome.spawnCosts["minecraft:sheep"]?.energyBudget == 1.0)
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let roundTrip = try decoder.decode(Biome.self, from: encoder.encode(biome))
     #expect(roundTrip.temperature == 0.8)
     #expect(roundTrip.features[1] == ["minecraft:forest_rock"])
@@ -133,7 +141,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
             }
         }
     """.data(using: String.Encoding.utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let dimension = try decoder.decode(Dimension.self, from: json)
 
     #expect(dimension.type == "minecraft:overworld")
@@ -146,7 +154,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
     }
     #expect(biomeSource.preset == "minecraft:overworld")
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let roundTrip = try decoder.decode(Dimension.self, from: encoder.encode(dimension))
     #expect(roundTrip.type == "minecraft:overworld")
     #expect((roundTrip.generator as? NoiseDimensionGenerator)?.settings == "minecraft:overworld")
@@ -213,7 +221,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
             "use_expansion_hack": false
         }
     """.data(using: String.Encoding.utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
     let structure = try decoder.decode(Structure.self, from: json)
 
     #expect(structure.type == "minecraft:jigsaw")
@@ -228,7 +236,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
     #expect(settings.startHeight == .uniform(minInclusive: .absolute(-40), maxInclusive: .absolute(-20)))
     #expect(settings.poolAliases?.count == 2)
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let roundTripData = try encoder.encode(structure)
     let roundTrip = try decoder.decode(Structure.self, from: roundTripData)
     #expect(roundTrip.type == "minecraft:jigsaw")
@@ -282,7 +290,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
             ]
         }
     """.data(using: String.Encoding.utf8)!
-    let decoder = JSONDecoder()
+    let decoder = makeTestingJSONDecoder(.latestSupported)
 
     let randomSpread = try decoder.decode(StructureSet.self, from: randomSpreadJson)
     guard case .randomSpread(let randomPlacement) = randomSpread.placement else {
@@ -301,7 +309,7 @@ private func makeNoiseEncoder(packFormat: Version = .assumedCurrent) -> JSONEnco
     #expect(ringsPlacement.count == 128)
     #expect(ringsPlacement.preferredBiomes == .tagID("test:stronghold_biased_to"))
 
-    let encoder = JSONEncoder()
+    let encoder = makeTestingJSONEncoder(.latestSupported)
     let roundTrip = try decoder.decode(StructureSet.self, from: encoder.encode(concentricRings))
     guard case .concentricRings(let roundTripPlacement) = roundTrip.placement else {
         throw Errors.structurePlacementWrongType("ConcentricRingsStructurePlacement")

@@ -41,8 +41,6 @@ Noise is the underlying method that Minecraft uses to turn coordinates into bloc
 - ``OctavePerlinNoise``
 - ``DoublePerlinNoise``
 - ``NoiseDefinition``
-- ``ModernDoublePerlinNoise``
-- ``ModernNoiseDefinition``
 - ``ModernNoiseNormalization``
 - ``SimplexNoise``
 

@@ -12,8 +12,8 @@ private func sameState(_ lhs: BlockState, _ rhs: BlockState) -> Bool {
 
 @Test func testBlockStateStoresAndCodesArbitraryNamespacedID() throws {
     let state = BlockState(id: "example:unregistered_block", properties: ["variant": "custom"])
-    let encoded = try JSONEncoder().encode(state)
-    let decoded = try JSONDecoder().decode(BlockState.self, from: encoded)
+    let encoded = try makeTestingJSONEncoder(.latestSupported).encode(state)
+    let decoded = try makeTestingJSONDecoder(.latestSupported).decode(BlockState.self, from: encoded)
 
     #expect(decoded == state)
     #expect(decoded.id == "example:unregistered_block")

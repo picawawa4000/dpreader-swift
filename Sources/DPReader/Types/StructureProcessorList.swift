@@ -82,15 +82,66 @@ struct StructureProcessorRule: Decodable {
 struct StructureProcessorPredicate: Decodable {
     let type: String
     let block: String?
+    let blockState: StructureProcessorBlockState?
     let tag: String?
     let probability: Float?
-    private enum CodingKeys: String, CodingKey { case type = "predicate_type", block, tag, probability }
+    private enum CodingKeys: String, CodingKey { case type = "predicate_type", block, blockState = "block_state", tag, probability }
 }
 
 struct StructureProcessorBlockState: Decodable {
     let name: String
     let properties: [String: String]?
-    private enum CodingKeys: String, CodingKey { case name = "Name", properties = "Properties" }
+
+    init(from decoder: any Decoder) throws {
+        let format = decoder.dpReaderPackFormat
+        if format >= Version(major: 115, minor: 0) {
+            if let singleValue = try? decoder.singleValueContainer(),
+               let name = try? singleValue.decode(String.self) {
+                guard !name.isEmpty else {
+                    throw DecodingError.dataCorruptedError(in: singleValue, debugDescription: "A block-state ID cannot be empty")
+                }
+                self.name = name
+                self.properties = nil
+                return
+            }
+
+            let container = try decoder.container(keyedBy: ModernCodingKeys.self)
+            guard !container.contains(.legacyName) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .legacyName,
+                    in: container,
+                    debugDescription: "Block states use id/properties rather than Name/Properties in pack format 115.0+"
+                )
+            }
+            self.name = try container.decode(String.self, forKey: .id)
+            self.properties = try container.decodeIfPresent([String: String].self, forKey: .properties)
+            return
+        }
+
+        let container = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        guard !container.contains(.id) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "Block states use Name/Properties before pack format 115.0"
+            )
+        }
+        self.name = try container.decode(String.self, forKey: .name)
+        self.properties = try container.decodeIfPresent([String: String].self, forKey: .properties)
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case name = "Name"
+        case properties = "Properties"
+        case id
+    }
+
+    private enum ModernCodingKeys: String, CodingKey {
+        case id
+        case properties
+        case legacyName = "Name"
+    }
+
     var blockState: BlockState {
         if let properties { return BlockState(id: addDefaultNamespace(name), properties: properties) }
         return BlockState(id: addDefaultNamespace(name))

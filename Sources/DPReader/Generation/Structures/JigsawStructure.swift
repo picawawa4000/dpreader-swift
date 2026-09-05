@@ -813,6 +813,8 @@ private extension StructureProcessorPredicate {
         case "minecraft:random_block_match":
             guard self.block.map(addDefaultNamespace) == state.id else { return false }
             return random.nextFloat() < (self.probability ?? 0)
+        case "minecraft:blockstate_match":
+            return self.blockState?.blockState == state
         case "minecraft:always_true":
             return true
         case "minecraft:tag_match":

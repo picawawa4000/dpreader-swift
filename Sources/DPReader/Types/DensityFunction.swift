@@ -444,13 +444,15 @@ public final class UnaryDensityFunction: DensityFunction {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.operand = try container.decode(DensityFunctionInitializer.self, forKey: .operand).value
+        let operandKey: CodingKeys = decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .input : .legacyOperand
+        self.operand = try container.decode(DensityFunctionInitializer.self, forKey: operandKey).value
         self.operation = try container.decode(OperationType.self, forKey: .operation)
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.operand, forKey: .operand)
+        let operandKey: CodingKeys = encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .input : .legacyOperand
+        try container.encode(self.operand, forKey: operandKey)
         try container.encode(self.operation.rawValue, forKey: .operation)
     }
 
@@ -510,7 +512,8 @@ public final class UnaryDensityFunction: DensityFunction {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case operand = "argument"
+        case legacyOperand = "argument"
+        case input
         case operation = "type"
     }
 }
@@ -537,8 +540,13 @@ public final class BinaryDensityFunction: DensityFunction {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.first = try container.decode(DensityFunctionInitializer.self, forKey: .first).value
-        self.second = try container.decode(DensityFunctionInitializer.self, forKey: .second).value
+        if decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            self.first = try container.decode(DensityFunctionInitializer.self, forKey: .left).value
+            self.second = try container.decode(DensityFunctionInitializer.self, forKey: .right).value
+        } else {
+            self.first = try container.decode(DensityFunctionInitializer.self, forKey: .legacyFirst).value
+            self.second = try container.decode(DensityFunctionInitializer.self, forKey: .legacySecond).value
+        }
         self.operation = try container.decode(OperationType.self, forKey: .operation)
         self.secondLowerBound = self.second.lowerBoundValue()
         self.secondUpperBound = self.second.upperBoundValue()
@@ -546,8 +554,13 @@ public final class BinaryDensityFunction: DensityFunction {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.first, forKey: .first)
-        try container.encode(self.second, forKey: .second)
+        if encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            try container.encode(self.first, forKey: .left)
+            try container.encode(self.second, forKey: .right)
+        } else {
+            try container.encode(self.first, forKey: .legacyFirst)
+            try container.encode(self.second, forKey: .legacySecond)
+        }
         try container.encode(self.operation.rawValue, forKey: .operation)
     }
 
@@ -616,8 +629,10 @@ public final class BinaryDensityFunction: DensityFunction {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case first = "argument1"
-        case second = "argument2"
+        case legacyFirst = "argument1"
+        case legacySecond = "argument2"
+        case left
+        case right
         case operation = "type"
     }
 }
@@ -714,6 +729,9 @@ public final class YClampedGradient: DensityFunction {
     }
 
     public func encode(to encoder: any Encoder) throws {
+        guard encoder.dpReaderPackFormat < Version(major: 113, minor: 0) else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "minecraft:y_clamped_gradient was replaced by minecraft:gradient in pack format 113.0"))
+        }
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode("minecraft:y_clamped_gradient", forKey: .type)
         try container.encode(self.fromY, forKey: .fromY)
@@ -1085,13 +1103,15 @@ public final class ShiftDensityFunction: DensityFunction {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.shiftType = try container.decode(ShiftType.self, forKey: .type)
-        self.noise = try UnbakedNoise(fromKey: RegistryKey(referencing: container.decode(String.self, forKey: .noiseKey)))
+        let noiseKey: CodingKeys = decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .noise : .legacyArgument
+        self.noise = try UnbakedNoise(fromKey: RegistryKey(referencing: container.decode(String.self, forKey: noiseKey)))
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(self.shiftType.rawValue, forKey: .type)
-        try container.encode(self.noise.key.name, forKey: .noiseKey)
+        let noiseKey: CodingKeys = encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .noise : .legacyArgument
+        try container.encode(self.noise.key.name, forKey: noiseKey)
     }
 
     public func sample(at pos: PosInt3D) -> Double {
@@ -1126,7 +1146,8 @@ public final class ShiftDensityFunction: DensityFunction {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case noiseKey = "argument"
+        case legacyArgument = "argument"
+        case noise
         case type = "type"
     }
 }
@@ -1321,7 +1342,17 @@ public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospec
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.type = try container.decode(CacheType.self, forKey: .type)
-        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+        if decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            guard self.type == .cache || self.type == .interpolated else {
+                throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "\(self.type.rawValue) was replaced by minecraft:cache in pack format 113.0")
+            }
+            self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .input).value
+        } else {
+            guard self.type != .cache else {
+                throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "minecraft:cache requires pack format 113.0 or newer")
+            }
+            self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+        }
 
         if self.type == .cacheAllInCell {
             print("WARNING: A density function of type minecraft:cache_all_in_cell was decoded. It should not be referenced from data packs.")
@@ -1330,8 +1361,19 @@ public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospec
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.type.rawValue, forKey: .type)
-        try container.encode(self.argument, forKey: .argument)
+        if encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            guard self.type == .cache || self.type == .interpolated else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "\(self.type.rawValue) was replaced by minecraft:cache in pack format 113.0"))
+            }
+            try container.encode(self.type.rawValue, forKey: .type)
+            try container.encode(self.argument, forKey: .input)
+        } else {
+            guard self.type != .cache else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "minecraft:cache requires pack format 113.0 or newer"))
+            }
+            try container.encode(self.type.rawValue, forKey: .type)
+            try container.encode(self.argument, forKey: .argument)
+        }
     }
 
     public func sample(at pos: PosInt3D) -> Double {
@@ -1357,6 +1399,7 @@ public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospec
 
     /// The vanilla caching strategy represented by this marker.
     public enum CacheType: String, Decodable {
+        case cache = "minecraft:cache"
         case interpolated = "minecraft:interpolated"
         case cache2D = "minecraft:cache_2d"
         case flatCache = "minecraft:flat_cache"
@@ -1376,6 +1419,7 @@ public final class CacheMarker: DensityFunction, DensityFunctionWrapperIntrospec
     private enum CodingKeys: String, CodingKey {
         case type = "type"
         case argument = "argument"
+        case input
     }
 }
 
@@ -1462,13 +1506,15 @@ public final class BlendDensity: DensityFunction {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+        let argumentKey: CodingKeys = decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .input : .argument
+        self.argument = try container.decode(DensityFunctionInitializer.self, forKey: argumentKey).value
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode("minecraft:blend_density", forKey: .type)
-        try container.encode(self.argument, forKey: .argument)
+        let argumentKey: CodingKeys = encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .input : .argument
+        try container.encode(self.argument, forKey: argumentKey)
     }
 
     public func sample(at pos: PosInt3D) -> Double {
@@ -1494,6 +1540,7 @@ public final class BlendDensity: DensityFunction {
     private enum CodingKeys: String, CodingKey {
         case type = "type"
         case argument = "argument"
+        case input
     }
 }
 
@@ -1541,13 +1588,28 @@ public final class BeardifierMarker: DensityFunction {
 public final class EndIslandsDensityFunction: DensityFunction {
     private static let simplexCutoff = Double(Float(-0.9))
     private let sampler: DensityFunctionSimplexNoise
+    private let outerOnly: Bool
 
     public init() {
         self.sampler = DensityFunctionSimplexNoise()
+        self.outerOnly = false
     }
 
     public init(withSampler sampler: DensityFunctionSimplexNoise) {
         self.sampler = sampler
+        self.outerOnly = false
+    }
+
+    private init(withSampler sampler: DensityFunctionSimplexNoise, outerOnly: Bool) {
+        self.sampler = sampler
+        self.outerOnly = outerOnly
+    }
+
+    /// Creates the format-113 `end_outer_islands` form, which intentionally
+    /// omits the central End island contribution.
+    public init(outerOnly: Bool) {
+        self.sampler = DensityFunctionSimplexNoise()
+        self.outerOnly = outerOnly
     }
 
     convenience public init(from: Decoder) {
@@ -1555,11 +1617,24 @@ public final class EndIslandsDensityFunction: DensityFunction {
     }
 
     public func encode(to encoder: any Encoder) throws {
+        if self.outerOnly {
+            guard encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "minecraft:end_outer_islands requires pack format 113.0 or newer"))
+            }
+        } else {
+            guard encoder.dpReaderPackFormat < Version(major: 113, minor: 0) else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "minecraft:end_islands was renamed to minecraft:end_outer_islands in pack format 113.0"))
+            }
+        }
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode("minecraft:end_islands", forKey: .type)
+        try container.encode(self.outerOnly ? "minecraft:end_outer_islands" : "minecraft:end_islands", forKey: .type)
     }
 
     public func sample(at pos: PosInt3D) -> Double {
+        let distanceSquared = Double(pos.x) * Double(pos.x) + Double(pos.z) * Double(pos.z)
+        if self.outerOnly && distanceSquared < 512.0 * 512.0 {
+            return 0.0
+        }
         return (Double(self.sample(x: pos.x / 8, z: pos.z / 8)) - 8.0) / 128.0
     }
 
@@ -1598,7 +1673,7 @@ public final class EndIslandsDensityFunction: DensityFunction {
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
-        return EndIslandsDensityFunction(withSampler: try baker.bake(simplexNoise: self.sampler))
+        return EndIslandsDensityFunction(withSampler: try baker.bake(simplexNoise: self.sampler), outerOnly: self.outerOnly)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1866,7 +1941,11 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
         case "minecraft:clamp":
             return try ClampDensityFunction(from: decoder)
         case "minecraft:y_clamped_gradient":
+            try decoder.requirePackVersions(.atMost(.init(major: 112, minor: Int.max)), for: "density function minecraft:y_clamped_gradient")
             return try YClampedGradient(from: decoder)
+        case "minecraft:gradient":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function minecraft:gradient")
+            return try GradientDensityFunction(from: decoder)
         case "minecraft:range_choice":
             return try RangeChoice(from: decoder)
         case "minecraft:interval_select":
@@ -1877,7 +1956,7 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             return try NoiseDensityFunction(from: decoder)
         case "minecraft:shifted_noise":
             return try ShiftedNoise(from: decoder)
-        case "minecraft:interpolated", "minecraft:flat_cache", "minecraft:cache_2d", "minecraft:cache_once", "minecraft:cache_all_in_cell":
+        case "minecraft:cache", "minecraft:interpolated", "minecraft:flat_cache", "minecraft:cache_2d", "minecraft:cache_once", "minecraft:cache_all_in_cell":
             return try CacheMarker(from: decoder)
         case "minecraft:blend_alpha":
             return BlendAlpha()
@@ -1889,7 +1968,29 @@ private func decodeDensityFunction(from decoder: Decoder) throws -> DensityFunct
             // using this initialiser to print the warning
             return BeardifierMarker(from: decoder)
         case "minecraft:end_islands":
+            try decoder.requirePackVersions(.atMost(.init(major: 112, minor: Int.max)), for: "density function minecraft:end_islands")
             return EndIslandsDensityFunction(from: decoder)
+        case "minecraft:end_outer_islands":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function minecraft:end_outer_islands")
+            return EndIslandsDensityFunction(outerOnly: true)
+        case "minecraft:sqrt", "minecraft:log", "minecraft:sign", "minecraft:negate":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function \(typeKey)")
+            return try ModernUnaryDensityFunction(from: decoder)
+        case "minecraft:sub", "minecraft:div":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function \(typeKey)")
+            return try ModernBinaryDensityFunction(from: decoder)
+        case "minecraft:lerp":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function minecraft:lerp")
+            return try LerpDensityFunction(from: decoder)
+        case "minecraft:slice":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function minecraft:slice")
+            return try SliceDensityFunction(from: decoder)
+        case "minecraft:pow":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function minecraft:pow")
+            return try PowerDensityFunction(from: decoder)
+        case "minecraft:distance_to_point":
+            try decoder.requirePackVersions(.atLeast(.init(major: 113, minor: 0)), for: "density function minecraft:distance_to_point")
+            return try DistanceToPointDensityFunction(from: decoder)
         case "minecraft:weird_scaled_sampler":
             try decoder.requirePackVersions(.atMost(.init(major: 103, minor: Int.max)), for: "density function minecraft:weird_scaled_sampler")
             return try WeirdScaledSampler(from: decoder)

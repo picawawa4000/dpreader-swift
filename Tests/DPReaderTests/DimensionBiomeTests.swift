@@ -81,7 +81,7 @@ private func loadCubiomesDimensionBiomeReference(
     expectedCount: Int
 ) throws -> CubiomesDimensionBiomeReference {
     let data = try Data(contentsOf: cubiomesDimensionBiomeReferenceURL(named: name))
-    let reference = try JSONDecoder().decode(CubiomesDimensionBiomeReference.self, from: data)
+    let reference = try makeTestingJSONDecoder(.latestSupported).decode(CubiomesDimensionBiomeReference.self, from: data)
     guard reference.seed == expectedSeed,
           reference.minecraftVersion == "1.21.11",
           reference.dimension == expectedDimension,

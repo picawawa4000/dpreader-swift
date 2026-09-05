@@ -60,13 +60,19 @@ public final class NoiseSettings: Codable {
             ?? BlockState(id: "minecraft:water", properties: ["level": "0"])
         self.legacyRandomSource = try container.decode(Bool.self, forKey: .legacyRandomSource)
         self.noiseRouter = try container.decode(NoiseRouter.self, forKey: .noiseRouter)
-        self.surfaceRule = try container.decode(SurfaceRuleInitializer.self, forKey: .surfaceRule).value
+        if decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) {
+            // Surface rules moved behind the material-rule registry. DPReader does
+            // not load that registry yet, so retain the default terrain state.
+            self.surfaceRule = SurfaceRuleBlock(resultState: self.defaultBlock)
+        } else {
+            self.surfaceRule = try container.decode(SurfaceRuleInitializer.self, forKey: .surfaceRule).value
+        }
 
         let noiseContainer = try container.nestedContainer(keyedBy: NoiseCodingKeys.self, forKey: .noise)
         self.minY = try noiseContainer.decode(Int.self, forKey: .minY)
         self.height = try noiseContainer.decode(Int.self, forKey: .height)
-        self.sizeHorizontal = try noiseContainer.decode(Int.self, forKey: .sizeHorizontal)
-        self.sizeVertical = try noiseContainer.decode(Int.self, forKey: .sizeVertical)
+        self.sizeHorizontal = try noiseContainer.decodeIfPresent(Int.self, forKey: .sizeHorizontal) ?? 1
+        self.sizeVertical = try noiseContainer.decodeIfPresent(Int.self, forKey: .sizeVertical) ?? 1
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -85,8 +91,10 @@ public final class NoiseSettings: Codable {
         var noiseContainer = container.nestedContainer(keyedBy: NoiseCodingKeys.self, forKey: .noise)
         try noiseContainer.encode(self.minY, forKey: .minY)
         try noiseContainer.encode(self.height, forKey: .height)
-        try noiseContainer.encode(self.sizeHorizontal, forKey: .sizeHorizontal)
-        try noiseContainer.encode(self.sizeVertical, forKey: .sizeVertical)
+        if encoder.dpReaderPackFormat < Version(major: 113, minor: 0) {
+            try noiseContainer.encode(self.sizeHorizontal, forKey: .sizeHorizontal)
+            try noiseContainer.encode(self.sizeVertical, forKey: .sizeVertical)
+        }
     }
 
     public func with(noiseRouter: NoiseRouter) -> NoiseSettings {
@@ -224,7 +232,8 @@ public final class NoiseRouter: Codable {
                     debugDescription: "noise_router.initial_density_without_jaggedness was removed in pack format 82.0; use preliminary_surface_level"
                 )
             }
-            self.preliminarySurfaceLevel = try container.decode(DensityFunctionInitializer.self, forKey: .preliminarySurfaceLevel).value
+            let surfaceLevelKey: CodingKeys = decoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .chunkSurfaceLevel : .preliminarySurfaceLevel
+            self.preliminarySurfaceLevel = try container.decode(DensityFunctionInitializer.self, forKey: surfaceLevelKey).value
             self.initialDensityWithoutJaggedness = nil
         } else {
             if container.contains(.preliminarySurfaceLevel) {
@@ -238,13 +247,14 @@ public final class NoiseRouter: Codable {
             self.initialDensityWithoutJaggedness = try container.decode(DensityFunctionInitializer.self, forKey: .initialDensityWithoutJaggedness).value
         }
         self.finalDensity = try container.decode(DensityFunctionInitializer.self, forKey: .finalDensity).value
-        self.barrier = try container.decode(DensityFunctionInitializer.self, forKey: .barrier).value
-        self.fluidLevelFloodedness = try container.decode(DensityFunctionInitializer.self, forKey: .fluidLevelFloodedness).value
-        self.fluidLevelSpread = try container.decode(DensityFunctionInitializer.self, forKey: .fluidLevelSpread).value
-        self.lava = try container.decode(DensityFunctionInitializer.self, forKey: .lava).value
-        self.veinToggle = try container.decode(DensityFunctionInitializer.self, forKey: .veinToggle).value
-        self.veinRidged = try container.decode(DensityFunctionInitializer.self, forKey: .veinRidged).value
-        self.veinGap = try container.decode(DensityFunctionInitializer.self, forKey: .veinGap).value
+        let zero = ConstantDensityFunction(value: 0)
+        self.barrier = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .barrier)?.value ?? zero
+        self.fluidLevelFloodedness = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .fluidLevelFloodedness)?.value ?? zero
+        self.fluidLevelSpread = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .fluidLevelSpread)?.value ?? zero
+        self.lava = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .lava)?.value ?? zero
+        self.veinToggle = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .veinToggle)?.value ?? zero
+        self.veinRidged = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .veinRidged)?.value ?? zero
+        self.veinGap = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .veinGap)?.value ?? zero
         self.temperature = try container.decode(DensityFunctionInitializer.self, forKey: .temperature).value
         self.humidity = try container.decode(DensityFunctionInitializer.self, forKey: .humidity).value
         self.continents = try container.decode(DensityFunctionInitializer.self, forKey: .continents).value
@@ -256,7 +266,8 @@ public final class NoiseRouter: Codable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         if let preliminarySurfaceLevel {
-            try container.encode(DensityFunctionEncoder(value: preliminarySurfaceLevel), forKey: .preliminarySurfaceLevel)
+            let surfaceLevelKey: CodingKeys = encoder.dpReaderPackFormat >= Version(major: 113, minor: 0) ? .chunkSurfaceLevel : .preliminarySurfaceLevel
+            try container.encode(DensityFunctionEncoder(value: preliminarySurfaceLevel), forKey: surfaceLevelKey)
         }
         if let initialDensityWithoutJaggedness {
             try container.encode(DensityFunctionEncoder(value: initialDensityWithoutJaggedness), forKey: .initialDensityWithoutJaggedness)
@@ -300,6 +311,7 @@ public final class NoiseRouter: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case preliminarySurfaceLevel = "preliminary_surface_level"
+        case chunkSurfaceLevel = "chunk_surface_level"
         case initialDensityWithoutJaggedness = "initial_density_without_jaggedness"
         case finalDensity = "final_density"
         case barrier = "barrier"
