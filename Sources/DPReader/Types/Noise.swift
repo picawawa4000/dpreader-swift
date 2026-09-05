@@ -130,9 +130,6 @@ public final class NoiseDefinition: Codable {
     ///   - seedHi: The high scrambling bits. Should be the result of the second call to `XoroshiroRandom`.
     /// - Returns: A new `DoublePerlinNoise` instantiated based on the given scrambling bits.
     public func instantiate(seedLo: UInt64, seedHi: UInt64) -> DoublePerlinNoise {
-        if let modernDefinition {
-            return modernDefinition.instantiate(seedLo: seedLo, seedHi: seedHi)
-        }
         if (self.hashLow == nil) || (self.hashHigh == nil) {
             print("WARNING: Uninitialised hashes in NoiseDefinition. Treating them as 0.")
         }
@@ -155,9 +152,6 @@ public final class NoiseDefinition: Codable {
     /// - Returns: 
     public func instantiateLegacy(forSeed seed: WorldSeed) throws -> DoublePerlinNoise {
         var random: any Random = CheckedRandom(seed: seed)
-        if let modernDefinition {
-            return modernDefinition.instantiateLegacy(fromRandom: &random)
-        }
         return DoublePerlinNoise(
             random: &random,
             firstOctave: self.firstOctave,

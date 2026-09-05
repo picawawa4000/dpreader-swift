@@ -1161,17 +1161,23 @@ public final class NoiseDensityFunction: DensityFunction {
     private let scaleXZ: Double
     private let scaleY: Double
     private let noise: DensityFunctionNoise
+    private let shiftX: DensityFunction?
+    private let shiftZ: DensityFunction?
 
     public init(noiseKey: String, scaleXZ: Double, scaleY: Double) {
         self.scaleXZ = scaleXZ
         self.scaleY = scaleY
         self.noise = UnbakedNoise(fromKey: RegistryKey(referencing: noiseKey))
+        self.shiftX = nil
+        self.shiftZ = nil
     }
 
     public init(noise: DensityFunctionNoise, scaleXZ: Double, scaleY: Double) {
         self.scaleXZ = scaleXZ
         self.scaleY = scaleY
         self.noise = noise
+        self.shiftX = nil
+        self.shiftZ = nil
     }
 
     public init(from decoder: Decoder) throws {
@@ -1179,6 +1185,8 @@ public final class NoiseDensityFunction: DensityFunction {
         self.scaleXZ = try container.decode(Double.self, forKey: .scaleXZ)
         self.scaleY = try container.decode(Double.self, forKey: .scaleY)
         self.noise = try UnbakedNoise(fromKey: RegistryKey(referencing: container.decode(String.self, forKey: .noiseKey)))
+        self.shiftX = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .shiftX)?.value
+        self.shiftZ = try container.decodeIfPresent(DensityFunctionInitializer.self, forKey: .shiftZ)?.value
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -1187,10 +1195,12 @@ public final class NoiseDensityFunction: DensityFunction {
         try container.encode(self.scaleXZ, forKey: .scaleXZ)
         try container.encode(self.scaleY, forKey: .scaleY)
         try container.encode(self.noise.key.name, forKey: .noiseKey)
+        try container.encodeIfPresent(shiftX.map { AnyDensityFunctionEncoder(value: $0) }, forKey: .shiftX)
+        try container.encodeIfPresent(shiftZ.map { AnyDensityFunctionEncoder(value: $0) }, forKey: .shiftZ)
     }
 
     public func sample(at pos: PosInt3D) -> Double {
-        return self.noise.sample(x: Double(pos.x) * self.scaleXZ, y: Double(pos.y) * self.scaleY, z: Double(pos.z) * self.scaleXZ)
+        return self.noise.sample(x: Double(pos.x) * self.scaleXZ + (shiftX?.sample(at: pos) ?? 0), y: Double(pos.y) * self.scaleY, z: Double(pos.z) * self.scaleXZ + (shiftZ?.sample(at: pos) ?? 0))
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -1217,6 +1227,8 @@ public final class NoiseDensityFunction: DensityFunction {
         case scaleXZ = "xz_scale"
         case scaleY = "y_scale"
         case noiseKey = "noise"
+        case shiftX = "shift_x"
+        case shiftZ = "shift_z"
         case type = "type"
     }
 }

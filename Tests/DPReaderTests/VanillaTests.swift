@@ -76,6 +76,46 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     #expect(pack.packFormat == Version(major: 119, minor: 0))
 }
 
+@Test func testVanilla119NoiseAndBiomeGenerationMatches107Point1() throws {
+    func vanillaPack(_ version: String) throws -> DataPack {
+        let root = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("vanilla/\(version)")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            throw Errors.noVanillaDataFound
+        }
+        return try DataPack(fromRootPath: root)
+    }
+
+    let seed: WorldSeed = 5_012_353_7021
+    let oldGenerator = try WorldGenerator(
+        withWorldSeed: seed,
+        usingDataPacks: [try vanillaPack("26.2")],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let modernGenerator = try WorldGenerator(
+        withWorldSeed: seed,
+        usingDataPacks: [try vanillaPack("26.3-pre-1")],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+
+    let positions = [
+        PosInt3D(x: 0, y: 0, z: 0),
+        PosInt3D(x: -1_024, y: 64, z: 2_048),
+        PosInt3D(x: 12_345, y: -48, z: -6_789),
+        PosInt3D(x: -32_768, y: 192, z: 16_384)
+    ]
+    let overworld = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    for position in positions {
+        #expect(modernGenerator.sampleNoisePoint(at: position) == oldGenerator.sampleNoisePoint(at: position), "Noise mismatch at \(position)")
+        #expect(
+            try modernGenerator.sampleBiome(at: position, in: overworld) == oldGenerator.sampleBiome(at: position, in: overworld),
+            "Biome mismatch at \(position)"
+        )
+    }
+}
+
 @Test func testVanillaBatchGeneration() async throws {
     let vanillaDataPath = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
