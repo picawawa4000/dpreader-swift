@@ -196,6 +196,103 @@ struct JigsawStructureTests {
         #expect(loot.contains { $0.itemName == "minecraft:trident" })
     }
 
+    @Test func abandonedCampSavannaMatchesFormat119ReferenceLoot() throws {
+        let pack = try DataPack(fromRootPath: URL(filePath: "vanilla/26.3-pre-1"))
+        #expect(pack.packFormat == Version(major: 119, minor: 0))
+        let camp = try #require(pack.structureRegistry.get(
+            RegistryKey(referencing: "minecraft:abandoned_camp_savanna")
+        ))
+        // The reference camp is founded at Y=96, so its surface-projecting jigsaw start
+        // sees the first air block above terrain at Y=95.
+        let context = StructureGenerationContext(
+            seaLevel: 63,
+            minimumWorldY: -64,
+            maximumWorldY: 319,
+            usingDataPacks: [pack]
+        ) { position in
+            position.y <= 95 ? BlockState(id: "minecraft:stone") : Blocks.airState
+        }
+        let result = try #require(try camp.generate(
+            worldSeed: UInt64(bitPattern: -8_099_445_310_760_408_987),
+            startChunk: PosInt2D(x: -59, z: -66),
+            context: context
+        ))
+        guard case .jigsaw(let generated) = result else {
+            Issue.record("Expected an abandoned-camp jigsaw result")
+            return
+        }
+        #expect(generated.lootContainers == [
+            StructureLootContainer(
+                block: "minecraft:chest",
+                pos: PosInt3D(x: -946, y: 96, z: -1058),
+                lootTable: "minecraft:chests/abandoned_camp_common_chest",
+                lootSeed: 2_907_945_971_450_212_289
+            ),
+            StructureLootContainer(
+                block: "minecraft:barrel",
+                pos: PosInt3D(x: -938, y: 96, z: -1059),
+                lootTable: "minecraft:barrels/abandoned_camp_barrel",
+                lootSeed: 5_348_962_221_393_970_322
+            )
+        ])
+
+        func itemCounts(_ items: [ItemStack]) -> [String: Int] {
+            var counts: [String: Int] = [:]
+            for item in items {
+                let name: String
+                if item.itemName == "minecraft:abandoned_camp_map",
+                   case .object(let nameObject)? = item.components["minecraft:item_name"],
+                   case .string(let translation)? = nameObject["translate"],
+                   translation == "filled_map.bamboo_camp_map" {
+                    name = "minecraft:bamboo_camp_map"
+                } else {
+                    name = item.itemName
+                }
+                counts[name, default: 0] += item.count
+            }
+            return counts
+        }
+
+        func decode119LootTable(_ identifier: String) throws -> LootTable {
+            let parts = identifier.split(separator: ":", maxSplits: 1).map(String.init)
+            let namespace = parts.count == 2 ? parts[0] : "minecraft"
+            let path = parts.count == 2 ? parts[1] : parts[0]
+            let url = URL(filePath: "vanilla/26.3-pre-1")
+                .appendingPathComponent("data/\(namespace)/loot_table/\(path).json")
+            return try makeTestingJSONDecoder(.latestSupported).decode(
+                LootTable.self, from: Data(contentsOf: url)
+            )
+        }
+        for container in generated.lootContainers {
+            let table = try decode119LootTable(container.lootTable)
+            let items = try table.generateLoot(withContext: LootContext(
+                random: CheckedRandom(seed: UInt64(bitPattern: container.lootSeed)),
+                originBiome: "minecraft:savanna"
+            ), resolvingTables: decode119LootTable)
+            if container.block == "minecraft:chest" {
+                #expect(itemCounts(items) == [
+                    "minecraft:map": 1,
+                    "minecraft:bamboo_camp_map": 1,
+                    "minecraft:rabbit_hide": 4,
+                    "minecraft:compass": 1,
+                    "minecraft:copper_axe": 1,
+                    "minecraft:saddle": 1,
+                    "minecraft:bucket": 1,
+                    "minecraft:flint_and_steel": 1
+                ])
+            } else {
+                #expect(itemCounts(items) == [
+                    "minecraft:straw_bed": 6,
+                    "minecraft:bone": 2,
+                    "minecraft:glass_bottle": 2,
+                    "minecraft:bundle": 1,
+                    "minecraft:white_cushion": 2,
+                    "minecraft:bowl": 1
+                ])
+            }
+        }
+    }
+
     @Test func plainsVillageMatchesReferencePiecesAndLootUsingGeneratedTerrain() throws {
         let generated = try Self.fixture.generate("minecraft:village_plains", startChunk: PosInt2D(x: -292, z: -84))
         let names = generated.graph.pieces

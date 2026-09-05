@@ -197,10 +197,27 @@ extension Structure {
                 return nil
             }
             if !context.worldSurfaceIsAtLeastSeaLevel {
-                guard try context.height(.worldSurfaceWG, x: startX, z: startZ) >= context.seaLevel else { return nil }
-                guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ) >= context.seaLevel else { return nil }
-                guard try context.height(.worldSurfaceWG, x: startX, z: startZ &+ 20) >= context.seaLevel else { return nil }
-                guard try context.height(.worldSurfaceWG, x: startX &+ 20, z: startZ &+ 20) >= context.seaLevel else { return nil }
+                // The temple's 21×21 footprint is oriented from its structure-start RNG.
+                // Validate its actual occupied corners, rather than assuming that it always
+                // extends south-east from the start chunk.
+                var random = checkedRandomForChunkGeneration(
+                    worldSeed: worldSeed,
+                    chunkX: startChunk.x,
+                    chunkZ: startChunk.z
+                )
+                let bounds = makeBoundingBox(
+                    x: startX,
+                    y: 64,
+                    z: startZ,
+                    orientation: randomOrientation(using: &random),
+                    width: 21,
+                    height: 15,
+                    depth: 21
+                )
+                guard try context.height(.worldSurfaceWG, x: bounds.minX, z: bounds.minZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: bounds.maxX, z: bounds.minZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: bounds.minX, z: bounds.maxZ) >= context.seaLevel else { return nil }
+                guard try context.height(.worldSurfaceWG, x: bounds.maxX, z: bounds.maxZ) >= context.seaLevel else { return nil }
             }
             return try makeValidatedStart(at: position, knownBiome: biome)
 

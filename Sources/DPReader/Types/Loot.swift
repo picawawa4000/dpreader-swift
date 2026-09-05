@@ -1155,17 +1155,21 @@ public final class LootContext {
     public let enchantmentLevel: Int?
     /// Current tick value for each data-driven world clock.
     public let worldClockTimes: [String: Int64]
+    /// Biome at the loot origin, when a location-sensitive table is evaluated.
+    public let originBiome: String?
 
     public init(
         random: any Random,
         enchantmentResources: LootEnchantmentResources? = nil,
         enchantmentLevel: Int? = nil,
-        worldClockTimes: [String: Int64] = [:]
+        worldClockTimes: [String: Int64] = [:],
+        originBiome: String? = nil
     ) {
         self.random = random
         self.enchantmentResources = enchantmentResources
         self.enchantmentLevel = enchantmentLevel
         self.worldClockTimes = Dictionary(uniqueKeysWithValues: worldClockTimes.map { (addDefaultNamespace($0.key), $0.value) })
+        self.originBiome = originBiome.map(addDefaultNamespace)
     }
 }
 
@@ -1285,10 +1289,6 @@ extension LootCondition {
     }
 }
 
-private enum LootConditionTypeKey: String, CodingKey {
-    case condition
-}
-
 /// Type-erased wrapper used to code heterogeneous loot conditions.
 public struct LootConditionInitializer: Codable {
     public let value: LootCondition
@@ -1316,8 +1316,11 @@ func decodeLootCondition(from decoder: Decoder) throws -> LootCondition {
         return AllOfLootCondition(terms: terms)
     }
 
-    let container = try decoder.container(keyedBy: LootConditionTypeKey.self)
-    let type = try addDefaultNamespace(container.decode(String.self, forKey: .condition))
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    // Pack format 119 renamed condition records from `condition` to `type`.
+    let rawType = try container.decodeIfPresent(String.self, forKey: key("condition"))
+        ?? container.decode(String.self, forKey: key("type"))
+    let type = addDefaultNamespace(rawType)
     switch type {
     case "minecraft:inverted":
         return try InvertedLootCondition(from: decoder)
@@ -1362,7 +1365,7 @@ func decodeLootCondition(from decoder: Decoder) throws -> LootCondition {
     case "minecraft:enchantment_active_check":
         return try EnchantmentActiveCheckLootCondition(from: decoder)
     default:
-        throw DecodingError.dataCorruptedError(forKey: .condition, in: container, debugDescription: "Unknown LootCondition type: \(type)")
+        throw DecodingError.dataCorruptedError(forKey: key("condition"), in: container, debugDescription: "Unknown LootCondition type: \(type)")
     }
 }
 
@@ -1793,7 +1796,23 @@ public final class LocationCheckLootCondition: LootCondition {
     }
 
     public func check(withContext context: LootContext) throws -> Bool {
-        throw LootEvaluationError.unsupported("location_check is not needed for world-generation loot")
+        guard let originBiome = context.originBiome,
+              case .object(let predicate) = self.predicate,
+              let biomes = predicate["biomes"]
+        else {
+            return false
+        }
+        switch biomes {
+        case .string(let biome):
+            return originBiome == addDefaultNamespace(biome)
+        case .array(let values):
+            return values.contains { value in
+                guard let biome = value.stringValue else { return false }
+                return originBiome == addDefaultNamespace(biome)
+            }
+        default:
+            return false
+        }
     }
 }
 
@@ -1961,10 +1980,6 @@ public protocol ItemModifier: Codable {
     func apply(to: ItemStack, withContext: LootContext) throws -> ItemStack
 }
 
-private enum LootFunctionTypeKey: String, CodingKey {
-    case function
-}
-
 /// Type-erased wrapper used to code heterogeneous item modifiers.
 public struct ItemModifierInitializer: Codable {
     public let value: ItemModifier
@@ -1992,8 +2007,12 @@ func decodeItemModifier(from decoder: Decoder) throws -> ItemModifier {
         return SequenceItemModifier(functions: functions)
     }
 
-    let container = try decoder.container(keyedBy: LootFunctionTypeKey.self)
-    let type = try addDefaultNamespace(container.decode(String.self, forKey: .function))
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    // Pack format 119 renamed item-modifier records from `function` to `type`.
+    // Accept both spellings so older and newer vanilla tables share the evaluator.
+    let rawType = try container.decodeIfPresent(String.self, forKey: key("function"))
+        ?? container.decode(String.self, forKey: key("type"))
+    let type = addDefaultNamespace(rawType)
     switch type {
     case "minecraft:apply_bonus":
         return try ApplyBonusItemModifier(from: decoder)
@@ -2082,7 +2101,7 @@ func decodeItemModifier(from decoder: Decoder) throws -> ItemModifier {
     case "minecraft:toggle_tooltips":
         return try ToggleTooltipsItemModifier(from: decoder)
     default:
-        throw DecodingError.dataCorruptedError(forKey: .function, in: container, debugDescription: "Unknown item modifier type: \(type)")
+        throw DecodingError.dataCorruptedError(forKey: key("function"), in: container, debugDescription: "Unknown item modifier type: \(type)")
     }
 }
 
@@ -2810,6 +2829,13 @@ public final class ExplorationMapItemModifier: ConditionalItemModifier {
         try c.encodeIfPresent(searchRadius, forKey: key("search_radius"))
         try c.encodeIfPresent(skipExistingChunks, forKey: key("skip_existing_chunks"))
     }
+
+    public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
+        // Map target discovery requires a live world/registry context. Preserve the
+        // generated map and its name/lore components and mark it as a map so a
+        // following `filtered` modifier can observe the vanilla map predicate.
+        return stack.settingComponent("minecraft:map_id", .integer(0))
+    }
 }
 
 /// An item modifier that randomly reduces stack count after an explosion.
@@ -2917,7 +2943,16 @@ public final class FilteredItemModifier: ConditionalItemModifier {
     }
 
     public func applyOnPass(to stack: ItemStack, withContext ctx: LootContext) throws -> ItemStack {
-        throw LootEvaluationError.unsupported("filtered is not needed for world-generation loot")
+        var matches = true
+        if case .object(let filter) = self.itemFilter,
+           case .object(let predicates)? = filter["predicates"],
+           predicates["minecraft:map_id"] != nil {
+            matches = stack.components["minecraft:map_id"] != nil
+        }
+        if matches {
+            return try self.onPass?.apply(to: stack, withContext: ctx) ?? stack
+        }
+        return try self.onFail?.apply(to: stack, withContext: ctx) ?? stack
     }
 }
 
@@ -4202,10 +4237,14 @@ private func key(_ string: String) -> DynamicCodingKey {
 
 /// Decodes a condition list only when its key is present.
 private func decodeLootConditions(from container: KeyedDecodingContainer<DynamicCodingKey>, forKey keyString: String) throws -> [LootCondition] {
-    guard container.contains(key(keyString)) else {
-        return []
+    if container.contains(key(keyString)) {
+        return try container.decode([LootConditionInitializer].self, forKey: key(keyString)).map(\.value)
     }
-    return try container.decode([LootConditionInitializer].self, forKey: key(keyString)).map(\.value)
+    // Pack format 119 uses a singular condition object on loot entries.
+    if keyString == "conditions", container.contains(key("condition")) {
+        return [try container.decode(LootConditionInitializer.self, forKey: key("condition")).value]
+    }
+    return []
 }
 
 /// Encodes a condition list only when it is non-empty.
@@ -4221,10 +4260,15 @@ private func encodeLootConditions(
 
 /// Decodes a modifier list only when its key is present.
 private func decodeItemModifiers(from container: KeyedDecodingContainer<DynamicCodingKey>, forKey keyString: String) throws -> [ItemModifier] {
-    guard container.contains(key(keyString)) else {
-        return []
+    if container.contains(key(keyString)) {
+        return try container.decode([ItemModifierInitializer].self, forKey: key(keyString)).map(\.value)
     }
-    return try container.decode([ItemModifierInitializer].self, forKey: key(keyString)).map(\.value)
+    // Pack format 119 uses singular `modifier`, which may itself be a
+    // single object or an array (the latter is decoded as a sequence).
+    if keyString == "functions", container.contains(key("modifier")) {
+        return [try container.decode(ItemModifierInitializer.self, forKey: key("modifier")).value]
+    }
+    return []
 }
 
 /// Encodes a modifier list only when it is non-empty.

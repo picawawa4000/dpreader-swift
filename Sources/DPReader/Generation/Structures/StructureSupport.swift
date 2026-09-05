@@ -967,9 +967,11 @@ func getStructureGenerationRandom(
 
 func randomOrientation<R: Random>(using random: inout R) -> HorizontalDirection {
     switch Int(random.next(bound: 4)) {
-    case 0: return .south
-    case 1: return .west
-    case 2: return .north
+    // Direction.Type.HORIZONTAL is the filtered Direction enum order: north, south,
+    // west, east.  This order is part of the structure RNG sequence.
+    case 0: return .north
+    case 1: return .south
+    case 2: return .west
     default: return .east
     }
 }
