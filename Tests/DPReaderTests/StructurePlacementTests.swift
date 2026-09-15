@@ -41,6 +41,40 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
         .appendingPathComponent("Tests/Resources/Cubiomes/nether_complexes_seed_503815372.json")
 }
 
+@Test func endCityValidationUsesTerrainAnchorForBiomeCheck() throws {
+    let start = PosInt2D(x: -75, z: -77) // (-1200, -1232)
+    let anchor = PosInt3D(x: -1193, y: 70, z: -1225)
+    let anchorBiomeSample = PosInt3D(x: -1196, y: 68, z: -1228)
+    let structure = Structure(
+        type: "minecraft:end_city",
+        biomes: .rawID("minecraft:end_highlands"),
+        spawnOverrides: [:],
+        step: "surface_structures"
+    )
+    let context = StructureStartValidationContext(
+        dimension: RegistryKey(referencing: "minecraft:end"),
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        heightmapSampler: { _, _, _ in 70 },
+        biomeSampler: { position in
+            position.x == anchorBiomeSample.x && position.z == anchorBiomeSample.z
+                ? RegistryKey(referencing: "minecraft:end_highlands")
+                : RegistryKey(referencing: "minecraft:end_barrens")
+        }
+    )
+
+    let validated = try structure.generatePosition(
+        structureKey: RegistryKey(referencing: "minecraft:end_city"),
+        worldSeed: 10_347_298_762_949_142_629,
+        startChunk: start,
+        allowedBiomeNames: ["minecraft:end_highlands"],
+        monumentSurroundingBiomeNames: nil,
+        context: context
+    )
+    #expect(validated?.generationPosition == anchor)
+}
+
 @Test func testGeneratedStructureStartHeightmapsMatchFullChunkTerrain() async throws {
     let pack = try DataPack(fromRootPath: try vanillaStructurePlacementPackURL())
     let generator = try WorldGenerator(

@@ -260,8 +260,10 @@ extension Structure {
             return try makeValidatedStart(at: PosInt3D(x: anchorX, y: y, z: anchorZ))
 
         case "minecraft:end_city":
+            let anchorX = startX &+ 7
+            let anchorZ = startZ &+ 7
             if !context.prefersHeightBeforeBiomeValidation {
-                guard try biomeColumnCanMatch(x: centerX, z: centerZ) else { return nil }
+                guard try biomeColumnCanMatch(x: anchorX, z: anchorZ) else { return nil }
             }
             var random = checkedRandomForChunkGeneration(
                 worldSeed: worldSeed,
@@ -269,8 +271,6 @@ extension Structure {
                 chunkZ: startChunk.z
             )
             let offsets = Self.endCityCornerOffsets(forQuarterTurns: Int(random.next(bound: 4)))
-            let anchorX = startX &+ 7
-            let anchorZ = startZ &+ 7
             let y = try min(
                 context.height(.oceanFloorWG, x: anchorX, z: anchorZ),
                 context.height(.oceanFloorWG, x: anchorX &+ offsets.x, z: anchorZ),
@@ -278,7 +278,10 @@ extension Structure {
                 context.height(.oceanFloorWG, x: anchorX &+ offsets.x, z: anchorZ &+ offsets.z)
             )
             guard y >= 60 else { return nil }
-            return try makeValidatedStart(at: PosInt3D(x: centerX, y: y, z: centerZ))
+            // End cities use the same chunk-origin + 7 anchor for their biome
+            // check, terrain validation, and first template. Sampling the chunk
+            // centre (+8) can cross a quart biome boundary in the End.
+            return try makeValidatedStart(at: PosInt3D(x: anchorX, y: y, z: anchorZ))
 
         case "minecraft:ocean_monument":
             guard let surroundingBiomeNames = monumentSurroundingBiomeNames else { return nil }

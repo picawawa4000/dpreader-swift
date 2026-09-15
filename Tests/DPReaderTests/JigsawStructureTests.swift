@@ -293,6 +293,154 @@ struct JigsawStructureTests {
         }
     }
 
+    @Test func abandonedCampSecondReferenceDiagnostic() throws {
+        let targetWorldSeed: WorldSeed = 123458
+        let pack = try DataPack(fromRootPath: URL(filePath: "vanilla/26.3-pre-1"))
+        let terrainGenerator = try WorldGenerator(
+            withWorldSeed: targetWorldSeed,
+            usingDataPacks: [pack],
+            usingSettings: RegistryKey(referencing: "minecraft:overworld")
+        )
+        var terrainChunks: [TerrainChunkKey: ProtoChunk] = [:]
+        for x in 14...18 { for z in 46...50 {
+            let chunk = ProtoChunk()
+            try terrainGenerator.generateInto(chunk, at: PosInt2D(x: Int32(x), z: Int32(z)))
+            terrainChunks[TerrainChunkKey(x: Int32(x), z: Int32(z))] = chunk
+        }}
+        let context = StructureGenerationContext(
+            seaLevel: 63,
+            minimumWorldY: -64,
+            maximumWorldY: 319,
+            usingDataPacks: [pack]
+        ) { position in
+            let cp = PosInt2D(x: floorDiv(position.x, by: 16), z: floorDiv(position.z, by: 16))
+            guard let chunk = terrainChunks[TerrainChunkKey(x: cp.x, z: cp.z)] else { return Blocks.airState }
+            return chunk.block(atLocal: PosInt3D(x: position.x - cp.x * 16, y: position.y - chunk.minY, z: position.z - cp.z * 16))
+        }
+        func decode(_ identifier: String) throws -> LootTable {
+            let parts = identifier.split(separator: ":", maxSplits: 1).map(String.init)
+            let namespace = parts.count == 2 ? parts[0] : "minecraft"
+            let path = parts.count == 2 ? parts[1] : parts[0]
+            return try makeTestingJSONDecoder(.latestSupported).decode(
+                LootTable.self,
+                from: Data(contentsOf: URL(filePath: "vanilla/26.3-pre-1/data/\(namespace)/loot_table/\(path).json"))
+            )
+        }
+        let names = pack.structureRegistry.entries().map(\.key.name)
+            .filter { $0.hasPrefix("minecraft:abandoned_camp_") }.sorted()
+        let flatContext = StructureGenerationContext(seaLevel: 63, minimumWorldY: -64, maximumWorldY: 319, usingDataPacks: [pack]) { position in
+            position.y <= 62 ? BlockState(id: "minecraft:stone") : Blocks.airState
+        }
+        for name in names { if let structure = pack.structureRegistry.get(RegistryKey(referencing: name)) {
+            for sx in 14...18 { for sz in 46...50 {
+                if let result = try structure.generate(worldSeed: targetWorldSeed, startChunk: PosInt2D(x: Int32(sx), z: Int32(sz)), context: flatContext),
+                   case .jigsaw(let generated) = result,
+                   generated.lootContainers.contains(where: { ($0.pos.x == 252 && $0.pos.z == 765) || ($0.pos.x == 253 && $0.pos.z == 764) }) {
+                    print("FOUND START", name, sx, sz, generated.lootContainers)
+                }
+            }}
+        }}
+        for name in names {
+            guard let structure = pack.structureRegistry.get(RegistryKey(referencing: name)),
+                  let result = try structure.generate(
+                    worldSeed: targetWorldSeed,
+                    startChunk: PosInt2D(x: 16, z: 48), context: context
+                  ),
+                  case .jigsaw(let generated) = result,
+                  let container = generated.lootContainers.first(where: { $0.block == "minecraft:barrel" })
+            else { continue }
+            let items = try decode(container.lootTable).generateLoot(withContext: LootContext(
+                    random: CheckedRandom(seed: UInt64(bitPattern: container.lootSeed)),
+                originBiome: name.replacingOccurrences(of: "minecraft:abandoned_camp_", with: "minecraft:")
+            ), resolvingTables: decode)
+            print("second abandoned-camp loot", name, generated.lootContainers.map { "\($0.block) \($0.pos) \($0.lootSeed)" }, items)
+        }
+        let generator = try WorldGenerator(
+            withWorldSeed: targetWorldSeed,
+            usingDataPacks: [pack],
+            usingSettings: RegistryKey(referencing: "minecraft:overworld")
+        )
+        let placement = StructurePlacementSampler(withWorldSeed: targetWorldSeed, usingDataPacks: [pack])
+        print("placement", try placement.sampleStructureSet(inRegion: PosInt2D(x: 0, z: 1), for: RegistryKey(referencing: "minecraft:abandoned_camp")) as Any)
+        var rr = CheckedRandom(seed: targetWorldSeed)
+        print("random seed sequence", rr.nextLong(), rr.nextLong(), rr.next(bound: 4), rr.next(bound: 10))
+        var cr = checkedRandomForChunkGeneration(worldSeed: targetWorldSeed, chunkX: 16, chunkZ: 48)
+        print("chunk random sequence", cr.next(bound: 4), cr.next(bound: 10))
+        print("camp biome", try generator.sampleBlockBiome(at: PosInt3D(x: 256, y: 62, z: 768), in: RegistryKey(referencing: "minecraft:overworld"))?.name as Any)
+        for x in 250...262 { print("surface", x, (50...100).reversed().first { context.blockSampler(PosInt3D(x: Int32(x), y: Int32($0), z: 765)).id != "minecraft:air" } as Any) }
+        let terrainChunk = ProtoChunk()
+        try generator.generateInto(terrainChunk, at: PosInt2D(x: 16, z: 48))
+        print("terrain columns", (0..<4).map { x in (0..<4).map { z in (x, z, terrainChunk.block(atLocal: PosInt3D(x: Int32(x), y: 127, z: Int32(z))).id) } })
+        if let swamp = names.first(where: { $0.hasSuffix("_bamboo_jungle") }),
+           let structure = pack.structureRegistry.get(RegistryKey(referencing: swamp)),
+           let result = try structure.generate(worldSeed: targetWorldSeed, startChunk: PosInt2D(x: 16, z: 48), context: context),
+           case .jigsaw(let generated) = result,
+           let barrel = generated.lootContainers.first(where: { $0.block == "minecraft:barrel" }) {
+            if let t = pack.structureTemplateRegistry.get(RegistryKey(referencing: "minecraft:abandoned_camp/tent/bamboo_jungle/tent_bamboo_jungle_8")) {
+                print("template8", t.size, t.blocks.filter { $0.nbt != nil }.map { ($0.pos, t.palette[$0.state].id, $0.nbt as Any) })
+            }
+            for i in 1...10 {
+                if let t = pack.structureTemplateRegistry.get(RegistryKey(referencing: "minecraft:abandoned_camp/tent/bamboo_jungle/tent_bamboo_jungle_\(i)")) {
+                    print("template", i, t.size, t.blocks.filter { t.palette[$0.state].id.contains("chest") || t.palette[$0.state].id == "minecraft:barrel" }.map { ($0.pos, t.palette[$0.state].id) })
+                }
+            }
+            print("target containers", generated.lootContainers)
+            print("target pieces", generated.graph.pieces.compactMap { ($0 as? JigsawStructurePiece).map { ( $0.templateNames, $0.placementOrigin, $0.rotationQuarterTurns ) } })
+            let table = try decode(barrel.lootTable)
+            let checked = try table.generateLoot(withContext: LootContext(random: CheckedRandom(seed: UInt64(bitPattern: barrel.lootSeed))), resolvingTables: decode)
+            let xor = try table.generateLoot(withContext: LootContext(random: XoroshiroRandom(seed: UInt64(bitPattern: barrel.lootSeed))), resolvingTables: decode)
+            print("target swamp barrel", barrel.pos, barrel.lootSeed, checked, xor)
+            let secret = try decode("minecraft:chests/abandoned_camp_secret_chest")
+            let randomID = "minecraft:chests/abandoned_camp_secret_chest"
+            let hash = md5Bytes(of: randomID)
+            let lo = hash[0..<8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let hi = hash[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            for (label, source) in [("xorLo", XoroshiroRandom(seedLo: lo ^ targetWorldSeed, seedHi: hi ^ targetWorldSeed)), ("xorHi", XoroshiroRandom(seedLo: lo ^ targetWorldSeed, seedHi: hi))] {
+                let items = try secret.generateLoot(withContext: LootContext(random: source), resolvingTables: decode)
+                print("secret", label, items)
+            }
+            let reversedLo = hash[0..<8].reversed().reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let reversedHi = hash[8..<16].reversed().reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let world = targetWorldSeed
+            let hashes = [("be", lo, hi), ("le", reversedLo, reversedHi), ("swap", hi, lo), ("swaple", reversedHi, reversedLo)]
+            for (name, hashLo, hashHi) in hashes {
+                for (worldLo, worldHi) in [(world, world), (world, 0), (0, world), (0, 0)] {
+                    let items = try secret.generateLoot(withContext: LootContext(random: XoroshiroRandom(seedLo: hashLo ^ worldLo, seedHi: hashHi ^ worldHi)), resolvingTables: decode)
+                    print("candidate secret", name, worldLo == 0 ? (worldHi == 0 ? "none" : "hi") : (worldHi == 0 ? "lo" : "both"), items.map { "\($0.itemName):\($0.count)" })
+                }
+            }
+            func targetSecret(_ items: [ItemStack]) -> Bool {
+                var counts: [String: Int] = [:]
+                var potions: [String] = []
+                for item in items {
+                    counts[item.itemName, default: 0] += item.count
+                    if item.itemName == "minecraft:potion", case .object(let object)? = item.components["minecraft:potion_contents"], case .string(let potion)? = object["potion"] { potions.append(potion) }
+                }
+                return counts["minecraft:copper_ingot"] == 4 && counts["minecraft:iron_ingot"] == 1 && counts["minecraft:map"] == 1 && counts["minecraft:buried_ancient_city_map"] == 1 && potions.sorted() == ["minecraft:night_vision", "minecraft:swiftness"]
+            }
+            for salt in 0..<0 {
+                let s = UInt64(bitPattern: Int64(salt))
+                let variants = [("xorlo", (lo ^ world) &+ s, hi), ("xorhi", (lo ^ world) &+ s, hi ^ s), ("addlo", (lo &+ world) &+ s, hi), ("bothadd", (lo &+ world) &+ s, hi &+ world &+ s)]
+                for (label, seedLo, seedHi) in variants {
+                    let items = try secret.generateLoot(withContext: LootContext(random: XoroshiroRandom(seedLo: seedLo, seedHi: seedHi)), resolvingTables: decode)
+                    if targetSecret(items) { print("FOUND secret seed", label, salt, seedLo, seedHi, items) }
+                }
+            }
+            func mix(_ seed: UInt64) -> UInt64 {
+                var value = (seed ^ (seed >> 30)) &* UInt64(bitPattern: Int64(-4658895280553007687))
+                value = (value ^ (value >> 27)) &* UInt64(bitPattern: Int64(-7723592293110705685))
+                return value ^ (value >> 31)
+            }
+            let golden = UInt64(7640891576956012809)
+            let silver = UInt64(bitPattern: Int64(-7046029254386353131))
+            let upgradedLo = world ^ golden
+            let upgradedHi = upgradedLo &+ silver
+            var sequence = XoroshiroRandom(seedLo: mix(upgradedLo ^ lo), seedHi: mix(upgradedHi ^ hi))
+            print("exact sequence first", sequence.nextLong())
+            print("exact sequence source", try secret.generateLoot(withContext: LootContext(random: sequence), resolvingTables: decode))
+        }
+    }
+
     @Test func plainsVillageMatchesReferencePiecesAndLootUsingGeneratedTerrain() throws {
         let generated = try Self.fixture.generate("minecraft:village_plains", startChunk: PosInt2D(x: -292, z: -84))
         let names = generated.graph.pieces

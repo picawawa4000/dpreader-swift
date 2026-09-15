@@ -5059,20 +5059,25 @@ private func enchantabilityForWorldgenItem(_ itemName: String) -> Int {
         "minecraft:iron_axe",
         "minecraft:iron_hoe",
         "minecraft:iron_shovel",
-        "minecraft:iron_sword":
+        "minecraft:iron_sword",
+        "minecraft:iron_spear":
         return 14
     case "minecraft:golden_pickaxe",
         "minecraft:golden_axe",
         "minecraft:golden_hoe",
         "minecraft:golden_shovel",
-        "minecraft:golden_sword":
+        "minecraft:golden_sword",
+        "minecraft:golden_spear":
         return 22
     case "minecraft:diamond_pickaxe",
         "minecraft:diamond_axe",
         "minecraft:diamond_hoe",
         "minecraft:diamond_shovel",
-        "minecraft:diamond_sword":
+        "minecraft:diamond_sword",
+        "minecraft:diamond_spear":
         return 10
+    case "minecraft:wooden_spear", "minecraft:netherite_spear":
+        return 15
     default:
         return 1
     }
