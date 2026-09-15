@@ -95,7 +95,7 @@ public enum EndCity {
         let anchorX = startChunk.x &* 16 &+ 7
         let anchorZ = startChunk.z &* 16 &+ 7
         let y = terrainY(anchorX: anchorX, anchorZ: anchorZ, rotation: rotation, context: context)
-        guard y >= 60 else { return nil }
+        guard y > 60 else { return nil }
         // EndCityStructure anchors its first template at the terrain-validation
         // corner (chunk origin + 7), rather than the chunk centre used by most starts.
         let origin = PosInt3D(x: anchorX, y: y, z: anchorZ)

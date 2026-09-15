@@ -277,7 +277,7 @@ extension Structure {
                 context.height(.oceanFloorWG, x: anchorX, z: anchorZ &+ offsets.z),
                 context.height(.oceanFloorWG, x: anchorX &+ offsets.x, z: anchorZ &+ offsets.z)
             )
-            guard y >= 60 else { return nil }
+            guard y > 60 else { return nil }
             // End cities use the same chunk-origin + 7 anchor for their biome
             // check, terrain validation, and first template. Sampling the chunk
             // centre (+8) can cross a quart biome boundary in the End.
