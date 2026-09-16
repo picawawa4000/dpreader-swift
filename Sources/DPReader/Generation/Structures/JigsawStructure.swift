@@ -80,9 +80,6 @@ public final class JigsawStructurePiece: StructurePiece {
             }
             for processedBlock in processed {
                 let block = processedBlock.block
-                guard processedBlock.lootTable != nil || block.nbt?.compoundString("LootTable") != nil else {
-                    continue
-                }
                 var state = processedBlock.state
                 let processorLootTable = processedBlock.lootTable
                 let processorLootSeed = processedBlock.lootSeed
@@ -245,13 +242,19 @@ public final class JigsawStructurePiece: StructurePiece {
         var chunks: Set<JigsawLootChunk> = []
         for entry in self.element.singleEntries {
             guard let template = self.context.structureTemplate(named: entry.location) else { continue }
-            let palette = template.palette(at: self.placementOrigin)
             let processors: [StructureProcessor]
             if case .registry(let name)? = entry.processors {
                 processors = self.context.structureProcessorList(named: name)?.processors ?? []
             } else {
                 processors = []
             }
+            // Most jigsaw pieces cannot create a container at all. Avoid palette selection,
+            // processor execution and terrain probing for those pieces; processor rules are
+            // only relevant here when they can actually add a loot table.
+            guard template.blocks.contains(where: { $0.nbt?.compoundString("LootTable") != nil })
+                    || processors.contains(where: { $0.canAttachLoot })
+            else { continue }
+            let palette = template.palette(at: self.placementOrigin)
             var processed = template.blocks.compactMap { block -> JigsawProcessedBlock? in
                 guard block.state >= 0, block.state < palette.count else { return nil }
                 return JigsawProcessedBlock(block: block, state: palette[block.state])
@@ -268,6 +271,9 @@ public final class JigsawStructurePiece: StructurePiece {
             }
             for processedBlock in processed {
                 let block = processedBlock.block
+                guard processedBlock.lootTable != nil || block.nbt?.compoundString("LootTable") != nil else {
+                    continue
+                }
                 var state = processedBlock.state
                 let pos = self.rotation.transformed(block.pos).adding(self.placementOrigin)
 
@@ -407,6 +413,8 @@ private struct JigsawAssembler {
     var pieces: [JigsawStructurePiece] = []
     var queue: [QueuedPiece] = []
     var queueSequence = 0
+    var orderedTemplateBlocks: [String: [StructureTemplateBlock]] = [:]
+    var highestPoolElementHeights: [String: Int32] = [:]
 
     init(settings: JigsawStructureSettings, worldSeed: WorldSeed, startChunk: PosInt2D, context: StructureGenerationContext) {
         self.settings = settings
@@ -589,24 +597,29 @@ private struct JigsawAssembler {
         }
     }
 
-    private func expansionHeight(bounds: BoundingBox, jigsaws: [JigsawInfo]) -> Int32 {
+    private mutating func expansionHeight(bounds: BoundingBox, jigsaws: [JigsawInfo]) -> Int32 {
         guard self.settings.useExpansionHack, bounds.maxY &- bounds.minY &+ 1 <= 16 else { return 0 }
         var maximum: Int32 = 0
         for info in jigsaws {
+            let poolName = self.resolveAlias(info.pool)
             guard bounds.contains(info.pos.offset(info.facing)),
-                  let pool = self.context.structureTemplatePool(named: self.resolveAlias(info.pool))
+                  let pool = self.context.structureTemplatePool(named: poolName)
             else { continue }
-            maximum = max(maximum, self.highestElementHeight(in: pool))
-            if let fallback = self.context.structureTemplatePool(named: self.resolveAlias(pool.fallback)) {
-                maximum = max(maximum, self.highestElementHeight(in: fallback))
+            maximum = max(maximum, self.highestElementHeight(in: pool, named: poolName))
+            let fallbackName = self.resolveAlias(pool.fallback)
+            if let fallback = self.context.structureTemplatePool(named: fallbackName) {
+                maximum = max(maximum, self.highestElementHeight(in: fallback, named: fallbackName))
             }
         }
         return maximum
     }
 
-    private func highestElementHeight(in pool: StructureTemplatePool) -> Int32 {
-        pool.elements.compactMap { self.bounds(of: $0.element, origin: .zero, rotation: .none) }
+    private mutating func highestElementHeight(in pool: StructureTemplatePool, named name: String) -> Int32 {
+        if let cached = self.highestPoolElementHeights[name] { return cached }
+        let height = pool.elements.compactMap { self.bounds(of: $0.element, origin: .zero, rotation: .none) }
             .map { $0.maxY &- $0.minY &+ 1 }.max() ?? 0
+        self.highestPoolElementHeights[name] = height
+        return height
     }
 
     private mutating func randomElement(from pool: StructureTemplatePool) -> StructurePoolElement? {
@@ -650,7 +663,7 @@ private struct JigsawAssembler {
         }.map(\.element)
     }
 
-    private func jigsawsUnshuffled(in element: StructurePoolElement, origin: PosInt3D, rotation: JigsawRotation) -> [JigsawInfo] {
+    private mutating func jigsawsUnshuffled(in element: StructurePoolElement, origin: PosInt3D, rotation: JigsawRotation) -> [JigsawInfo] {
         switch element {
         case .single(let location, _, _, _, _):
             guard let template = self.context.structureTemplate(named: location) else { return [] }
@@ -658,10 +671,17 @@ private struct JigsawAssembler {
             // Vanilla's palette categorization sorts the template-local NBT block list before
             // rotation. Rotation transforms coordinates but does not re-sort that list; preserving
             // the local order is significant because the subsequent shuffle consumes it directly.
-            let locallyOrderedBlocks = template.blocks.sorted {
-                if $0.pos.y != $1.pos.y { return $0.pos.y < $1.pos.y }
-                if $0.pos.x != $1.pos.x { return $0.pos.x < $1.pos.x }
-                return $0.pos.z < $1.pos.z
+            let locallyOrderedBlocks: [StructureTemplateBlock]
+            if let cached = self.orderedTemplateBlocks[location] {
+                locallyOrderedBlocks = cached
+            } else {
+                let ordered = template.blocks.sorted {
+                    if $0.pos.y != $1.pos.y { return $0.pos.y < $1.pos.y }
+                    if $0.pos.x != $1.pos.x { return $0.pos.x < $1.pos.x }
+                    return $0.pos.z < $1.pos.z
+                }
+                self.orderedTemplateBlocks[location] = ordered
+                locallyOrderedBlocks = ordered
             }
             return locallyOrderedBlocks.compactMap { block in
                 guard block.state >= 0, block.state < palette.count else { return nil }
@@ -718,14 +738,35 @@ private struct JigsawAssembler {
     private mutating func enqueue(_ piece: JigsawStructurePiece, shape: JigsawShape, depth: Int, priority: Int) {
         self.queue.append(QueuedPiece(piece: piece, shape: shape, depth: depth, priority: priority, sequence: self.queueSequence))
         self.queueSequence += 1
+        var index = self.queue.count - 1
+        while index > 0 {
+            let parent = (index - 1) >> 1
+            guard Self.precedes(self.queue[index], self.queue[parent]) else { break }
+            self.queue.swapAt(index, parent)
+            index = parent
+        }
     }
 
     private mutating func dequeue() -> QueuedPiece? {
-        guard let index = self.queue.indices.max(by: {
-            if self.queue[$0].priority != self.queue[$1].priority { return self.queue[$0].priority < self.queue[$1].priority }
-            return self.queue[$0].sequence > self.queue[$1].sequence
-        }) else { return nil }
-        return self.queue.remove(at: index)
+        guard !self.queue.isEmpty else { return nil }
+        if self.queue.count == 1 { return self.queue.removeLast() }
+        let next = self.queue[0]
+        self.queue[0] = self.queue.removeLast()
+        var index = 0
+        while true {
+            let left = index * 2 + 1
+            guard left < self.queue.count else { break }
+            let right = left + 1
+            let child = right < self.queue.count && Self.precedes(self.queue[right], self.queue[left]) ? right : left
+            guard Self.precedes(self.queue[child], self.queue[index]) else { break }
+            self.queue.swapAt(index, child)
+            index = child
+        }
+        return next
+    }
+
+    private static func precedes(_ lhs: QueuedPiece, _ rhs: QueuedPiece) -> Bool {
+        lhs.priority != rhs.priority ? lhs.priority > rhs.priority : lhs.sequence < rhs.sequence
     }
 
     private static func makeAliases(_ bindings: [StructurePoolAlias], worldSeed: WorldSeed, pos: PosInt3D) -> [String: String] {
@@ -752,6 +793,20 @@ private final class JigsawShape {
         self.boundary.contains(PosInt3D(x: box.minX, y: box.minY, z: box.minZ))
             && self.boundary.contains(PosInt3D(x: box.maxX, y: box.maxY, z: box.maxZ))
             && !self.occupied.contains(where: { $0.intersects(box) })
+    }
+}
+
+private extension StructureProcessor {
+    /// Whether applying this processor can attach a loot table to a block.
+    var canAttachLoot: Bool {
+        switch self {
+        case .rule(let rules):
+            return rules.contains { $0.lootTable != nil }
+        case .capped(_, let delegate):
+            return delegate.value.canAttachLoot
+        case .blockRot, .protectedBlocks:
+            return false
+        }
     }
 }
 
