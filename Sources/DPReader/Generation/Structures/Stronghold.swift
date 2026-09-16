@@ -157,13 +157,15 @@ public enum Stronghold {
         decoratorIndex: Int32,
         decoratorStep: Int32
     ) -> [StructureLootContainer] {
-        let layout = self.generateLayout(
+        // Use the graph as the authoritative layout for both the chest footprint
+        // and the pieces processed in those chunks. Loot-only generation never
+        // visits a chunk whose graph contains no possible chest.
+        let graph = self.generatePieceGraph(
             worldSeed: worldSeed,
             startChunk: startChunk,
-            seaLevel: context.seaLevel,
-            minimumWorldY: context.minimumWorldY
+            context: context
         )
-        let strongholdPieces = layout.pieces.compactMap { $0 as? StrongholdPiece }
+        let strongholdPieces = graph.pieces.compactMap { $0 as? StrongholdPiece }
         var targetChunkSet: Set<StrongholdLootChunk> = []
         for piece in strongholdPieces {
             for pos in piece.potentialLootContainerPositions {
@@ -196,7 +198,7 @@ public enum Stronghold {
                 minimumWorldY: context.minimumWorldY,
                 volume: volume
             )
-            for piece in layout.pieces where piece.boundingBox.intersects(chunkBox) {
+            for piece in graph.pieces where piece.boundingBox.intersects(chunkBox) {
                 piece.write(in: world, chunkBox: chunkBox, random: &random)
             }
         }

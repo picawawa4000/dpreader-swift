@@ -7,6 +7,16 @@ public struct JigsawStructureGenerationResult {
     public let lootContainers: [StructureLootContainer]
 }
 
+/// A chunk which must be processed to reproduce jigsaw loot and its decorator RNG.
+private struct JigsawLootChunk: Hashable, Comparable {
+    let x: Int32
+    let z: Int32
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.x == rhs.x ? lhs.z < rhs.z : lhs.x < rhs.x
+    }
+}
+
 /// One selected pool element in a generated jigsaw graph.
 public final class JigsawStructurePiece: StructurePiece {
     public let templateNames: [String]
@@ -70,6 +80,9 @@ public final class JigsawStructurePiece: StructurePiece {
             }
             for processedBlock in processed {
                 let block = processedBlock.block
+                guard processedBlock.lootTable != nil || block.nbt?.compoundString("LootTable") != nil else {
+                    continue
+                }
                 var state = processedBlock.state
                 let processorLootTable = processedBlock.lootTable
                 let processorLootSeed = processedBlock.lootSeed
@@ -224,6 +237,66 @@ public final class JigsawStructurePiece: StructurePiece {
         return result
     }
 
+    /// Finds chunks in which this piece can create a loot container. Processors are
+    /// included because rule processors can attach loot tables to otherwise ordinary
+    /// template blocks. All processor randomness is positional, so this discovery
+    /// pass does not consume the chunk decoration RNG.
+    fileprivate func lootChunks() -> Set<JigsawLootChunk> {
+        var chunks: Set<JigsawLootChunk> = []
+        for entry in self.element.singleEntries {
+            guard let template = self.context.structureTemplate(named: entry.location) else { continue }
+            let palette = template.palette(at: self.placementOrigin)
+            let processors: [StructureProcessor]
+            if case .registry(let name)? = entry.processors {
+                processors = self.context.structureProcessorList(named: name)?.processors ?? []
+            } else {
+                processors = []
+            }
+            var processed = template.blocks.compactMap { block -> JigsawProcessedBlock? in
+                guard block.state >= 0, block.state < palette.count else { return nil }
+                return JigsawProcessedBlock(block: block, state: palette[block.state])
+            }
+            for processor in processors {
+                Self.apply(
+                    processor: processor,
+                    to: &processed,
+                    placementOrigin: self.placementOrigin,
+                    rotation: self.rotation,
+                    worldSeed: self.worldSeed,
+                    context: self.context
+                )
+            }
+            for processedBlock in processed {
+                let block = processedBlock.block
+                var state = processedBlock.state
+                let pos = self.rotation.transformed(block.pos).adding(self.placementOrigin)
+
+                if state.id == "minecraft:structure_block" { continue }
+                if state.id == "minecraft:jigsaw" {
+                    guard let finalState = block.nbt?.compoundString("final_state"),
+                          let replacement = Self.parseBlockState(finalState),
+                          replacement.id != "minecraft:structure_void"
+                    else { continue }
+                    state = self.rotation.transformed(replacement)
+                } else if !entry.legacy && state.isAir {
+                    continue
+                } else {
+                    state = self.rotation.transformed(state)
+                }
+
+                let finalPos: PosInt3D
+                if self.element.projection == .terrainMatching,
+                   let surface = surfaceY(atX: pos.x, z: pos.z, context: self.context) {
+                    finalPos = PosInt3D(x: pos.x, y: surface &- 1 &+ block.pos.y, z: pos.z)
+                } else {
+                    finalPos = pos
+                }
+                chunks.insert(JigsawLootChunk(x: finalPos.x >> 4, z: finalPos.z >> 4))
+            }
+        }
+        return chunks
+    }
+
     private static func parseBlockState(_ value: String) -> BlockState? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -285,6 +358,42 @@ enum JigsawStructure {
         }
         let loot = graph.pieces.compactMap { $0 as? JigsawStructurePiece }.flatMap(\.generatedLootContainers)
         return JigsawStructureGenerationResult(graph: graph, blocks: volume, lootContainers: loot)
+    }
+
+    /// Generates only chunks and pieces which can contribute a loot container.
+    /// A jigsaw template's only shared chunk-decoration RNG use is assigning a
+    /// seed to a lootable inventory. Therefore, in each selected chunk we retain
+    /// every piece that can create loot there, in graph order, and omit all others.
+    static func generateLoot(
+        settings: JigsawStructureSettings,
+        worldSeed: WorldSeed,
+        startChunk: PosInt2D,
+        context: StructureGenerationContext
+    ) -> [StructureLootContainer]? {
+        guard let graph = self.generatePieceGraph(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context) else {
+            return nil
+        }
+        let pieces = graph.pieces.compactMap { $0 as? JigsawStructurePiece }
+        let chunksByPiece = pieces.map { ($0, $0.lootChunks()) }
+        let chunks = Set(chunksByPiece.flatMap { $0.1 }).sorted()
+        let decoration = context.jigsawDecorationParameters(startPool: settings.startPool) ?? StructureDecorationParameters(step: 0, index: 0)
+
+        for chunk in chunks {
+            let chunkBox = BoundingBox(
+                minX: chunk.x &* 16, minY: context.minimumWorldY, minZ: chunk.z &* 16,
+                maxX: chunk.x &* 16 &+ 15, maxY: context.maximumWorldY, maxZ: chunk.z &* 16 &+ 15
+            )
+            let volume = StructureBlockVolume(bounds: chunkBox, fallbackSampler: context.blockSampler)
+            let world = StructureWorldView(seaLevel: context.seaLevel, minimumWorldY: context.minimumWorldY, volume: volume)
+            var random = getStructureGenerationRandom(
+                worldSeed: worldSeed, chunkX: chunk.x, chunkZ: chunk.z,
+                decoratorIndex: decoration.index, decoratorStep: decoration.step
+            )
+            for (piece, pieceChunks) in chunksByPiece where pieceChunks.contains(chunk) {
+                piece.write(in: world, chunkBox: chunkBox, random: &random)
+            }
+        }
+        return pieces.flatMap(\.generatedLootContainers)
     }
 }
 

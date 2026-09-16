@@ -316,7 +316,7 @@ public final class Structure: Codable {
             )
         case "minecraft:jigsaw":
             guard case .jigsaw(let settings) = self.settings else { return nil }
-            return JigsawStructure.generate(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)?.lootContainers
+            return JigsawStructure.generateLoot(settings: settings, worldSeed: worldSeed, startChunk: startChunk, context: context)
         case "minecraft:mineshaft":
             guard case .mineshaft(let settings) = self.settings else { return nil }
             return Mineshaft.generateLoot(
