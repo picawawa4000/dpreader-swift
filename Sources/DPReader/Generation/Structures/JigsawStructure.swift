@@ -572,7 +572,7 @@ private struct JigsawAssembler {
                             collisionBounds.maxY = max(collisionBounds.maxY, collisionBounds.minY &+ expandedHeight)
                         }
                         guard targetShape.canFit(collisionBounds) else { continue }
-                        targetShape.occupied.append(collisionBounds)
+                        targetShape.add(collisionBounds)
 
                         let child = JigsawStructurePiece(
                             element: candidate,
@@ -782,18 +782,48 @@ private struct JigsawAssembler {
 
 private final class JigsawShape {
     let boundary: BoundingBox
-    var occupied: [BoundingBox]
+    private var occupied: [BoundingBox]
+    private var occupiedByChunk: [JigsawShapeChunk: [Int]] = [:]
 
     init(boundary: BoundingBox, occupied: [BoundingBox]) {
         self.boundary = boundary
-        self.occupied = occupied
+        self.occupied = []
+        for box in occupied { self.add(box) }
+    }
+
+    func add(_ box: BoundingBox) {
+        let index = self.occupied.count
+        self.occupied.append(box)
+        for z in floorDiv(box.minZ, by: 16)...floorDiv(box.maxZ, by: 16) {
+            for x in floorDiv(box.minX, by: 16)...floorDiv(box.maxX, by: 16) {
+                self.occupiedByChunk[JigsawShapeChunk(x: x, z: z), default: []].append(index)
+            }
+        }
     }
 
     func canFit(_ box: BoundingBox) -> Bool {
-        self.boundary.contains(PosInt3D(x: box.minX, y: box.minY, z: box.minZ))
-            && self.boundary.contains(PosInt3D(x: box.maxX, y: box.maxY, z: box.maxZ))
-            && !self.occupied.contains(where: { $0.intersects(box) })
+        guard self.boundary.contains(PosInt3D(x: box.minX, y: box.minY, z: box.minZ)),
+              self.boundary.contains(PosInt3D(x: box.maxX, y: box.maxY, z: box.maxZ))
+        else { return false }
+
+        // Collision is strictly local in the horizontal plane. Indexing occupied boxes by
+        // chunk avoids a full scan of a large village or chamber for every candidate.
+        var checked: Set<Int> = []
+        for z in floorDiv(box.minZ, by: 16)...floorDiv(box.maxZ, by: 16) {
+            for x in floorDiv(box.minX, by: 16)...floorDiv(box.maxX, by: 16) {
+                for index in self.occupiedByChunk[JigsawShapeChunk(x: x, z: z), default: []]
+                where checked.insert(index).inserted {
+                    if self.occupied[index].intersects(box) { return false }
+                }
+            }
+        }
+        return true
     }
+}
+
+private struct JigsawShapeChunk: Hashable {
+    let x: Int32
+    let z: Int32
 }
 
 private extension StructureProcessor {
