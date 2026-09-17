@@ -29,6 +29,7 @@ public final class JigsawStructurePiece: StructurePiece {
     fileprivate let worldSeed: WorldSeed
     private var rotation: JigsawRotation { JigsawRotation(rawValue: self.rotationQuarterTurns)! }
     private(set) var generatedLootContainers: [StructureLootContainer] = []
+    private var cachedLootCandidates: [JigsawLootCandidate]?
     override var cachesGeneratedContents: Bool { false }
 
     fileprivate init(
@@ -234,12 +235,12 @@ public final class JigsawStructurePiece: StructurePiece {
         return result
     }
 
-    /// Finds chunks in which this piece can create a loot container. Processors are
-    /// included because rule processors can attach loot tables to otherwise ordinary
-    /// template blocks. All processor randomness is positional, so this discovery
-    /// pass does not consume the chunk decoration RNG.
-    fileprivate func lootChunks() -> Set<JigsawLootChunk> {
-        var chunks: Set<JigsawLootChunk> = []
+    /// Resolves the only blocks which can affect loot. Processors are included because
+    /// rule processors can attach loot tables to ordinary template blocks. The result is
+    /// cached because chunk discovery and the actual loot pass need the same information.
+    private func lootCandidates() -> [JigsawLootCandidate] {
+        if let cachedLootCandidates { return cachedLootCandidates }
+        var candidates: [JigsawLootCandidate] = []
         for entry in self.element.singleEntries {
             guard let template = self.context.structureTemplate(named: entry.location) else { continue }
             let processors: [StructureProcessor]
@@ -248,14 +249,20 @@ public final class JigsawStructurePiece: StructurePiece {
             } else {
                 processors = []
             }
-            // Most jigsaw pieces cannot create a container at all. Avoid palette selection,
-            // processor execution and terrain probing for those pieces; processor rules are
-            // only relevant here when they can actually add a loot table.
-            guard template.blocks.contains(where: { $0.nbt?.compoundString("LootTable") != nil })
-                    || processors.contains(where: { $0.canAttachLoot })
-            else { continue }
+            let hasTemplateLoot = template.blocks.contains { $0.nbt?.compoundString("LootTable") != nil }
+            let hasProcessorLoot = processors.contains { $0.canAttachLoot }
+            guard hasTemplateLoot || hasProcessorLoot else { continue }
             let palette = template.palette(at: self.placementOrigin)
-            var processed = template.blocks.compactMap { block -> JigsawProcessedBlock? in
+            // A capped processor chooses from every template block, and a loot-bearing rule
+            // can affect every block. Otherwise only the template's existing loot blocks can
+            // affect the result, so do not construct or process the rest of the template.
+            let sourceBlocks: [StructureTemplateBlock]
+            if hasProcessorLoot || processors.contains(where: { $0.requiresFullTemplateForLoot }) {
+                sourceBlocks = template.blocks
+            } else {
+                sourceBlocks = template.blocks.filter { $0.nbt?.compoundString("LootTable") != nil }
+            }
+            var processed = sourceBlocks.compactMap { block -> JigsawProcessedBlock? in
                 guard block.state >= 0, block.state < palette.count else { return nil }
                 return JigsawProcessedBlock(block: block, state: palette[block.state])
             }
@@ -297,10 +304,45 @@ public final class JigsawStructurePiece: StructurePiece {
                 } else {
                     finalPos = pos
                 }
-                chunks.insert(JigsawLootChunk(x: finalPos.x >> 4, z: finalPos.z >> 4))
+                candidates.append(JigsawLootCandidate(
+                    state: state,
+                    pos: finalPos,
+                    lootTable: processedBlock.lootTable ?? block.nbt!.compoundString("LootTable")!,
+                    processorLootSeed: processedBlock.lootSeed,
+                    templateLootSeed: block.nbt?.compoundInt64("LootTableSeed") ?? 0
+                ))
             }
         }
-        return chunks
+        self.cachedLootCandidates = candidates
+        return candidates
+    }
+
+    /// Finds chunks in which this piece can create a loot container. All processor
+    /// randomness used here is positional, so this discovery pass does not consume the
+    /// shared chunk decoration RNG.
+    fileprivate func lootChunks() -> Set<JigsawLootChunk> {
+        Set(self.lootCandidates().map { JigsawLootChunk(x: $0.pos.x >> 4, z: $0.pos.z >> 4) })
+    }
+
+    /// Reproduces just the shared decoration-RNG calls and container markers in a chunk.
+    /// Non-loot blocks cannot affect either, so writing them is unnecessary for loot lookup.
+    fileprivate func generateLoot<R: Random>(in chunkBox: BoundingBox, random: inout R) {
+        for candidate in self.lootCandidates() where chunkBox.contains(candidate.pos) {
+            let seed: Int64
+            if candidate.processorLootSeed != nil && !Self.isLootableInventory(candidate.state.id) {
+                seed = candidate.processorLootSeed ?? 0
+            } else if Self.isLootableInventory(candidate.state.id) {
+                seed = Int64(bitPattern: random.nextLong())
+            } else {
+                seed = candidate.templateLootSeed
+            }
+            self.generatedLootContainers.append(StructureLootContainer(
+                block: candidate.state.id,
+                pos: candidate.pos,
+                lootTable: candidate.lootTable,
+                lootSeed: seed
+            ))
+        }
     }
 
     private static func parseBlockState(_ value: String) -> BlockState? {
@@ -380,23 +422,26 @@ enum JigsawStructure {
             return nil
         }
         let pieces = graph.pieces.compactMap { $0 as? JigsawStructurePiece }
-        let chunksByPiece = pieces.map { ($0, $0.lootChunks()) }
-        let chunks = Set(chunksByPiece.flatMap { $0.1 }).sorted()
+        var piecesByChunk: [JigsawLootChunk: [JigsawStructurePiece]] = [:]
+        for piece in pieces {
+            for chunk in piece.lootChunks() {
+                // Pieces are appended in graph order, matching the full-generation pass.
+                piecesByChunk[chunk, default: []].append(piece)
+            }
+        }
         let decoration = context.jigsawDecorationParameters(startPool: settings.startPool) ?? StructureDecorationParameters(step: 0, index: 0)
 
-        for chunk in chunks {
+        for chunk in piecesByChunk.keys.sorted() {
             let chunkBox = BoundingBox(
                 minX: chunk.x &* 16, minY: context.minimumWorldY, minZ: chunk.z &* 16,
                 maxX: chunk.x &* 16 &+ 15, maxY: context.maximumWorldY, maxZ: chunk.z &* 16 &+ 15
             )
-            let volume = StructureBlockVolume(bounds: chunkBox, fallbackSampler: context.blockSampler)
-            let world = StructureWorldView(seaLevel: context.seaLevel, minimumWorldY: context.minimumWorldY, volume: volume)
             var random = getStructureGenerationRandom(
                 worldSeed: worldSeed, chunkX: chunk.x, chunkZ: chunk.z,
                 decoratorIndex: decoration.index, decoratorStep: decoration.step
             )
-            for (piece, pieceChunks) in chunksByPiece where pieceChunks.contains(chunk) {
-                piece.write(in: world, chunkBox: chunkBox, random: &random)
+            for piece in piecesByChunk[chunk]! {
+                piece.generateLoot(in: chunkBox, random: &random)
             }
         }
         return pieces.flatMap(\.generatedLootContainers)
@@ -838,6 +883,13 @@ private extension StructureProcessor {
             return false
         }
     }
+
+    /// Capped processors choose indices from the full template, so even a rule which
+    /// never adds loot can change whether an existing container remains present.
+    var requiresFullTemplateForLoot: Bool {
+        if case .capped = self { return true }
+        return false
+    }
 }
 
 private struct JigsawProcessedBlock: Equatable {
@@ -854,6 +906,14 @@ private struct JigsawProcessedBlock: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.state == rhs.state && lhs.lootTable == rhs.lootTable && lhs.lootSeed == rhs.lootSeed
     }
+}
+
+private struct JigsawLootCandidate {
+    let state: BlockState
+    let pos: PosInt3D
+    let lootTable: String
+    let processorLootSeed: Int64?
+    let templateLootSeed: Int64
 }
 
 private struct QueuedPiece {

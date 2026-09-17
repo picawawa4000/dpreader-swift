@@ -196,6 +196,29 @@ struct JigsawStructureTests {
         #expect(loot.contains { $0.itemName == "minecraft:trident" })
     }
 
+    @Test func trialChambersLootOnlyMatchesFullGeneration() throws {
+        let structure = try #require(Self.fixture.pack.structureRegistry.get(RegistryKey(referencing: "minecraft:trial_chambers")))
+        let startChunk = PosInt2D(x: 11, z: -19)
+        let full = try Self.fixture.generate("minecraft:trial_chambers", startChunk: startChunk)
+        let lootOnly = try #require(try structure.generateLoot(
+            worldSeed: jigsawReferenceSeed,
+            startChunk: startChunk,
+            context: Self.fixture.context
+        ))
+
+        func sorted(_ containers: [StructureLootContainer]) -> [StructureLootContainer] {
+            containers.sorted { lhs, rhs in
+                if lhs.pos.x != rhs.pos.x { return lhs.pos.x < rhs.pos.x }
+                if lhs.pos.z != rhs.pos.z { return lhs.pos.z < rhs.pos.z }
+                if lhs.pos.y != rhs.pos.y { return lhs.pos.y < rhs.pos.y }
+                if lhs.block != rhs.block { return lhs.block < rhs.block }
+                if lhs.lootTable != rhs.lootTable { return lhs.lootTable < rhs.lootTable }
+                return lhs.lootSeed < rhs.lootSeed
+            }
+        }
+        #expect(sorted(lootOnly) == sorted(full.lootContainers))
+    }
+
     @Test func abandonedCampSavannaMatchesFormat119ReferenceLoot() throws {
         let pack = try DataPack(fromRootPath: URL(filePath: "vanilla/26.3-pre-1"))
         #expect(pack.packFormat == Version(major: 119, minor: 0))
