@@ -17,7 +17,8 @@ private let vanillaSchemaFixtures = [
     VanillaSchemaFixture(minecraftVersion: "1.21.9", packFormat: Version(major: 88, minor: 0)),
     VanillaSchemaFixture(minecraftVersion: "1.21.11", packFormat: Version(major: 94, minor: 1)),
     VanillaSchemaFixture(minecraftVersion: "26.1", packFormat: Version(major: 101, minor: 1)),
-    VanillaSchemaFixture(minecraftVersion: "26.2", packFormat: Version(major: 107, minor: 1))
+    VanillaSchemaFixture(minecraftVersion: "26.2", packFormat: Version(major: 107, minor: 1)),
+    VanillaSchemaFixture(minecraftVersion: "26.3-pre-1", packFormat: Version(major: 119, minor: 0))
 ]
 
 private func vanillaRoot(_ version: String, filePath: StaticString = #filePath) throws -> URL {

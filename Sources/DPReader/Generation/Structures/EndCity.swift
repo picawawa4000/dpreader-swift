@@ -79,6 +79,11 @@ public final class EndCityPiece: StructurePiece {
 
 /// Direct port of `EndCityGenerator` from the bundled vanilla server source.
 public enum EndCity {
+    static func lootTables(context: StructureGenerationContext) -> Set<String> {
+        _ = context
+        return ["minecraft:chests/end_city_treasure"]
+    }
+
     private enum Part { case building, smallTower, bridge, fatTower }
     private static let smallTowerAttachments: [(EndCityRotation, PosInt3D)] = [
         (.none, PosInt3D(x: 1, y: -1, z: 0)), (.clockwise90, PosInt3D(x: 6, y: -1, z: 1)),

@@ -1,5 +1,7 @@
 /// Loot table decoding and world-generation evaluation.
 
+import Foundation
+
 /// A decoded loot table.
 public final class LootTable: Codable {
     let type: String?
@@ -65,6 +67,35 @@ public final class LootTable: Codable {
         }
         return try applyingModifiers(functions, to: generated, withContext: context)
     }
+
+    /// Lists every statically identifiable item ID this table can produce.
+    ///
+    /// Named nested tables and item-tag entries require their corresponding resolvers.
+    /// Dynamic and slot entries are intentionally omitted because their contents come from
+    /// runtime state rather than the loot table itself.
+    public func listItems(
+        resolvingTables resolveTable: LootTableResolver? = nil,
+        resolvingItemTags resolveItemTag: LootItemTagResolver? = nil
+    ) throws -> [String] {
+        let state = LootItemListingState(resolveTable: resolveTable, resolveItemTag: resolveItemTag)
+        return try self.listItems(state: state, activeKey: .inline(ObjectIdentifier(self))).sorted()
+    }
+
+    fileprivate func listItems(
+        state: LootItemListingState,
+        activeKey: ActiveLootTableKey
+    ) throws -> Set<String> {
+        guard state.activeTables.insert(activeKey).inserted else {
+            throw LootEvaluationError.invalidData("Detected recursive loot table reference")
+        }
+        defer { state.activeTables.remove(activeKey) }
+
+        var items: Set<String> = []
+        for pool in self.pools {
+            items.formUnion(try pool.listItems(state: state))
+        }
+        return possibleItems(after: self.functions, appliedTo: items)
+    }
 }
 
 /// A single loot pool inside a loot table.
@@ -128,10 +159,32 @@ public final class LootPool: Codable {
         }
         return generated
     }
+
+    /// Lists every statically identifiable item ID this pool can produce.
+    public func listItems(
+        resolvingTables resolveTable: LootTableResolver? = nil,
+        resolvingItemTags resolveItemTag: LootItemTagResolver? = nil
+    ) throws -> [String] {
+        try self.listItems(state: LootItemListingState(resolveTable: resolveTable, resolveItemTag: resolveItemTag)).sorted()
+    }
+
+    fileprivate func listItems(state: LootItemListingState) throws -> Set<String> {
+        guard conditionPossibility(conditions) != .never, poolCanRoll(rolls, bonusRolls) else {
+            return []
+        }
+        var items: Set<String> = []
+        for entry in self.entries {
+            items.formUnion(try itemListing(from: entry, state: state).items)
+        }
+        return possibleItems(after: self.functions, appliedTo: items)
+    }
 }
 
 /// Resolves named loot table references during evaluation.
 public typealias LootTableResolver = (String) throws -> LootTable
+
+/// Resolves an item tag to the item IDs it contains during static loot analysis.
+public typealias LootItemTagResolver = (String) throws -> [String]
 
 private enum ActiveLootTableKey: Hashable {
     case inline(ObjectIdentifier)
@@ -147,6 +200,17 @@ private final class LootGenerationState {
     }
 }
 
+private final class LootItemListingState {
+    let resolveTable: LootTableResolver?
+    let resolveItemTag: LootItemTagResolver?
+    var activeTables: Set<ActiveLootTableKey> = []
+
+    init(resolveTable: LootTableResolver?, resolveItemTag: LootItemTagResolver?) {
+        self.resolveTable = resolveTable
+        self.resolveItemTag = resolveItemTag
+    }
+}
+
 private struct ExpandedLootChoice {
     let weight: Int
     let generate: (LootContext, LootGenerationState) throws -> [ItemStack]
@@ -159,6 +223,203 @@ private struct LootEntryExpansion {
 
 /// A decoded loot entry.
 public protocol LootEntry: Codable {
+}
+
+public extension LootEntry {
+    /// Lists every statically identifiable item ID this entry can produce.
+    func listItems(
+        resolvingTables resolveTable: LootTableResolver? = nil,
+        resolvingItemTags resolveItemTag: LootItemTagResolver? = nil
+    ) throws -> [String] {
+        try itemListing(
+            from: self,
+            state: LootItemListingState(resolveTable: resolveTable, resolveItemTag: resolveItemTag)
+        ).items.sorted()
+    }
+}
+
+/// Whether a condition is impossible, possible, or guaranteed to pass without a
+/// loot context.  The analyser deliberately treats context-dependent conditions as
+/// possible, so it never loses an item merely because its runtime context is unknown.
+private enum LootConditionPossibility: Equatable {
+    case never
+    case maybe
+    case always
+}
+
+private func conditionPossibility(_ conditions: [LootCondition]) -> LootConditionPossibility {
+    var result: LootConditionPossibility = .always
+    for condition in conditions {
+        switch conditionPossibility(condition) {
+        case .never:
+            return .never
+        case .maybe:
+            result = .maybe
+        case .always:
+            break
+        }
+    }
+    return result
+}
+
+private func conditionPossibility(_ condition: LootCondition) -> LootConditionPossibility {
+    switch condition {
+    case let condition as InvertedLootCondition:
+        switch conditionPossibility(condition.term) {
+        case .never: return .always
+        case .maybe: return .maybe
+        case .always: return .never
+        }
+    case let condition as AnyOfLootCondition:
+        let possibilities = condition.terms.map(conditionPossibility)
+        if possibilities.contains(.always) { return .always }
+        return possibilities.contains(.maybe) ? .maybe : .never
+    case let condition as AllOfLootCondition:
+        return conditionPossibility(condition.terms)
+    case let condition as RandomChanceLootCondition:
+        guard let chance = condition.chance as? ConstantLootNumberProvider else {
+            return .maybe
+        }
+        if chance.value <= 0 { return .never }
+        return chance.value >= 1 ? .always : .maybe
+    default:
+        return .maybe
+    }
+}
+
+private func poolCanRoll(_ rolls: LootNumberProvider, _ bonusRolls: LootNumberProvider) -> Bool {
+    let rollsAreZero = (rolls as? ConstantLootNumberProvider).map { $0.value <= 0 } ?? false
+    let bonusRollsAreZero = (bonusRolls as? ConstantLootNumberProvider).map { $0.value <= 0 } ?? false
+    return !rollsAreZero || !bonusRollsAreZero
+}
+
+private struct LootEntryItemListing {
+    let items: Set<String>
+    let canExpand: Bool
+    let alwaysExpands: Bool
+}
+
+private func itemListing(from entry: LootEntry, state: LootItemListingState) throws -> LootEntryItemListing {
+    switch entry {
+    case let item as ItemEntry:
+        return itemListing(from: item, baseItems: [addDefaultNamespace(item.name)])
+    case let tableEntry as LootTableEntry:
+        let baseItems: Set<String>
+        switch tableEntry.value {
+        case .name(let name):
+            guard let resolveTable = state.resolveTable else {
+                throw LootEvaluationError.missingContext("A loot table resolver is required to list \(name)")
+            }
+            let normalizedName = addDefaultNamespace(name)
+            baseItems = try resolveTable(normalizedName).listItems(state: state, activeKey: .named(normalizedName))
+        case .table(let table):
+            baseItems = try table.listItems(state: state, activeKey: .inline(ObjectIdentifier(table)))
+        }
+        return itemListing(from: tableEntry, baseItems: baseItems)
+    case let tag as TagEntry:
+        guard let resolveItemTag = state.resolveItemTag else {
+            throw LootEvaluationError.missingContext("An item tag resolver is required to list \(tag.name)")
+        }
+        let itemIDs = try resolveItemTag(addDefaultNamespace(tag.name)).map(addDefaultNamespace)
+        return itemListing(from: tag, baseItems: Set(itemIDs))
+    case let singleton as SingletonLootEntry:
+        return itemListing(from: singleton, baseItems: [])
+    case let group as GroupEntry:
+        let possibility = conditionPossibility(group.conditions)
+        guard possibility != .never else {
+            return LootEntryItemListing(items: [], canExpand: false, alwaysExpands: false)
+        }
+        var items: Set<String> = []
+        for child in group.children {
+            items.formUnion(try itemListing(from: child, state: state).items)
+        }
+        return LootEntryItemListing(items: items, canExpand: true, alwaysExpands: possibility == .always)
+    case let alternatives as AlternativesEntry:
+        let possibility = conditionPossibility(alternatives.conditions)
+        guard possibility != .never else {
+            return LootEntryItemListing(items: [], canExpand: false, alwaysExpands: false)
+        }
+        var items: Set<String> = []
+        var canExpand = false
+        var alwaysExpands = false
+        for child in alternatives.children {
+            let childListing = try itemListing(from: child, state: state)
+            items.formUnion(childListing.items)
+            canExpand = canExpand || childListing.canExpand
+            if childListing.alwaysExpands {
+                alwaysExpands = true
+                break
+            }
+        }
+        return LootEntryItemListing(
+            items: items,
+            canExpand: canExpand,
+            alwaysExpands: possibility == .always && alwaysExpands
+        )
+    case let sequence as SequenceEntry:
+        let possibility = conditionPossibility(sequence.conditions)
+        guard possibility != .never else {
+            return LootEntryItemListing(items: [], canExpand: false, alwaysExpands: false)
+        }
+        var items: Set<String> = []
+        var canExpand = true
+        var alwaysExpands = true
+        for child in sequence.children {
+            let childListing = try itemListing(from: child, state: state)
+            items.formUnion(childListing.items)
+            canExpand = canExpand && childListing.canExpand
+            alwaysExpands = alwaysExpands && childListing.alwaysExpands
+            if !childListing.canExpand { break }
+        }
+        return LootEntryItemListing(
+            items: items,
+            canExpand: canExpand,
+            alwaysExpands: possibility == .always && alwaysExpands
+        )
+    default:
+        throw LootEvaluationError.unsupported("Unsupported loot entry \(String(reflecting: type(of: entry)))")
+    }
+}
+
+private func itemListing(from entry: SingletonLootEntry, baseItems: Set<String>) -> LootEntryItemListing {
+    let possibility = conditionPossibility(entry.conditions)
+    guard possibility != .never else {
+        return LootEntryItemListing(items: [], canExpand: false, alwaysExpands: false)
+    }
+    let items = entry.weight > 0 ? possibleItems(after: entry.functions, appliedTo: baseItems) : []
+    return LootEntryItemListing(items: items, canExpand: true, alwaysExpands: possibility == .always)
+}
+
+private func possibleItems(after modifiers: [ItemModifier], appliedTo input: Set<String>) -> Set<String> {
+    modifiers.reduce(input) { possibleItems(after: $1, appliedTo: $0) }
+}
+
+private func possibleItems(after modifier: ItemModifier, appliedTo input: Set<String>) -> Set<String> {
+    switch modifier {
+    case let modifier as SetItemItemModifier:
+        let replacement: Set<String> = [addDefaultNamespace(modifier.item)]
+        switch conditionPossibility(modifier.conditions) {
+        case .never:
+            return input
+        case .maybe:
+            return input.union(replacement)
+        case .always:
+            return replacement
+        }
+    case let modifier as SequenceItemModifier:
+        return possibleItems(after: modifier.functions, appliedTo: input)
+    case let modifier as FilteredItemModifier:
+        var result = input
+        if let onPass = modifier.onPass {
+            result.formUnion(possibleItems(after: onPass, appliedTo: input))
+        }
+        if let onFail = modifier.onFail {
+            result.formUnion(possibleItems(after: onFail, appliedTo: input))
+        }
+        return result
+    default:
+        return input
+    }
 }
 
 private enum LootEntryTypeKey: String, CodingKey {
@@ -547,7 +808,10 @@ public final class TagEntry: SingletonLootEntry {
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         _ = try c.decode(String.self, forKey: key("type"))
-        self.name = try c.decode(String.self, forKey: key("name"))
+        self.name = try c.decode(
+            String.self,
+            forKey: key(decoder.dpReaderPackFormat >= Version(major: 119, minor: 0) ? "items" : "name")
+        )
         self.expand = try c.decode(Bool.self, forKey: key("expand"))
         try super.init(from: decoder)
     }
@@ -556,7 +820,7 @@ public final class TagEntry: SingletonLootEntry {
         try super.encode(to: encoder)
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:tag", forKey: key("type"))
-        try c.encode(name, forKey: key("name"))
+        try c.encode(name, forKey: key(encoder.dpReaderPackFormat >= Version(major: 119, minor: 0) ? "items" : "name"))
         try c.encode(expand, forKey: key("expand"))
     }
 }
@@ -866,6 +1130,91 @@ public final class AggregateLootNumberProvider: LootNumberProvider {
     }
 }
 
+/// A two-input arithmetic number provider introduced with the split context
+/// number-provider registries in format 119.  Format 121 changed `mod` from
+/// floor modulus to the standard remainder operation.
+public final class BinaryLootNumberProvider: LootNumberProvider {
+    enum Operation: String {
+        case modulo = "minecraft:mod"
+        case power = "minecraft:pow"
+    }
+
+    let operation: Operation
+    let first: any LootNumberProvider
+    let second: any LootNumberProvider
+    private let usesFloorModulo: Bool
+    private let rejectsZeroToZero: Bool
+
+    init(
+        operation: Operation,
+        first: any LootNumberProvider,
+        second: any LootNumberProvider,
+        usesFloorModulo: Bool = false,
+        rejectsZeroToZero: Bool = false
+    ) {
+        self.operation = operation
+        self.first = first
+        self.second = second
+        self.usesFloorModulo = usesFloorModulo
+        self.rejectsZeroToZero = rejectsZeroToZero
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 119, minor: 0)), for: "binary number providers")
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let type = addDefaultNamespace(try container.decode(String.self, forKey: key("type")))
+        guard let operation = Operation(rawValue: type) else {
+            throw DecodingError.dataCorruptedError(forKey: key("type"), in: container, debugDescription: "Unknown binary number provider type \(type)")
+        }
+        self.operation = operation
+        switch operation {
+        case .modulo:
+            self.first = try container.decode(LootNumberProviderInitializer.self, forKey: key("left")).value
+            self.second = try container.decode(LootNumberProviderInitializer.self, forKey: key("right")).value
+            self.usesFloorModulo = decoder.dpReaderPackFormat < Version(major: 121, minor: 0)
+            self.rejectsZeroToZero = false
+        case .power:
+            self.first = try container.decode(LootNumberProviderInitializer.self, forKey: key("base")).value
+            self.second = try container.decode(LootNumberProviderInitializer.self, forKey: key("exponent")).value
+            self.usesFloorModulo = false
+            self.rejectsZeroToZero = decoder.dpReaderPackFormat >= Version(major: 121, minor: 0)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        guard encoder.dpReaderPackFormat >= Version(major: 119, minor: 0) else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Binary number providers require pack format 119.0 or newer"))
+        }
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        try container.encode(operation.rawValue, forKey: key("type"))
+        switch operation {
+        case .modulo:
+            try container.encode(LootNumberProviderInitializer(first), forKey: key("left"))
+            try container.encode(LootNumberProviderInitializer(second), forKey: key("right"))
+        case .power:
+            try container.encode(LootNumberProviderInitializer(first), forKey: key("base"))
+            try container.encode(LootNumberProviderInitializer(second), forKey: key("exponent"))
+        }
+    }
+
+    public func getFloat(fromContext context: LootContext) -> Float {
+        let first = first.getFloat(fromContext: context)
+        let second = second.getFloat(fromContext: context)
+        switch operation {
+        case .modulo:
+            if usesFloorModulo {
+                return first - (first / second).rounded(.down) * second
+            }
+            return first.truncatingRemainder(dividingBy: second)
+        case .power:
+            // The format-121 float provider now rejects this expression.  The
+            // non-throwing provider API represents that failed calculation as NaN.
+            if rejectsZeroToZero, first == 0, second == 0 { return .nan }
+            return Float(pow(Double(first), Double(second)))
+        }
+    }
+}
+
 /// A registry or tag reference accepted in provider lists from format 111 onward.
 /// DPReader currently evaluates only inline providers; an unresolved reference
 /// has the vanilla-default numeric fallback of zero in the local evaluator.
@@ -975,6 +1324,8 @@ func decodeLootNumberProvider(from decoder: Decoder) throws -> LootNumberProvide
         return try SumLootNumberProvider(from: decoder)
     case "minecraft:product", "minecraft:minimum", "minecraft:maximum", "minecraft:add", "minecraft:mul", "minecraft:min", "minecraft:max", "minecraft:avg":
         return try AggregateLootNumberProvider(from: decoder)
+    case "minecraft:mod", "minecraft:pow":
+        return try BinaryLootNumberProvider(from: decoder)
     case "minecraft:enchantment_level":
         return try EnchantmentLevelLootNumberProvider(from: decoder)
     default:
@@ -990,6 +1341,7 @@ func encodeLootNumberProvider(_ provider: LootNumberProvider, to encoder: Encode
     case let p as BinomialLootNumberProvider: try p.encode(to: encoder)
     case let p as SumLootNumberProvider: try p.encode(to: encoder)
     case let p as AggregateLootNumberProvider: try p.encode(to: encoder)
+    case let p as BinaryLootNumberProvider: try p.encode(to: encoder)
     case let p as EnchantmentLevelLootNumberProvider: try p.encode(to: encoder)
     case let p as ReferenceLootNumberProvider: try p.encode(to: encoder)
     default:
@@ -1308,6 +1660,10 @@ public struct LootConditionInitializer: Codable {
 
 /// Decodes a concrete loot condition from its `condition`.
 func decodeLootCondition(from decoder: Decoder) throws -> LootCondition {
+    if let single = try? decoder.singleValueContainer(), let reference = try? single.decode(String.self) {
+        try decoder.requirePackVersions(.atLeast(.init(major: 119, minor: 0)), for: "loot condition references")
+        return ReferenceLootCondition(name: reference, usesShorthand: true)
+    }
     if var array = try? decoder.unkeyedContainer() {
         var terms: [LootCondition] = []
         while !array.isAtEnd {
@@ -1342,6 +1698,8 @@ func decodeLootCondition(from decoder: Decoder) throws -> LootCondition {
         return try BlockStatePropertyLootCondition(from: decoder)
     case "minecraft:match_tool":
         return try MatchToolLootCondition(from: decoder)
+    case "minecraft:match_block":
+        return try MatchBlockLootCondition(from: decoder)
     case "minecraft:table_bonus":
         return try TableBonusLootCondition(from: decoder)
     case "minecraft:survives_explosion":
@@ -1382,6 +1740,7 @@ func encodeLootCondition(_ condition: LootCondition, to encoder: Encoder) throws
     case let v as EntityScoresLootCondition: try v.encode(to: encoder)
     case let v as BlockStatePropertyLootCondition: try v.encode(to: encoder)
     case let v as MatchToolLootCondition: try v.encode(to: encoder)
+    case let v as MatchBlockLootCondition: try v.encode(to: encoder)
     case let v as TableBonusLootCondition: try v.encode(to: encoder)
     case let v as SurvivesExplosionLootCondition: try v.encode(to: encoder)
     case let v as DamageSourcePropertiesLootCondition: try v.encode(to: encoder)
@@ -1700,6 +2059,36 @@ public final class MatchToolLootCondition: LootCondition {
     }
 }
 
+/// A format-119 condition that matches the loot block and its optional state.
+/// It is retained for round-tripping block loot tables but cannot be sampled
+/// without a block-state loot context.
+public final class MatchBlockLootCondition: LootCondition {
+    let blocks: JSONValue
+    let state: JSONValue?
+
+    public init(blocks: JSONValue, state: JSONValue? = nil) {
+        self.blocks = blocks
+        self.state = state
+    }
+
+    public required init(from decoder: Decoder) throws {
+        try decoder.requirePackVersions(.atLeast(.init(major: 119, minor: 0)), for: "loot condition minecraft:match_block")
+        let c = try decoder.container(keyedBy: DynamicCodingKey.self)
+        self.blocks = try c.decode(JSONValue.self, forKey: key("blocks"))
+        self.state = try c.decodeIfPresent(JSONValue.self, forKey: key("state"))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        guard encoder.dpReaderPackFormat >= Version(major: 119, minor: 0) else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "minecraft:match_block requires pack format 119.0 or newer"))
+        }
+        var c = encoder.container(keyedBy: DynamicCodingKey.self)
+        try c.encode("minecraft:match_block", forKey: key("type"))
+        try c.encode(blocks, forKey: key("blocks"))
+        try c.encodeIfPresent(state, forKey: key("state"))
+    }
+}
+
 /// A condition whose chance is selected by an enchantment level.
 public final class TableBonusLootCondition: LootCondition {
     let enchantment: String
@@ -1847,17 +2236,33 @@ public final class WeatherCheckLootCondition: LootCondition {
 /// A condition that delegates evaluation to a named predicate.
 public final class ReferenceLootCondition: LootCondition {
     let name: String
+    private let usesShorthand: Bool
 
     public init(name: String) {
         self.name = name
+        self.usesShorthand = false
+    }
+
+    init(name: String, usesShorthand: Bool) {
+        self.name = name
+        self.usesShorthand = usesShorthand
     }
 
     public required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicCodingKey.self)
         self.name = try c.decode(String.self, forKey: key("name"))
+        self.usesShorthand = false
     }
 
     public func encode(to encoder: Encoder) throws {
+        if usesShorthand {
+            guard encoder.dpReaderPackFormat >= Version(major: 119, minor: 0) else {
+                throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Loot condition references require pack format 119.0 or newer"))
+            }
+            var c = encoder.singleValueContainer()
+            try c.encode(name)
+            return
+        }
         var c = encoder.container(keyedBy: DynamicCodingKey.self)
         try c.encode("minecraft:reference", forKey: key("condition"))
         try c.encode(name, forKey: key("name"))

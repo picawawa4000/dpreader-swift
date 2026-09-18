@@ -152,6 +152,14 @@ public enum RuinedPortal {
     private static let commonTemplates = (1...10).map { "minecraft:ruined_portal/portal_\($0)" }
     private static let rareTemplates = (1...3).map { "minecraft:ruined_portal/giant_portal_\($0)" }
 
+    static func lootTables(context: StructureGenerationContext) -> Set<String> {
+        Set((Self.commonTemplates + Self.rareTemplates).flatMap { name in
+            context.structureTemplate(named: name)?.blocks.compactMap {
+                $0.nbt?.portalCompoundString("LootTable").map(addDefaultNamespace)
+            } ?? []
+        })
+    }
+
     public static func generatePieceGraph(
         settings: RuinedPortalStructureSettings,
         worldSeed: WorldSeed,

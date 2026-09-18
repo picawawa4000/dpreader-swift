@@ -121,6 +121,22 @@ public enum Shipwreck {
         "rightsideup_full_degraded", "rightsideup_fronthalf_degraded", "rightsideup_backhalf_degraded"
     ]
 
+    static func lootTables(settings: ShipwreckStructureSettings, context: StructureGenerationContext) -> Set<String> {
+        let names = settings.isBeached ? Self.beachedTemplates : Self.regularTemplates
+        return Set(names.compactMap { name in
+            context.structureTemplate(named: "minecraft:shipwreck/\(name)")
+        }.flatMap { template in
+            template.blocks.compactMap { block in
+                switch structureNBTString(block.nbt, "metadata") {
+                case "map_chest": return "minecraft:chests/shipwreck_map"
+                case "treasure_chest": return "minecraft:chests/shipwreck_treasure"
+                case "supply_chest": return "minecraft:chests/shipwreck_supply"
+                default: return nil
+                }
+            }
+        })
+    }
+
     public static func generatePieceGraph(
         settings: ShipwreckStructureSettings,
         worldSeed: WorldSeed,

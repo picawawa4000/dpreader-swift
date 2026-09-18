@@ -1,3 +1,5 @@
+import Foundation
+
 /// The type-specific output of complete structure block generation.
 public enum StructureGeneratedResult {
     case buriedTreasure(BuriedTreasureGenerationResult)
@@ -33,6 +35,8 @@ public final class Structure: Codable {
     let step: String
     let terrainAdaptation: StructureTerrainAdaptation?
     let settings: StructureSettings
+    private let templateLootTableLock = NSLock()
+    private var cachedTemplateLootTables: [String]?
 
     init(
         type: String,
@@ -385,6 +389,91 @@ public final class Structure: Codable {
         default:
             throw StructureGenerationError.unsupportedStructureType(self.type)
         }
+    }
+
+    /// Lists every statically identifiable item ID obtainable from this structure.
+    ///
+    /// This does not generate a structure start. Hardcoded structures use their fixed
+    /// loot-table list; template-backed structures discover their possible tables on
+    /// the first call and retain that result for later calls.
+    public func listItems(
+        context: StructureGenerationContext? = nil,
+        resolvingTables resolveTable: LootTableResolver? = nil,
+        resolvingItemTags resolveItemTag: LootItemTagResolver? = nil
+    ) throws -> [String] {
+        let tables = try lootTables(context: context)
+        guard !tables.isEmpty else { return [] }
+        guard let resolveTable else {
+            throw LootEvaluationError.missingContext("A loot table resolver is required to list structure items")
+        }
+
+        var items: Set<String> = []
+        for tableName in tables {
+            let table = try resolveTable(tableName)
+            items.formUnion(try table.listItems(
+                resolvingTables: resolveTable,
+                resolvingItemTags: resolveItemTag
+            ))
+        }
+        return items.sorted()
+    }
+
+    private func lootTables(context: StructureGenerationContext?) throws -> [String] {
+        switch self.type {
+        case "minecraft:buried_treasure": return ["minecraft:chests/buried_treasure"]
+        case "minecraft:mineshaft": return ["minecraft:chests/abandoned_mineshaft"]
+        case "minecraft:fortress": return ["minecraft:chests/nether_bridge"]
+        case "minecraft:desert_pyramid": return [
+            "minecraft:archaeology/desert_pyramid", "minecraft:chests/desert_pyramid"
+        ]
+        case "minecraft:jungle_temple": return [
+            "minecraft:chests/jungle_temple", "minecraft:chests/jungle_temple_dispenser"
+        ]
+        case "minecraft:stronghold": return [
+            "minecraft:chests/stronghold_corridor", "minecraft:chests/stronghold_crossing", "minecraft:chests/stronghold_library"
+        ]
+        case "minecraft:nether_fossil", "minecraft:ocean_monument", "minecraft:swamp_hut":
+            return []
+        case "minecraft:end_city", "minecraft:jigsaw", "minecraft:igloo", "minecraft:ocean_ruin", "minecraft:ruined_portal", "minecraft:shipwreck", "minecraft:woodland_mansion":
+            guard let context else {
+                throw LootEvaluationError.missingContext("A structure-generation context is required to list template structure items")
+            }
+            return try cachedTemplateLootTables(using: context)
+        default:
+            throw StructureGenerationError.unsupportedStructureType(self.type)
+        }
+    }
+
+    private func cachedTemplateLootTables(using context: StructureGenerationContext) throws -> [String] {
+        templateLootTableLock.lock()
+        defer { templateLootTableLock.unlock() }
+        if let cachedTemplateLootTables { return cachedTemplateLootTables }
+
+        let tables: Set<String>
+        switch self.type {
+        case "minecraft:end_city":
+            tables = EndCity.lootTables(context: context)
+        case "minecraft:jigsaw":
+            guard case .jigsaw(let settings) = self.settings else { return [] }
+            tables = JigsawStructure.lootTables(settings: settings, context: context)
+        case "minecraft:igloo":
+            tables = Igloo.lootTables(context: context)
+        case "minecraft:ocean_ruin":
+            guard case .oceanRuin(let settings) = self.settings else { return [] }
+            tables = OceanRuin.lootTables(settings: settings, context: context)
+        case "minecraft:ruined_portal":
+            tables = RuinedPortal.lootTables(context: context)
+        case "minecraft:shipwreck":
+            guard case .shipwreck(let settings) = self.settings else { return [] }
+            tables = Shipwreck.lootTables(settings: settings, context: context)
+        case "minecraft:woodland_mansion":
+            tables = WoodlandMansion.lootTables(context: context)
+        default:
+            return []
+        }
+        let sorted = tables.sorted()
+        self.cachedTemplateLootTables = sorted
+        return sorted
     }
 }
 

@@ -55,6 +55,11 @@ public enum WoodlandMansion {
     static let chestLootTable = "minecraft:chests/woodland_mansion"
     private static let foundationState = BlockState(id: "minecraft:cobblestone")
 
+    static func lootTables(context: StructureGenerationContext) -> Set<String> {
+        _ = context
+        return [Self.chestLootTable]
+    }
+
     /// Generates loot chests from the selected mansion templates without placing their blocks.
     public static func generateLoot(
         worldSeed: WorldSeed,

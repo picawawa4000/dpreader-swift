@@ -367,6 +367,44 @@ public final class JigsawStructurePiece: StructurePiece {
 /// Vanilla-compatible structure-pool assembly for villages, outposts, bastions,
 /// ancient cities, trail ruins, and trial chambers.
 enum JigsawStructure {
+    /// Collects the tables reachable from a jigsaw's pool graph without assembling a
+    /// structure. This deliberately visits every weighted element: a structure start
+    /// chooses only one path, while item listing describes all possible starts.
+    static func lootTables(settings: JigsawStructureSettings, context: StructureGenerationContext) -> Set<String> {
+        var tables: Set<String> = []
+        var pendingPools = [settings.startPool]
+        var visitedPools: Set<String> = []
+
+        while let poolName = pendingPools.popLast() {
+            let normalizedPool = addDefaultNamespace(poolName)
+            guard visitedPools.insert(normalizedPool).inserted,
+                  let pool = context.structureTemplatePool(named: normalizedPool)
+            else { continue }
+            pendingPools.append(pool.fallback)
+
+            for weightedElement in pool.elements {
+                for entry in weightedElement.element.singleEntries {
+                    if let template = context.structureTemplate(named: entry.location) {
+                        for block in template.blocks {
+                            if let table = block.nbt?.compoundString("LootTable") {
+                                tables.insert(addDefaultNamespace(table))
+                            }
+                            if let childPool = block.nbt?.compoundString("pool") {
+                                pendingPools.append(childPool)
+                            }
+                        }
+                    }
+                    if case .registry(let name)? = entry.processors {
+                        for processor in context.structureProcessorList(named: name)?.processors ?? [] {
+                            tables.formUnion(processor.possibleLootTables)
+                        }
+                    }
+                }
+            }
+        }
+        return tables
+    }
+
     static func generatePieceGraph(
         settings: JigsawStructureSettings,
         worldSeed: WorldSeed,
@@ -872,6 +910,17 @@ private struct JigsawShapeChunk: Hashable {
 }
 
 private extension StructureProcessor {
+    var possibleLootTables: Set<String> {
+        switch self {
+        case .rule(let rules):
+            return Set(rules.compactMap(\.lootTable).map(addDefaultNamespace))
+        case .capped(_, let delegate):
+            return delegate.value.possibleLootTables
+        case .blockRot, .protectedBlocks:
+            return []
+        }
+    }
+
     /// Whether applying this processor can attach a loot table to a block.
     var canAttachLoot: Bool {
         switch self {

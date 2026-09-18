@@ -21,8 +21,8 @@ private func makePackRoot(withPackMetadata metadata: String) throws -> URL {
     #expect(!range.contains(Version(major: 95, minor: 1)))
 }
 
-@Test func testLatestSupportedPackFormatIs119() {
-    #expect(Version.latestSupported == Version(major: 119, minor: 0))
+@Test func testLatestSupportedPackFormatIs121() {
+    #expect(Version.latestSupported == Version(major: 121, minor: 0))
 }
 
 @Test func testDataPackRequiresExplicitMetadataVersion() throws {
@@ -51,9 +51,9 @@ private func makePackRoot(withPackMetadata metadata: String) throws -> URL {
     let root = try makePackRoot(withPackMetadata: """
     {
         "pack": {
-            "min_format": [119, 0],
-            "max_format": [119, 0],
-            "description": "26.3-pre-1 test pack"
+            "min_format": [120, 0],
+            "max_format": [121, 0],
+            "description": "26.3 test pack"
         }
     }
     """)

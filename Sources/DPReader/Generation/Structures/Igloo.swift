@@ -109,6 +109,16 @@ public final class IglooPiece: StructurePiece {
 public enum Igloo {
     private static let fallbackDecoration = StructureDecorationParameters(step: 4, index: 3)
 
+    static func lootTables(context: StructureGenerationContext) -> Set<String> {
+        for kind in IglooTemplate.allCases {
+            guard let template = context.structureTemplate(named: kind.name) else { continue }
+            if template.blocks.contains(where: { structureNBTString($0.nbt, "metadata") == "chest" }) {
+                return ["minecraft:chests/igloo_chest"]
+            }
+        }
+        return []
+    }
+
     public static func generatePieceGraph(worldSeed: WorldSeed, startChunk: PosInt2D, context: StructureGenerationContext) throws -> PieceGraph {
         var random = checkedRandomForChunkGeneration(worldSeed: worldSeed, chunkX: startChunk.x, chunkZ: startChunk.z)
         let rotation = IglooRotation(rawValue: Int(random.next(bound: 4)))!

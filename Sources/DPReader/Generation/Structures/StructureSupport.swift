@@ -1,5 +1,11 @@
 /// Shared code for structure generation.
 
+/// Reads a string field from a structure-template block-entity tag.
+func structureNBTString(_ tag: NBTTag?, _ key: String) -> String? {
+    guard case .compound(let values)? = tag, case .string(let value)? = values[key] else { return nil }
+    return value
+}
+
 /// Samples the existing world state for structure generation.
 ///
 /// Desert pyramids only need `seaLevel`, `minimumWorldY`, and `blockSampler`.

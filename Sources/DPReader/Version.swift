@@ -8,7 +8,7 @@ import Foundation
 /// For formats before 82.0, the minor version will always be 0.
 public struct Version: Codable, Comparable, CustomStringConvertible, Hashable, Sendable {
     /// The newest pack format supported by DPReader.
-    public static let latestSupported = Version(major: 119, minor: 0)
+    public static let latestSupported = Version(major: 121, minor: 0)
 
     public let major: Int
     public let minor: Int

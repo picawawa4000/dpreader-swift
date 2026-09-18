@@ -275,6 +275,106 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     }
 }
 
+@Test func testModernBinaryNumberProvidersRespectFormat121ModuloChange() throws {
+    let modulo = """
+    {
+        "type": "minecraft:mod",
+        "left": 4,
+        "right": -3
+    }
+    """.data(using: .utf8)!
+    let power = """
+    {
+        "type": "minecraft:pow",
+        "base": 2,
+        "exponent": 3
+    }
+    """.data(using: .utf8)!
+    let zeroToZero = """
+    {
+        "type": "minecraft:pow",
+        "base": 0,
+        "exponent": 0
+    }
+    """.data(using: .utf8)!
+
+    let context = makeContext()
+    let format119Modulo = try makeLootDecoder(packFormat: Version(major: 119, minor: 0))
+        .decode(LootNumberProviderInitializer.self, from: modulo).value
+    let format121Modulo = try makeLootDecoder(packFormat: Version(major: 121, minor: 0))
+        .decode(LootNumberProviderInitializer.self, from: modulo).value
+    let format121Power = try makeLootDecoder(packFormat: Version(major: 121, minor: 0))
+        .decode(LootNumberProviderInitializer.self, from: power).value
+    let format119ZeroToZero = try makeLootDecoder(packFormat: Version(major: 119, minor: 0))
+        .decode(LootNumberProviderInitializer.self, from: zeroToZero).value
+    let format121ZeroToZero = try makeLootDecoder(packFormat: Version(major: 121, minor: 0))
+        .decode(LootNumberProviderInitializer.self, from: zeroToZero).value
+
+    #expect(format119Modulo.getFloat(fromContext: context) == -2)
+    #expect(format121Modulo.getFloat(fromContext: context) == 1)
+    #expect(format121Power.getFloat(fromContext: context) == 8)
+    #expect(format119ZeroToZero.getFloat(fromContext: context) == 1)
+    #expect(format121ZeroToZero.getFloat(fromContext: context).isNaN)
+    #expect(throws: DecodingError.self) {
+        _ = try makeLootDecoder(packFormat: Version(major: 118, minor: 0))
+            .decode(LootNumberProviderInitializer.self, from: modulo)
+    }
+}
+
+@Test func testFormat119NonWorldgenLootSchemasRoundTripButDoNotSample() throws {
+    let matchBlock = """
+    {
+        "type": "minecraft:match_block",
+        "blocks": "minecraft:magenta_wool_slab",
+        "state": { "type": "double" }
+    }
+    """.data(using: .utf8)!
+    let shorthandReference = "\"minecraft:tool/can_silk_touch\"".data(using: .utf8)!
+    let tagTable = """
+    {
+        "pools": [{
+            "rolls": 1,
+            "entries": [{
+                "type": "minecraft:tag",
+                "items": "#minecraft:creeper_drop_music_discs",
+                "expand": true
+            }]
+        }]
+    }
+    """.data(using: .utf8)!
+    let format119 = Version(major: 119, minor: 0)
+    let context = makeContext()
+
+    let decodedMatchBlock = try makeLootDecoder(packFormat: format119)
+        .decode(LootConditionInitializer.self, from: matchBlock).value
+    let decodedReference = try makeLootDecoder(packFormat: format119)
+        .decode(LootConditionInitializer.self, from: shorthandReference).value
+    let decodedTagTable = try makeLootDecoder(packFormat: format119).decode(LootTable.self, from: tagTable)
+
+    #expect(throws: LootEvaluationError.self) { _ = try decodedMatchBlock.check(withContext: context) }
+    #expect(throws: LootEvaluationError.self) { _ = try decodedReference.check(withContext: context) }
+    #expect(try checkJSON(makeTestingJSONEncoder(format119).encode(LootConditionInitializer(decodedMatchBlock)), matchBlock))
+    #expect(try checkJSON(makeTestingJSONEncoder(format119).encode(LootConditionInitializer(decodedReference)), shorthandReference))
+    #expect(try checkJSON(
+        makeTestingJSONEncoder(format119).encode(decodedTagTable),
+        """
+        {
+            "pools": [{
+                "rolls": 1,
+                "bonus_rolls": { "type": "minecraft:constant", "value": 0 },
+                "entries": [{
+                    "type": "minecraft:tag",
+                    "items": "#minecraft:creeper_drop_music_discs",
+                    "expand": true,
+                    "weight": 1,
+                    "quality": 0
+                }]
+            }]
+        }
+        """
+    ))
+}
+
 @Test func testSetPotionModifierEvaluation() throws {
     let modifier = SetPotionItemModifier(id: "minecraft:water")
     let updated = try modifier.apply(
@@ -498,6 +598,13 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
     #expect(generated[0].components["minecraft:custom_name"] == .object(["text": .string("debug-table")]))
 }
 
+@Test func testListItemsFollowsNestedTablesAndSetItem() throws {
+    let resolver: LootTableResolver = { try decodeLootTable($0) }
+    let table = try decodeLootTable("test:chests/nested")
+
+    #expect(try table.listItems(resolvingTables: resolver) == ["minecraft:golden_apple"])
+}
+
 @Test func testAlternativesLootTableGenerationFromDatapack() throws {
     let table = try decodeLootTable("test:chests/alternatives")
     let generated = try table.generateLoot(withContext: makeContext(seed: 4))
@@ -536,4 +643,53 @@ private func normalizeExpectedLoot(_ items: [NormalizedLootItem]) -> [Normalized
             "\(testCase.table) / \(testCase.xppleName) / seed \(testCase.seed)"
         )
     }
+}
+
+@Test func testVanillaTrialChamberRewardListsAllNestedItems() throws {
+    let table = try decodeLootTable("minecraft:chests/trial_chambers/reward", from: vanilla12111Root)
+    let items = try table.listItems(resolvingTables: { try decodeLootTable($0, from: vanilla12111Root) })
+
+    #expect(items == [
+        "minecraft:arrow",
+        "minecraft:bolt_armor_trim_smithing_template",
+        "minecraft:book",
+        "minecraft:bow",
+        "minecraft:crossbow",
+        "minecraft:diamond",
+        "minecraft:diamond_axe",
+        "minecraft:diamond_chestplate",
+        "minecraft:emerald",
+        "minecraft:golden_apple",
+        "minecraft:golden_carrot",
+        "minecraft:guster_banner_pattern",
+        "minecraft:honey_bottle",
+        "minecraft:iron_axe",
+        "minecraft:iron_chestplate",
+        "minecraft:iron_ingot",
+        "minecraft:music_disc_precipice",
+        "minecraft:ominous_bottle",
+        "minecraft:shield",
+        "minecraft:tipped_arrow",
+        "minecraft:trident",
+        "minecraft:wind_charge"
+    ])
+}
+
+@Test func testVanillaTrialChambersJigsawListsItemsStatically() throws {
+    let pack = try DataPack(fromRootPath: vanilla12111Root)
+    let structure = try #require(pack.structureRegistry.get(RegistryKey(referencing: "minecraft:trial_chambers")))
+    let context = StructureGenerationContext(
+        seaLevel: 63,
+        minimumWorldY: -64,
+        maximumWorldY: 319,
+        usingDataPacks: [pack]
+    )
+
+    let items = try structure.listItems(
+        context: context,
+        resolvingTables: { try decodeLootTable($0, from: vanilla12111Root) }
+    )
+    #expect(items.contains("minecraft:emerald"))
+    #expect(items.contains("minecraft:trident"))
+    #expect(items.contains("minecraft:trial_key"))
 }

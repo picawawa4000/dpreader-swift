@@ -185,6 +185,38 @@ public enum OceanRuin {
     private static let bigMossy = [1, 2, 3, 8].map { "minecraft:underwater_ruin/big_mossy_\($0)" }
     private static let bigWarm = [4, 5, 6, 7].map { "minecraft:underwater_ruin/big_warm_\($0)" }
 
+    static func lootTables(settings: OceanRuinStructureSettings, context: StructureGenerationContext) -> Set<String> {
+        let smallNames: [String]
+        let largeNames: [String]
+        let archaeologyTable: String
+        switch settings.biomeTemp {
+        case .warm:
+            smallNames = Self.warm
+            largeNames = Self.bigWarm
+            archaeologyTable = "minecraft:archaeology/ocean_ruin_warm"
+        case .cold:
+            smallNames = Self.brick + Self.cracked + Self.mossy
+            largeNames = Self.bigBrick + Self.bigCracked + Self.bigMossy
+            archaeologyTable = "minecraft:archaeology/ocean_ruin_cold"
+        }
+        var tables: Set<String> = []
+        for (names, chestTable) in [
+            (smallNames, "minecraft:chests/underwater_ruin_small"),
+            (largeNames, "minecraft:chests/underwater_ruin_big")
+        ] {
+            for name in names {
+                guard let template = context.structureTemplate(named: name) else { continue }
+                if template.blocks.contains(where: { structureNBTString($0.nbt, "metadata") == "chest" }) {
+                    tables.insert(chestTable)
+                }
+                // The archaeology processor can turn this template's base sand/gravel
+                // into a suspicious block, so its table is a possible output as well.
+                if !template.blocks.isEmpty { tables.insert(archaeologyTable) }
+            }
+        }
+        return tables
+    }
+
     public static func generatePieceGraph(
         settings: OceanRuinStructureSettings,
         worldSeed: WorldSeed,

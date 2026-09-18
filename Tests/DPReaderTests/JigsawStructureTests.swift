@@ -196,6 +196,20 @@ struct JigsawStructureTests {
         #expect(loot.contains { $0.itemName == "minecraft:trident" })
     }
 
+    @Test func trialChambersListItemsFromVanillaLootTables() throws {
+        let structure = try #require(Self.fixture.pack.structureRegistry.get(RegistryKey(referencing: "minecraft:trial_chambers")))
+        let items = try structure.listItems(
+            context: Self.fixture.context,
+            resolvingTables: decodeVanillaJigsawLootTable
+        )
+
+        #expect(items == items.sorted())
+        #expect(Set(items).count == items.count)
+        #expect(items.contains("minecraft:emerald"))
+        #expect(items.contains("minecraft:trident"))
+        #expect(items.contains("minecraft:trial_key"))
+    }
+
     @Test func trialChambersLootOnlyMatchesFullGeneration() throws {
         let structure = try #require(Self.fixture.pack.structureRegistry.get(RegistryKey(referencing: "minecraft:trial_chambers")))
         let startChunk = PosInt2D(x: 11, z: -19)
