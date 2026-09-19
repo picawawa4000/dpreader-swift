@@ -602,9 +602,11 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
     let oldPackURL = root.appendingPathComponent("1.21")
     let paleGardenPackURL = root.appendingPathComponent("1.21.4")
     let sulfurPackURL = root.appendingPathComponent("26.2")
+    let dappledForestPackURL = root.appendingPathComponent("26.3-pre-1")
     guard FileManager.default.fileExists(atPath: oldPackURL.path),
           FileManager.default.fileExists(atPath: paleGardenPackURL.path),
-          FileManager.default.fileExists(atPath: sulfurPackURL.path)
+          FileManager.default.fileExists(atPath: sulfurPackURL.path),
+          FileManager.default.fileExists(atPath: dappledForestPackURL.path)
     else { return }
 
     do {
@@ -644,4 +646,31 @@ private func makeBiomeIDCompilationSearchTree() throws -> BiomeSearchTree {
     }
     let sulfurTree = try buildBiomeSearchTree(from: sulfurPack.biomeRegistry, entries: sulfurEntries, packFormat: sulfurPack.packFormat)
     #expect(!sulfurTree.nodes(with: RegistryKey(referencing: "minecraft:sulfur_caves")).isEmpty)
+
+    let format108Entries = try getPredefinedBiomeSearchTreeData(
+        for: "overworld",
+        packFormat: Version(major: 108, minor: 0)
+    )!
+    #expect(!format108Entries.contains { $0.biome == "minecraft:dappled_forest" })
+
+    let format109Entries = try getPredefinedBiomeSearchTreeData(
+        for: "overworld",
+        packFormat: Version(major: 109, minor: 0)
+    )!
+    #expect(format109Entries.contains { $0.biome == "minecraft:dappled_forest" })
+
+    let dappledForestPack = try DataPack(
+        fromRootPath: dappledForestPackURL,
+        loadingOptions: [.noDensityFunctions, .noNoises, .noNoiseSettings, .noDimensions]
+    )
+    let dappledForestEntries = try getPredefinedBiomeSearchTreeData(
+        for: "overworld",
+        packFormat: dappledForestPack.packFormat
+    )!
+    #expect(dappledForestEntries.contains { $0.biome == "minecraft:dappled_forest" })
+    _ = try buildBiomeSearchTree(
+        from: dappledForestPack.biomeRegistry,
+        entries: dappledForestEntries,
+        packFormat: dappledForestPack.packFormat
+    )
 }
