@@ -1172,12 +1172,18 @@ public final class NoiseDensityFunction: DensityFunction {
         self.shiftZ = nil
     }
 
-    public init(noise: DensityFunctionNoise, scaleXZ: Double, scaleY: Double) {
+    public init(
+        noise: DensityFunctionNoise,
+        shiftX: DensityFunction? = nil,
+        shiftZ: DensityFunction? = nil,
+        scaleXZ: Double,
+        scaleY: Double
+    ) {
         self.scaleXZ = scaleXZ
         self.scaleY = scaleY
         self.noise = noise
-        self.shiftX = nil
-        self.shiftZ = nil
+        self.shiftX = shiftX
+        self.shiftZ = shiftZ
     }
 
     public init(from decoder: Decoder) throws {
@@ -1204,8 +1210,13 @@ public final class NoiseDensityFunction: DensityFunction {
     }
 
     public func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
+        // Format-113 climate functions use minecraft:noise with coordinate
+        // shifts. They must survive baking: otherwise climate noise is sampled
+        // without its distortion and biome borders become visibly smoother.
         return NoiseDensityFunction(
             noise: try baker.bake(noise: self.noise),
+            shiftX: try self.shiftX?.bake(withBaker: baker),
+            shiftZ: try self.shiftZ?.bake(withBaker: baker),
             scaleXZ: self.scaleXZ,
             scaleY: self.scaleY
         )

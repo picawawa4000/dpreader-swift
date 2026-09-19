@@ -76,7 +76,7 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
     #expect(pack.packFormat == Version(major: 119, minor: 0))
 }
 
-@Test func testVanilla119NoiseAndBiomeGenerationMatches107Point1() throws {
+@Test func testVanilla263BiomeGenerationMatches262Exactly() throws {
     func vanillaPack(_ version: String) throws -> DataPack {
         let root = URL(fileURLWithPath: #file)
             .deletingLastPathComponent()
@@ -100,6 +100,10 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
         usingSettings: RegistryKey(referencing: "minecraft:overworld")
     )
 
+    // Keep a few direct samples so a failure identifies the climate axis that
+    // changed, then compare sufficiently large maps to catch any change in
+    // biome-border shape. A handful of point samples can all agree while a
+    // changed noise scale makes borders appear smoother.
     let positions = [
         PosInt3D(x: 0, y: 0, z: 0),
         PosInt3D(x: -1_024, y: 64, z: 2_048),
@@ -113,6 +117,31 @@ private func checkDoubleCubiomes(_ actual: Double, _ expected: Int) -> Bool {
             try modernGenerator.sampleBiome(at: position, in: overworld) == oldGenerator.sampleBiome(at: position, in: overworld),
             "Biome mismatch at \(position)"
         )
+    }
+
+    let regions = [
+        (from: PosInt2D(x: -1_024, z: -1_024), to: PosInt2D(x: 1_024, z: 1_024), y: Int32(64)),
+        (from: PosInt2D(x: 12_288, z: -8_192), to: PosInt2D(x: 14_336, z: -6_144), y: Int32(64)),
+        (from: PosInt2D(x: -36_864, z: 14_336), to: PosInt2D(x: -34_816, z: 16_384), y: Int32(-48))
+    ]
+    for region in regions {
+        let oldBiomes = try #require(try oldGenerator.generateBiomesInSquare(
+            from: region.from,
+            to: region.to,
+            atY: region.y,
+            in: overworld,
+            scale: 4
+        ))
+        let modernBiomes = try #require(try modernGenerator.generateBiomesInSquare(
+            from: region.from,
+            to: region.to,
+            atY: region.y,
+            in: overworld,
+            scale: 4
+        ))
+        if modernBiomes != oldBiomes {
+            #expect(Bool(false), "Biome map mismatch from \(region.from) to \(region.to) at y=\(region.y)")
+        }
     }
 }
 
