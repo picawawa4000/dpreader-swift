@@ -868,7 +868,7 @@ private func buildOverworldBiomeSearchTreeData(packFormat: Version) -> [MultiNoi
     // Dappled forest was added in 26.3 snapshot 1 (format 108.0), replacing
     // the near-cold, middle-humidity forest entry in the overworld preset.
     // Format 108 itself predates the biome, so only later formats select it.
-    let dappledForest = packFormat > Version(major: 108, minor: 0) ? "minecraft:dappled_forest" : THE_VOID
+    let dappledForest = packFormat >= Version(major: 108, minor: 0) ? "minecraft:dappled_forest" : THE_VOID
 
     let commonBiomes = [
         ["minecraft:snowy_plains", "minecraft:snowy_plains", "minecraft:snowy_plains", "minecraft:snowy_taiga", "minecraft:taiga"],
