@@ -330,6 +330,113 @@ struct JigsawStructureTests {
         }
     }
 
+    @Test func abandonedCampCopperChestMatchesReferenceLoot() throws {
+        let worldSeed = UInt64(bitPattern: -1_234_567_890)
+        let pack = try DataPack(fromRootPath: URL(filePath: "vanilla/26.3-pre-1"))
+        let terrainGenerator = try WorldGenerator(
+            withWorldSeed: worldSeed,
+            usingDataPacks: [pack],
+            usingSettings: RegistryKey(referencing: "minecraft:overworld")
+        )
+        var terrainChunks: [TerrainChunkKey: ProtoChunk] = [:]
+        let terrainLock = NSLock()
+        let context = StructureGenerationContext(
+            seaLevel: 63,
+            minimumWorldY: -64,
+            maximumWorldY: 319,
+            usingDataPacks: [pack]
+        ) { position in
+            guard position.y >= -64, position.y <= 319 else { return Blocks.airState }
+            let chunkPos = PosInt2D(x: floorDiv(position.x, by: 16), z: floorDiv(position.z, by: 16))
+            let key = TerrainChunkKey(x: chunkPos.x, z: chunkPos.z)
+            terrainLock.lock()
+            defer { terrainLock.unlock() }
+            let chunk: ProtoChunk
+            if let cached = terrainChunks[key] {
+                chunk = cached
+            } else {
+                let generated = ProtoChunk()
+                do {
+                    try terrainGenerator.generateInto(generated, at: chunkPos)
+                } catch {
+                    Issue.record("Failed to generate abandoned-camp terrain at \(chunkPos): \(error)")
+                    return Blocks.airState
+                }
+                terrainChunks[key] = generated
+                chunk = generated
+            }
+            return chunk.block(atLocal: PosInt3D(
+                x: position.x &- chunkPos.x &* 16,
+                y: position.y &+ 64,
+                z: position.z &- chunkPos.z &* 16
+            ))
+        }
+
+        let sampler = StructurePlacementSampler(withWorldSeed: worldSeed, usingDataPacks: [pack])
+        let startChunk = PosInt2D(x: -570, z: -348)
+        let biome = try #require(try terrainGenerator.sampleBlockBiome(
+            at: PosInt3D(x: -9_120, y: 63, z: -5_568),
+            in: RegistryKey(referencing: "minecraft:overworld")
+        ))
+        let resolved = try #require(try sampler.resolveStructureSet(
+            inRegion: PosInt2D(x: floorDiv(startChunk.x, by: 37), z: floorDiv(startChunk.z, by: 37)),
+            biome: biome,
+            for: RegistryKey(referencing: "minecraft:abandoned_camp")
+        ))
+        #expect(resolved.chunkPos == startChunk)
+        let camp = try #require(pack.structureRegistry.get(resolved.structureKey))
+        let result = try #require(try camp.generate(worldSeed: worldSeed, startChunk: startChunk, context: context))
+        guard case .jigsaw(let generated) = result else {
+            Issue.record("Expected an abandoned-camp jigsaw result")
+            return
+        }
+
+        func decode(_ identifier: String) throws -> LootTable {
+            let parts = identifier.split(separator: ":", maxSplits: 1).map(String.init)
+            let namespace = parts.count == 2 ? parts[0] : "minecraft"
+            let path = parts.count == 2 ? parts[1] : parts[0]
+            return try makeTestingJSONDecoder(.latestSupported).decode(
+                LootTable.self,
+                from: Data(contentsOf: URL(filePath: "vanilla/26.3-pre-1/data/\(namespace)/loot_table/\(path).json"))
+            )
+        }
+        func counts(_ container: StructureLootContainer) throws -> [String: Int] {
+            let items = try decode(container.lootTable).generateLoot(withContext: LootContext(
+                random: CheckedRandom(seed: UInt64(bitPattern: container.lootSeed)),
+                originBiome: biome.name
+            ), resolvingTables: decode)
+            return Dictionary(grouping: items) { item in
+                // The item ID is named for the destination; the player-facing item
+                // is the woodland explorer map described by the reference.
+                item.itemName == "minecraft:woodland_mansion_map"
+                    ? "minecraft:woodland_explorer_map"
+                    : item.itemName
+            }.mapValues { $0.reduce(0) { $0 + $1.count } }
+        }
+
+        let regular = try #require(generated.lootContainers.first { $0.block == "minecraft:chest" })
+        #expect(try counts(regular) == [
+            "minecraft:glass_bottle": 5,
+            "minecraft:abandoned_camp_map": 1,
+            "minecraft:copper_leggings": 2,
+            "minecraft:rabbit_hide": 1,
+            "minecraft:saddle": 1,
+            "minecraft:bundle": 1
+        ])
+        let oxidized = try #require(generated.lootContainers.first { $0.block == "minecraft:oxidized_copper_chest" })
+        let oxidizedCounts = try counts(oxidized)
+        #expect(oxidizedCounts == [
+            "minecraft:diamond": 1,
+            "minecraft:potion": 1,
+            "minecraft:gold_ingot": 3,
+            "minecraft:copper_ingot": 2,
+            "minecraft:map": 1,
+            "minecraft:woodland_explorer_map": 1,
+            "minecraft:iron_leggings": 1,
+            "minecraft:iron_ingot": 1
+        ], "Actual oxidized-copper chest loot: \(oxidizedCounts)")
+    }
+
     @Test func abandonedCampSecondReferenceDiagnostic() throws {
         let targetWorldSeed: WorldSeed = 123458
         let pack = try DataPack(fromRootPath: URL(filePath: "vanilla/26.3-pre-1"))

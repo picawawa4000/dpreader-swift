@@ -207,6 +207,17 @@ public final class JigsawStructurePiece: StructurePiece {
             || id == "minecraft:dispenser"
             || id == "minecraft:hopper"
             || id == "minecraft:decorated_pot"
+            // Copper chests were added with abandoned camps. Like regular chests,
+            // their LootTableSeed is assigned by structure placement rather than
+            // being taken from the template/processor default.
+            || id == "minecraft:copper_chest"
+            || id == "minecraft:exposed_copper_chest"
+            || id == "minecraft:weathered_copper_chest"
+            || id == "minecraft:oxidized_copper_chest"
+            || id == "minecraft:waxed_copper_chest"
+            || id == "minecraft:waxed_exposed_copper_chest"
+            || id == "minecraft:waxed_weathered_copper_chest"
+            || id == "minecraft:waxed_oxidized_copper_chest"
     }
 
     fileprivate func templateLootContainers() -> [StructureLootContainer] {
