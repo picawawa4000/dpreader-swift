@@ -182,16 +182,20 @@ public final class UnbakedNoise: DensityFunctionNoise {
 /// A seed-initialized noise implementation ready for density-function sampling.
 public final class BakedNoise: DensityFunctionNoise {
     public let key: RegistryKey<NoiseDefinition>
-    private let stateLock = NSLock()
     private var storedSampler: DoublePerlinNoise
     let usesSharedSeedStorage: Bool
 
     var sampler: DoublePerlinNoise {
-        self.stateLock.lock()
-        defer { self.stateLock.unlock() }
         return self.storedSampler
     }
 
+    /// Initialises this noise.
+    /// - Parameters:
+    ///   - key: The registry key of this noise.
+    ///   - sampler: The sampler to use for this noise.
+    ///   - usesSharedSeedStorage: Whether this noise uses shared seed storage
+    /// and so has some external synchronisation mechanism preventing concurrent reading and writing.
+    /// If false, it is an error to replace this noise's sampler in-place.
     public init(
         fromKey key: RegistryKey<NoiseDefinition>,
         withSampler sampler: DoublePerlinNoise,
@@ -204,16 +208,16 @@ public final class BakedNoise: DensityFunctionNoise {
 
     func replaceSampler(with sampler: DoublePerlinNoise) {
         precondition(self.usesSharedSeedStorage, "Only shared seeded noises can be updated in place.")
-        self.stateLock.lock()
+        // `WorldGenerator` performs this while its configuration lock is held; callers must
+        // drain active generation work before reseeding. Keeping the mutation outside the hot
+        // sample path lets concurrent readers use this immutable-for-a-generation reference directly.
         self.storedSampler = sampler
-        self.stateLock.unlock()
     }
 
+    /// Sampling has no synchronization overhead. Shared seeded instances are only replaced by
+    /// `WorldGenerator.setWorldSeed(_:)`, after the caller has drained active generation work.
     public func sample(x: Double, y: Double, z: Double) -> Double {
-        self.stateLock.lock()
-        let sampler = self.storedSampler
-        self.stateLock.unlock()
-        return sampler.sample(x: x, y: y, z: z)
+        return self.storedSampler.sample(x: x, y: y, z: z)
     }
 }
 
