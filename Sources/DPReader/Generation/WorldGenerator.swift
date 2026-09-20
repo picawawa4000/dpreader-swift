@@ -2634,16 +2634,6 @@ private final class WeakCompiledClimateBiomeBulkSampler {
     }
 }
 
-private final class WeakCompiledNoiseRouterBiomeBulkSampler {
-    weak var value: CompiledNoiseRouterBiomeBulkSampler?
-    let dimension: RegistryKey<Dimension>
-
-    init(_ value: CompiledNoiseRouterBiomeBulkSampler, dimension: RegistryKey<Dimension>) {
-        self.value = value
-        self.dimension = dimension
-    }
-}
-
 private struct SectionBiomeLatticeMap {
     let uniquePositions: [BiomeLatticePosition]
     let blockToUniqueIndex: [UInt16]
@@ -2729,7 +2719,6 @@ public final class WorldGeneratorState {
     fileprivate let owner: ObjectIdentifier
     fileprivate let revision: UInt64
     fileprivate let densityFunctionCaches: WorldScaleDensityFunctionCacheState
-    fileprivate var compiledChunkTerrainDensityRegistry: [CompiledDensityFunctionBufferContext: CompiledDensityFunctionBulk] = [:]
 
     fileprivate init(
         owner: ObjectIdentifier,
@@ -2739,6 +2728,56 @@ public final class WorldGeneratorState {
         self.owner = owner
         self.revision = revision
         self.densityFunctionCaches = densityFunctionCaches
+    }
+}
+
+/// Fixed-shape programs are immutable apart from their seed-backed imports, so they can be
+/// shared by every caller. Output storage deliberately remains with the caller.
+private final class WorldGeneratorCompiledSamplerCache {
+    struct BiomeKey: Hashable {
+        let volume: CompiledDensityFunctionBufferContext
+        let dimension: RegistryKey<Dimension>
+        let strategy: CompilationBackend
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(self.volume)
+            hasher.combine(self.dimension)
+            hasher.combine(self.strategy == .llvm ? 0 : 1)
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.volume == rhs.volume
+                && lhs.dimension == rhs.dimension
+                && lhs.strategy == rhs.strategy
+        }
+    }
+
+    private let lock = NSLock()
+    private var chunkTerrain: [CompiledDensityFunctionBufferContext: CompiledDensityFunctionBulk] = [:]
+    private var biomeIDs: [BiomeKey: CompiledNoiseRouterBiomeBulkSampler] = [:]
+
+    func chunkTerrainSampler(
+        for context: CompiledDensityFunctionBufferContext,
+        make: () throws -> CompiledDensityFunctionBulk
+    ) rethrows -> CompiledDensityFunctionBulk {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        if let sampler = self.chunkTerrain[context] { return sampler }
+        let sampler = try make()
+        self.chunkTerrain[context] = sampler
+        return sampler
+    }
+
+    func biomeIDSampler(
+        for key: BiomeKey,
+        make: () throws -> CompiledNoiseRouterBiomeBulkSampler
+    ) rethrows -> CompiledNoiseRouterBiomeBulkSampler {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        if let sampler = self.biomeIDs[key] { return sampler }
+        let sampler = try make()
+        self.biomeIDs[key] = sampler
+        return sampler
     }
 }
 
@@ -2766,7 +2805,10 @@ public final class WorldGenerator {
     private var compiledBiomeDensityFunctions: CompiledBiomeDensityFunctions?
     private var finalDensityBulkSamplers: [WeakCompiledDensityFunctionBulk] = []
     private var climateBiomeBulkSamplers: [WeakCompiledClimateBiomeBulkSampler] = []
-    private var biomeIDBulkSamplers: [WeakCompiledNoiseRouterBiomeBulkSampler] = []
+    /// Shared compiled code, keyed by its fixed input shape.  This is intentionally separate
+    /// from `WorldGeneratorState`: states own mutable density-function caches, while compiled
+    /// programs have caller-owned output buffers and are safe to reuse between workers.
+    private let compiledSamplerCache = WorldGeneratorCompiledSamplerCache()
     private var generationStateRevision: UInt64 = 0
     // Reseeding and retained compiled-sampler creation mutate generator configuration. Generation
     // itself uses caller-owned WorldGeneratorState and does not acquire this lock.
@@ -3376,30 +3418,6 @@ public final class WorldGenerator {
         )
     }
 
-    private func refreshBiomeIDBulkSamplers() throws {
-        let liveSamplers = self.biomeIDBulkSamplers.compactMap { reference in
-            reference.value.map { ($0, reference.dimension) }
-        }
-        var replacements: [(CompiledNoiseRouterBiomeBulkSampler, CompiledNoiseRouterBiomeBulkSampler)] = []
-        replacements.reserveCapacity(liveSamplers.count)
-        for (sampler, dimension) in liveSamplers {
-            replacements.append((
-                sampler,
-                try self.compileBiomeIDBulkSampler(
-                    for: sampler.bufferContext,
-                    in: dimension,
-                    strategy: sampler.strategy
-                )
-            ))
-        }
-        for (sampler, replacement) in replacements {
-            sampler.replaceImplementation(with: replacement)
-        }
-        self.biomeIDBulkSamplers = liveSamplers.map {
-            WeakCompiledNoiseRouterBiomeBulkSampler($0.0, dimension: $0.1)
-        }
-    }
-
     /// Convert the density functions to a usable format.
     private func bakeDensityFunctions() throws {
         // The trick here is that, if every density function in the registries is baked in an arbitrary order,
@@ -3746,11 +3764,9 @@ public final class WorldGenerator {
         }
 
         let compiled: CompiledDensityFunctionBulk
-        if let existing = state.compiledChunkTerrainDensityRegistry[context],
-           existing.strategy == strategy {
-            compiled = existing
-        } else {
-            guard let generated = try? compile(
+        do {
+            compiled = try self.compiledSamplerCache.chunkTerrainSampler(for: context) {
+                try compile(
                 densityFunction: try self.validatedDirectPointSamplingDensityFunctions(
                     for: "Compiled chunk terrain generation"
                 ).finalDensity,
@@ -3758,11 +3774,10 @@ public final class WorldGenerator {
                 strategy: strategy,
                 registry: self.registries.densityFunctionRegistry,
                 runtime: self.wasmRuntime
-            ) else {
-                return fallback
+                )
             }
-            state.compiledChunkTerrainDensityRegistry[context] = generated
-            compiled = generated
+        } catch {
+            return fallback
         }
 
         return CompiledChunkTerrainDensity(
@@ -5062,6 +5077,48 @@ public final class WorldGenerator {
         self.registries.compiledDensityFunctionRegistry
     }
 
+    /// Compiles and retains the standard full-chunk terrain program before visible work begins.
+    ///
+    /// Call this once after constructing a shared generator. It is deliberately a no-op when no
+    /// density-function compilation backend was configured. Biome programs have caller-specific
+    /// shapes, so prewarm those with ``prewarmCompiledDensityFunctions(for:in:strategy:)``.
+    public func prewarmCompiledDensityFunctions() throws {
+        self.configurationLock.lock()
+        defer { self.configurationLock.unlock() }
+
+        guard let strategy = self.densityFunctionCompilationStrategy else { return }
+        let settings = try self.validatedTerrainConfig(for: "Compiled density-function prewarming")
+        guard let context = Self.chunkTerrainCornerBufferContext(
+            height: Int32(settings.height),
+            sizeHorizontal: settings.sizeHorizontal,
+            sizeVertical: settings.sizeVertical
+        ) else { return }
+        _ = try self.compiledSamplerCache.chunkTerrainSampler(for: context) {
+            try compile(
+                densityFunction: try self.validatedDirectPointSamplingDensityFunctions(
+                    for: "Compiled density-function prewarming"
+                ).finalDensity,
+                bufferContext: context,
+                strategy: strategy,
+                registry: self.registries.densityFunctionRegistry,
+                runtime: self.wasmRuntime
+            )
+        }
+    }
+
+    /// Compiles and retains a fixed-shape biome program before rendering begins. The returned
+    /// sampler is shared between workers; each worker should provide its own output buffer to
+    /// ``CompiledNoiseRouterBiomeBulkSampler/fill(at:into:)``.
+    @discardableResult
+    public func prewarmCompiledDensityFunctions(
+        for volume: CompiledDensityFunctionBufferContext,
+        in dimension: RegistryKey<Dimension>,
+        strategy: CompilationBackend? = nil
+    ) throws -> CompiledNoiseRouterBiomeBulkSampler {
+        try self.prewarmCompiledDensityFunctions()
+        return try self.makeBiomeIDBulkSampler(for: volume, in: dimension, strategy: strategy)
+    }
+
     /// Returns a compiled sampler for a fixed z/x/y-ordered volume of the configured final density.
     /// The sampler is refreshed when ``setWorldSeed(_:)`` is called, so an existing sampler follows
     /// the generator's current seed. If no strategy is supplied, the generator's configured backend
@@ -5148,15 +5205,18 @@ public final class WorldGenerator {
             selectedStrategy = .wasm
             #endif
         }
-        let sampler = try self.compileBiomeIDBulkSampler(
-            for: volume,
-            in: dimension,
+        let key = WorldGeneratorCompiledSamplerCache.BiomeKey(
+            volume: volume,
+            dimension: dimension,
             strategy: selectedStrategy
         )
-        self.biomeIDBulkSamplers.append(
-            WeakCompiledNoiseRouterBiomeBulkSampler(sampler, dimension: dimension)
-        )
-        return sampler
+        return try self.compiledSamplerCache.biomeIDSampler(for: key) {
+            try self.compileBiomeIDBulkSampler(
+                for: volume,
+                in: dimension,
+                strategy: selectedStrategy
+            )
+        }
     }
 
     /// Samples terrain in an adaptive block-radius around an origin using point samples spaced by generation-cell detail.

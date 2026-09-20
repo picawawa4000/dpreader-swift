@@ -876,6 +876,13 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
         for: volume,
         in: dimension
     )
+    // The compiled code is fixed-shape and has no output storage of its own, so every worker
+    // must receive this same retained program and supply a separate output buffer to `fill`.
+    let sharedBiomeIDSampler = try generator.makeBiomeIDBulkSampler(
+        for: volume,
+        in: dimension
+    )
+    #expect(biomeIDSampler === sharedBiomeIDSampler)
     let firstSamples = sampler(at: basePosition)
     #expect(firstSamples.count == volume.sampleCount)
     #expect(sampler.strategy == .wasm)
@@ -983,6 +990,8 @@ private final class BiomeAlternativeInvocationRecorder: @unchecked Sendable {
 
     try generator.setWorldSeed(50_123_537_021)
     try referenceGenerator.setWorldSeed(50_123_537_021)
+    let reseededSharedBiomeIDSampler = try generator.makeBiomeIDBulkSampler(for: volume, in: dimension)
+    #expect(biomeIDSampler === reseededSharedBiomeIDSampler)
     let reseededSamples = sampler(at: basePosition)
     let reseededExpected = try expectedSamples()
     let reseededBiomeIDs = biomeIDSampler(at: basePosition)
