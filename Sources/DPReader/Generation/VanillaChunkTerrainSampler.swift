@@ -58,15 +58,94 @@ private protocol VanillaChunkFillFunction {
     func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode)
 }
 
+private final class VanillaChunkDensityFunctionCacheState {
+    private var caches: [AnyObject] = []
+
+    func add<Storage: AnyObject>(_ storage: Storage) -> Int {
+        self.caches.append(storage)
+        return self.caches.count - 1
+    }
+
+    @inline(__always) func storage<Storage: AnyObject>(at index: Int, as type: Storage.Type) -> Storage {
+        self.caches[index] as! Storage
+    }
+}
+
+private final class VanillaCache2DStorage {
+    var hasLastSamplingResult = false
+    var lastX: Int32 = 0
+    var lastZ: Int32 = 0
+    var lastSamplingResult: Double = 0.0
+}
+
+private final class VanillaFlatCacheStorage {
+    let values: [Double]
+
+    init(delegate: any DensityFunction, sampler: VanillaChunkTerrainSampler) {
+        let size = sampler.horizontalBiomeEnd + 1
+        var values = [Double](repeating: 0.0, count: size * size)
+        for localBiomeX in 0...sampler.horizontalBiomeEnd {
+            let blockX = terrainBlockCoord(fromBiome: sampler.startBiomeX + Int32(localBiomeX))
+            for localBiomeZ in 0...sampler.horizontalBiomeEnd {
+                let blockZ = terrainBlockCoord(fromBiome: sampler.startBiomeZ + Int32(localBiomeZ))
+                values[localBiomeX + localBiomeZ * size] = delegate.sample(
+                    at: PosInt3D(x: blockX, y: 0, z: blockZ)
+                )
+            }
+        }
+        self.values = values
+    }
+}
+
+private final class VanillaCacheOnceStorage {
+    var sampleUniqueIndex: Int64 = 0
+    var cacheOnceUniqueIndex: Int64 = 0
+    var lastSamplingResult: Double = 0.0
+    var values: [Double]?
+}
+
+private final class VanillaCellCacheStorage {
+    var values: [Double]
+
+    init(count: Int) {
+        self.values = [Double](repeating: 0.0, count: count)
+    }
+}
+
+private final class VanillaInterpolatedCacheStorage {
+    var startDensityBuffer: [[Double]]
+    var endDensityBuffer: [[Double]]
+    var x0y0z0 = 0.0
+    var x0y0z1 = 0.0
+    var x1y0z0 = 0.0
+    var x1y0z1 = 0.0
+    var x0y1z0 = 0.0
+    var x0y1z1 = 0.0
+    var x1y1z0 = 0.0
+    var x1y1z1 = 0.0
+    var x0z0 = 0.0
+    var x1z0 = 0.0
+    var x0z1 = 0.0
+    var x1z1 = 0.0
+    var z0 = 0.0
+    var z1 = 0.0
+    var result = 0.0
+
+    init(xSize: Int, ySize: Int) {
+        self.startDensityBuffer = (0..<xSize).map { _ in [Double](repeating: 0.0, count: ySize) }
+        self.endDensityBuffer = (0..<xSize).map { _ in [Double](repeating: 0.0, count: ySize) }
+    }
+}
+
 private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
-    private var hasLastSamplingResult = false
-    private var lastX: Int32 = 0
-    private var lastZ: Int32 = 0
-    private var lastSamplingResult: Double = 0.0
+    private let sampler: VanillaChunkTerrainSampler
+    private let cacheNumber: Int
 
-    init(wrapping delegate: any DensityFunction) {
+    init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
         self.delegate = delegate
+        self.sampler = sampler
+        self.cacheNumber = sampler.addDensityFunctionCache(VanillaCache2DStorage())
     }
 
     init(from decoder: any Decoder) throws {
@@ -78,14 +157,15 @@ private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFuncti
     }
 
     @inline(__always) func sample(at pos: PosInt3D) -> Double {
-        if self.hasLastSamplingResult && self.lastX == pos.x && self.lastZ == pos.z {
-            return self.lastSamplingResult
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaCache2DStorage.self)
+        if cache.hasLastSamplingResult && cache.lastX == pos.x && cache.lastZ == pos.z {
+            return cache.lastSamplingResult
         }
         let sampled = self.delegate.sample(at: pos)
-        self.hasLastSamplingResult = true
-        self.lastX = pos.x
-        self.lastZ = pos.z
-        self.lastSamplingResult = sampled
+        cache.hasLastSamplingResult = true
+        cache.lastX = pos.x
+        cache.lastZ = pos.z
+        cache.lastSamplingResult = sampled
         return sampled
     }
 
@@ -147,28 +227,21 @@ private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFuncti
 
 private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
+    private let sampler: VanillaChunkTerrainSampler
+    private let cacheNumber: Int
     private let startBiomeX: Int32
     private let startBiomeZ: Int32
     private let horizontalCacheSize: Int
-    private var cache: [Double]
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
         self.delegate = delegate
+        self.sampler = sampler
         self.startBiomeX = sampler.startBiomeX
         self.startBiomeZ = sampler.startBiomeZ
         self.horizontalCacheSize = sampler.horizontalBiomeEnd + 1
-        self.cache = [Double](repeating: 0.0, count: self.horizontalCacheSize * self.horizontalCacheSize)
-
-        for localBiomeX in 0...sampler.horizontalBiomeEnd {
-            let biomeX = sampler.startBiomeX + Int32(localBiomeX)
-            let blockX = terrainBlockCoord(fromBiome: biomeX)
-            for localBiomeZ in 0...sampler.horizontalBiomeEnd {
-                let biomeZ = sampler.startBiomeZ + Int32(localBiomeZ)
-                let blockZ = terrainBlockCoord(fromBiome: biomeZ)
-                let index = localBiomeX + localBiomeZ * self.horizontalCacheSize
-                self.cache[index] = delegate.sample(at: PosInt3D(x: blockX, y: 0, z: blockZ))
-            }
-        }
+        self.cacheNumber = sampler.addDensityFunctionCache(
+            VanillaFlatCacheStorage(delegate: delegate, sampler: sampler)
+        )
     }
 
     init(from decoder: any Decoder) throws {
@@ -190,7 +263,10 @@ private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapp
             && localBiomeZ < Int32(self.horizontalCacheSize)
         {
             let index = Int(localBiomeX + localBiomeZ * Int32(self.horizontalCacheSize))
-            return self.cache[index]
+            return self.sampler.densityFunctionCache(
+                at: self.cacheNumber,
+                as: VanillaFlatCacheStorage.self
+            ).values[index]
         }
         return self.delegate.sample(at: pos)
     }
@@ -207,14 +283,12 @@ private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapp
 private final class VanillaChunkCacheOnce: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let sampler: VanillaChunkTerrainSampler
-    private var sampleUniqueIndex: Int64 = 0
-    private var cacheOnceUniqueIndex: Int64 = 0
-    private var lastSamplingResult: Double = 0.0
-    private var cache: [Double]? = nil
+    private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
         self.delegate = delegate
         self.sampler = sampler
+        self.cacheNumber = sampler.addDensityFunctionCache(VanillaCacheOnceStorage())
     }
 
     init(from decoder: any Decoder) throws {
@@ -230,31 +304,33 @@ private final class VanillaChunkCacheOnce: DensityFunction, VanillaChunkFillFunc
             return self.delegate.sample(at: pos)
         }
 
-        if let cache = self.cache, self.cacheOnceUniqueIndex == self.sampler.cacheOnceUniqueIndex {
-            return cache[self.sampler.index]
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaCacheOnceStorage.self)
+        if let values = cache.values, cache.cacheOnceUniqueIndex == self.sampler.cacheOnceUniqueIndex {
+            return values[self.sampler.index]
         }
 
-        if self.sampleUniqueIndex == self.sampler.sampleUniqueIndex {
-            return self.lastSamplingResult
+        if cache.sampleUniqueIndex == self.sampler.sampleUniqueIndex {
+            return cache.lastSamplingResult
         }
 
-        self.sampleUniqueIndex = self.sampler.sampleUniqueIndex
+        cache.sampleUniqueIndex = self.sampler.sampleUniqueIndex
         let sampled = self.delegate.sample(at: pos)
-        self.lastSamplingResult = sampled
+        cache.lastSamplingResult = sampled
         return sampled
     }
 
     func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode) {
-        if let cache = self.cache, self.cacheOnceUniqueIndex == sampler.cacheOnceUniqueIndex {
-            if cache.count == densities.count {
-                densities = cache
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaCacheOnceStorage.self)
+        if let values = cache.values, cache.cacheOnceUniqueIndex == sampler.cacheOnceUniqueIndex {
+            if values.count == densities.count {
+                densities = values
                 return
             }
         }
 
         sampler.fill(into: &densities, using: self.delegate, mode: mode)
-        self.cache = densities
-        self.cacheOnceUniqueIndex = sampler.cacheOnceUniqueIndex
+        cache.values = densities
+        cache.cacheOnceUniqueIndex = sampler.cacheOnceUniqueIndex
     }
 
     func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
@@ -269,13 +345,13 @@ private final class VanillaChunkCacheOnce: DensityFunction, VanillaChunkFillFunc
 private final class VanillaChunkCellCache: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     let delegate: any DensityFunction
     private let sampler: VanillaChunkTerrainSampler
-    private var cache: [Double]
+    private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
         self.delegate = delegate
         self.sampler = sampler
         let count = Int(sampler.horizontalCellBlockCount * sampler.horizontalCellBlockCount * sampler.verticalCellBlockCount)
-        self.cache = [Double](repeating: 0.0, count: count)
+        self.cacheNumber = sampler.addDensityFunctionCache(VanillaCellCacheStorage(count: count))
         self.sampler.register(cellCache: self)
     }
 
@@ -306,14 +382,18 @@ private final class VanillaChunkCellCache: DensityFunction, VanillaChunkFillFunc
         {
             let index = ((self.sampler.verticalCellBlockCount - 1 - localY) * self.sampler.horizontalCellBlockCount + localX)
                 * self.sampler.horizontalCellBlockCount + localZ
-            return self.cache[Int(index)]
+            return self.sampler.densityFunctionCache(
+                at: self.cacheNumber,
+                as: VanillaCellCacheStorage.self
+            ).values[Int(index)]
         }
 
         return self.delegate.sample(at: pos)
     }
 
     func refreshCache(using sampler: VanillaChunkTerrainSampler) {
-        sampler.fill(into: &self.cache, using: self.delegate, mode: .cell)
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaCellCacheStorage.self)
+        sampler.fill(into: &cache.values, using: self.delegate, mode: .cell)
     }
 
     func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode) {
@@ -332,24 +412,7 @@ private final class VanillaChunkCellCache: DensityFunction, VanillaChunkFillFunc
 private final class VanillaChunkInterpolatedCache: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let sampler: VanillaChunkTerrainSampler
-    private var startDensityBuffer: [[Double]]
-    private var endDensityBuffer: [[Double]]
-
-    private var x0y0z0: Double = 0.0
-    private var x0y0z1: Double = 0.0
-    private var x1y0z0: Double = 0.0
-    private var x1y0z1: Double = 0.0
-    private var x0y1z0: Double = 0.0
-    private var x0y1z1: Double = 0.0
-    private var x1y1z0: Double = 0.0
-    private var x1y1z1: Double = 0.0
-    private var x0z0: Double = 0.0
-    private var x1z0: Double = 0.0
-    private var x0z1: Double = 0.0
-    private var x1z1: Double = 0.0
-    private var z0: Double = 0.0
-    private var z1: Double = 0.0
-    private var result: Double = 0.0
+    private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
         self.delegate = delegate
@@ -357,8 +420,9 @@ private final class VanillaChunkInterpolatedCache: DensityFunction, VanillaChunk
 
         let xSize = sampler.horizontalCellCount + 1
         let ySize = sampler.verticalCellCount + 1
-        self.startDensityBuffer = (0..<xSize).map { _ in [Double](repeating: 0.0, count: ySize) }
-        self.endDensityBuffer = (0..<xSize).map { _ in [Double](repeating: 0.0, count: ySize) }
+        self.cacheNumber = sampler.addDensityFunctionCache(
+            VanillaInterpolatedCacheStorage(xSize: xSize, ySize: ySize)
+        )
 
         self.sampler.register(interpolator: self)
     }
@@ -372,46 +436,55 @@ private final class VanillaChunkInterpolatedCache: DensityFunction, VanillaChunk
     }
 
     func fillColumnDensities(start: Bool, column: Int, using sampler: VanillaChunkTerrainSampler) {
-        var densities = start ? self.startDensityBuffer[column] : self.endDensityBuffer[column]
+        let cache = self.sampler.densityFunctionCache(
+            at: self.cacheNumber,
+            as: VanillaInterpolatedCacheStorage.self
+        )
+        var densities = start ? cache.startDensityBuffer[column] : cache.endDensityBuffer[column]
         sampler.fill(into: &densities, using: self, mode: .interpolationColumn)
         if start {
-            self.startDensityBuffer[column] = densities
+            cache.startDensityBuffer[column] = densities
         } else {
-            self.endDensityBuffer[column] = densities
+            cache.endDensityBuffer[column] = densities
         }
     }
 
     func onSampledCellCorners(cellY: Int, cellZ: Int) {
-        self.x0y0z0 = self.startDensityBuffer[cellZ][cellY]
-        self.x0y0z1 = self.startDensityBuffer[cellZ + 1][cellY]
-        self.x1y0z0 = self.endDensityBuffer[cellZ][cellY]
-        self.x1y0z1 = self.endDensityBuffer[cellZ + 1][cellY]
-        self.x0y1z0 = self.startDensityBuffer[cellZ][cellY + 1]
-        self.x0y1z1 = self.startDensityBuffer[cellZ + 1][cellY + 1]
-        self.x1y1z0 = self.endDensityBuffer[cellZ][cellY + 1]
-        self.x1y1z1 = self.endDensityBuffer[cellZ + 1][cellY + 1]
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaInterpolatedCacheStorage.self)
+        cache.x0y0z0 = cache.startDensityBuffer[cellZ][cellY]
+        cache.x0y0z1 = cache.startDensityBuffer[cellZ + 1][cellY]
+        cache.x1y0z0 = cache.endDensityBuffer[cellZ][cellY]
+        cache.x1y0z1 = cache.endDensityBuffer[cellZ + 1][cellY]
+        cache.x0y1z0 = cache.startDensityBuffer[cellZ][cellY + 1]
+        cache.x0y1z1 = cache.startDensityBuffer[cellZ + 1][cellY + 1]
+        cache.x1y1z0 = cache.endDensityBuffer[cellZ][cellY + 1]
+        cache.x1y1z1 = cache.endDensityBuffer[cellZ + 1][cellY + 1]
     }
 
     func interpolateY(_ deltaY: Double) {
-        self.x0z0 = lerp(delta: deltaY, start: self.x0y0z0, end: self.x0y1z0)
-        self.x1z0 = lerp(delta: deltaY, start: self.x1y0z0, end: self.x1y1z0)
-        self.x0z1 = lerp(delta: deltaY, start: self.x0y0z1, end: self.x0y1z1)
-        self.x1z1 = lerp(delta: deltaY, start: self.x1y0z1, end: self.x1y1z1)
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaInterpolatedCacheStorage.self)
+        cache.x0z0 = lerp(delta: deltaY, start: cache.x0y0z0, end: cache.x0y1z0)
+        cache.x1z0 = lerp(delta: deltaY, start: cache.x1y0z0, end: cache.x1y1z0)
+        cache.x0z1 = lerp(delta: deltaY, start: cache.x0y0z1, end: cache.x0y1z1)
+        cache.x1z1 = lerp(delta: deltaY, start: cache.x1y0z1, end: cache.x1y1z1)
     }
 
     func interpolateX(_ deltaX: Double) {
-        self.z0 = lerp(delta: deltaX, start: self.x0z0, end: self.x1z0)
-        self.z1 = lerp(delta: deltaX, start: self.x0z1, end: self.x1z1)
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaInterpolatedCacheStorage.self)
+        cache.z0 = lerp(delta: deltaX, start: cache.x0z0, end: cache.x1z0)
+        cache.z1 = lerp(delta: deltaX, start: cache.x0z1, end: cache.x1z1)
     }
 
     func interpolateZ(_ deltaZ: Double) {
-        self.result = lerp(delta: deltaZ, start: self.z0, end: self.z1)
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaInterpolatedCacheStorage.self)
+        cache.result = lerp(delta: deltaZ, start: cache.z0, end: cache.z1)
     }
 
     func swapBuffers() {
-        let temp = self.startDensityBuffer
-        self.startDensityBuffer = self.endDensityBuffer
-        self.endDensityBuffer = temp
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaInterpolatedCacheStorage.self)
+        let temp = cache.startDensityBuffer
+        cache.startDensityBuffer = cache.endDensityBuffer
+        cache.endDensityBuffer = temp
     }
 
     @inline(__always) func sample(at pos: PosInt3D) -> Double {
@@ -419,24 +492,25 @@ private final class VanillaChunkInterpolatedCache: DensityFunction, VanillaChunk
             return self.delegate.sample(at: pos)
         }
         precondition(self.sampler.isInInterpolationLoop, "Trying to sample interpolator outside interpolation loop")
+        let cache = self.sampler.densityFunctionCache(at: self.cacheNumber, as: VanillaInterpolatedCacheStorage.self)
 
         if self.sampler.isSamplingForCaches {
             return lerp3(
                 deltaX: Double(self.sampler.cellBlockX) / Double(self.sampler.horizontalCellBlockCount),
                 deltaY: Double(self.sampler.cellBlockY) / Double(self.sampler.verticalCellBlockCount),
                 deltaZ: Double(self.sampler.cellBlockZ) / Double(self.sampler.horizontalCellBlockCount),
-                x0y0z0: self.x0y0z0,
-                x1y0z0: self.x1y0z0,
-                x0y1z0: self.x0y1z0,
-                x1y1z0: self.x1y1z0,
-                x0y0z1: self.x0y0z1,
-                x1y0z1: self.x1y0z1,
-                x0y1z1: self.x0y1z1,
-                x1y1z1: self.x1y1z1
+                x0y0z0: cache.x0y0z0,
+                x1y0z0: cache.x1y0z0,
+                x0y1z0: cache.x0y1z0,
+                x1y1z0: cache.x1y1z0,
+                x0y0z1: cache.x0y0z1,
+                x1y0z1: cache.x1y0z1,
+                x0y1z1: cache.x0y1z1,
+                x1y1z1: cache.x1y1z1
             )
         }
 
-        return self.result
+        return cache.result
     }
 
     func fill(into densities: inout [Double], using sampler: VanillaChunkTerrainSampler, mode: VanillaChunkTerrainSampler.FillMode) {
@@ -680,6 +754,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
     var index = 0
 
     private var samplerPosDepth = 0
+    private let densityFunctionCacheState = VanillaChunkDensityFunctionCacheState()
     private var interpolators: [VanillaChunkInterpolatedCache] = []
     private var cellCaches: [VanillaChunkCellCache] = []
     private var cacheMarkerMemo: [ObjectIdentifier: any DensityFunction] = [:]
@@ -797,6 +872,17 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
 
     fileprivate func register(cellCache: VanillaChunkCellCache) {
         self.cellCaches.append(cellCache)
+    }
+
+    fileprivate func addDensityFunctionCache<Storage: AnyObject>(_ storage: Storage) -> Int {
+        self.densityFunctionCacheState.add(storage)
+    }
+
+    @inline(__always) fileprivate func densityFunctionCache<Storage: AnyObject>(
+        at index: Int,
+        as type: Storage.Type
+    ) -> Storage {
+        self.densityFunctionCacheState.storage(at: index, as: type)
     }
 
     @inline(__always) func isCurrentSamplerPos(_ pos: PosInt3D) -> Bool {
@@ -1831,18 +1917,18 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         from function: any DensityFunction,
         preserveWorldScaleCaches: Bool = false
     ) -> any DensityFunction {
-        if preserveWorldScaleCaches, function is WorldScaleFlatCache {
-            return WorldScaleFlatCache(
-                wrapping: self.makeDirectPointSamplingFunction(
-                    from: (function as! any DensityFunctionWrapperIntrospectable).wrappedDensityFunction,
+        if preserveWorldScaleCaches, let cache = function as? WorldScaleFlatCache {
+            return cache.replacingArgument(
+                self.makeDirectPointSamplingFunction(
+                    from: cache.wrappedDensityFunction,
                     preserveWorldScaleCaches: true
                 )
             )
         }
-        if preserveWorldScaleCaches, function is WorldScaleCache2D {
-            return WorldScaleCache2D(
-                wrapping: self.makeDirectPointSamplingFunction(
-                    from: (function as! any DensityFunctionWrapperIntrospectable).wrappedDensityFunction,
+        if preserveWorldScaleCaches, let cache = function as? WorldScaleCache2D {
+            return cache.replacingArgument(
+                self.makeDirectPointSamplingFunction(
+                    from: cache.wrappedDensityFunction,
                     preserveWorldScaleCaches: true
                 )
             )
@@ -2116,7 +2202,7 @@ final class VanillaChunkTerrainSampler: DensityFunctionBaker {
         case .flatCache:
             baked = VanillaChunkFlatCache(wrapping: bakedArgument, using: self)
         case .cache2D:
-            baked = VanillaChunkCache2D(wrapping: bakedArgument)
+            baked = VanillaChunkCache2D(wrapping: bakedArgument, using: self)
         case .cache, .cacheOnce:
             baked = VanillaChunkCacheOnce(wrapping: bakedArgument, using: self)
         case .cacheAllInCell:

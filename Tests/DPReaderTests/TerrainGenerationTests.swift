@@ -901,6 +901,52 @@ private func assertLODMatchesGeneratedTerrain(_ sampled: TerrainLODResult, using
     }
 }
 
+@Test func testGenerateIntoUsesIndependentCallerOwnedStateConcurrently() async throws {
+    let pack = try loadNoiseSettingsPack()
+    let worldGenerator = try WorldGenerator(
+        withWorldSeed: 4,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "test:example"),
+        buildSearchTrees: false
+    )
+    let chunkPositions = [
+        PosInt2D(x: 0, z: 0),
+        PosInt2D(x: 1, z: -2),
+        PosInt2D(x: -3, z: 4),
+        PosInt2D(x: 5, z: 6)
+    ]
+    let expected = try chunkPositions.map { chunkPos in
+        let chunk = ProtoChunk()
+        try worldGenerator.generateInto(chunk, at: chunkPos)
+        return snapshotTerrainBitmap(from: chunk)
+    }
+    let states = try chunkPositions.map { _ in try worldGenerator.makeGenerationState() }
+    let generator = UnsafeSendableBox(value: worldGenerator)
+    let positions = UnsafeSendableBox(value: chunkPositions)
+    let generationStates = UnsafeSendableBox(value: states)
+    let results = chunkPositions.map { _ in LockedOptional<[[UInt64]]>() }
+    let failure = LockedOptional<String>()
+
+    performConcurrentTestIterations(iterations: chunkPositions.count) { index in
+        let chunk = ProtoChunk()
+        do {
+            try generator.value.generateInto(
+                chunk,
+                at: positions.value[index],
+                using: generationStates.value[index]
+            )
+            results[index].value = snapshotTerrainBitmap(from: chunk)
+        } catch {
+            failure.setIfNil(String(describing: error))
+        }
+    }
+
+    #expect(failure.value == nil)
+    for index in chunkPositions.indices {
+        #expect(results[index].value == .some(expected[index]))
+    }
+}
+
 @Test func testSampleLODIsStableAcrossConcurrentCalls() async throws {
     let pack = try loadNoiseSettingsPack()
     let worldGenerator = try WorldGenerator(

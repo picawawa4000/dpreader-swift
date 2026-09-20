@@ -326,21 +326,67 @@ final class FullDensityFunctionBaker: DensityFunctionBaker {
     }
 }
 
+/// Mutable storage used by world-scale density-function caches.
+///
+/// A baked density function only retains the integer slot assigned to it. Keeping the values in
+/// one state object lets the immutable baked graph be shared while callers use independent cache
+/// state when sampling concurrently.
+private final class WorldScaleDensityFunctionCacheState {
+    final class Cache2D {
+        var hasValue = false
+        var lastX: Int32 = 0
+        var lastZ: Int32 = 0
+        var lastValue: Double = 0.0
+    }
+
+    final class FlatCache {
+        var hasValue = false
+        var lastColumnX: Int32 = 0
+        var lastColumnZ: Int32 = 0
+        var lastValue: Double = 0.0
+    }
+
+    private var caches: [AnyObject] = []
+
+    func add<Storage: AnyObject>(_ storage: Storage) -> Int {
+        self.caches.append(storage)
+        return self.caches.count - 1
+    }
+
+    @inline(__always) func storage<Storage: AnyObject>(at index: Int, as type: Storage.Type) -> Storage {
+        self.caches[index] as! Storage
+    }
+}
+
 final class WorldScaleCache2D: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let argument: any DensityFunction
-    private var hasValue = false
-    private var lastX: Int32 = 0
-    private var lastZ: Int32 = 0
-    private var lastValue: Double = 0.0
+    private let cacheState: WorldScaleDensityFunctionCacheState
+    private let cacheNumber: Int
 
     init(wrapping argument: any DensityFunction) {
+        let cacheState = WorldScaleDensityFunctionCacheState()
         self.argument = argument
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(WorldScaleDensityFunctionCacheState.Cache2D())
+    }
+
+    fileprivate init(
+        wrapping argument: any DensityFunction,
+        cacheState: WorldScaleDensityFunctionCacheState,
+        cacheNumber: Int
+    ) {
+        self.argument = argument
+        self.cacheState = cacheState
+        self.cacheNumber = cacheNumber
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         _ = try container.decode(String.self, forKey: .type)
         self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+        let cacheState = WorldScaleDensityFunctionCacheState()
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(WorldScaleDensityFunctionCacheState.Cache2D())
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -350,23 +396,39 @@ final class WorldScaleCache2D: DensityFunction, DensityFunctionWrapperIntrospect
     }
 
     @inline(__always) func sample(at pos: PosInt3D) -> Double {
-        if self.hasValue && pos.x == self.lastX && pos.z == self.lastZ {
-            return self.lastValue
+        let cache = self.cacheState.storage(
+            at: self.cacheNumber,
+            as: WorldScaleDensityFunctionCacheState.Cache2D.self
+        )
+        if cache.hasValue && pos.x == cache.lastX && pos.z == cache.lastZ {
+            return cache.lastValue
         }
         let value = self.argument.sample(at: pos)
-        self.hasValue = true
-        self.lastX = pos.x
-        self.lastZ = pos.z
-        self.lastValue = value
+        cache.hasValue = true
+        cache.lastX = pos.x
+        cache.lastZ = pos.z
+        cache.lastValue = value
         return value
     }
 
     func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
-        return WorldScaleCache2D(wrapping: try self.argument.bake(withBaker: baker))
+        return WorldScaleCache2D(
+            wrapping: try self.argument.bake(withBaker: baker),
+            cacheState: self.cacheState,
+            cacheNumber: self.cacheNumber
+        )
     }
 
     var wrappedDensityFunction: any DensityFunction {
         return self.argument
+    }
+
+    func replacingArgument(_ argument: any DensityFunction) -> WorldScaleCache2D {
+        WorldScaleCache2D(
+            wrapping: argument,
+            cacheState: self.cacheState,
+            cacheNumber: self.cacheNumber
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -377,19 +439,33 @@ final class WorldScaleCache2D: DensityFunction, DensityFunctionWrapperIntrospect
 
 final class WorldScaleFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let argument: any DensityFunction
-    private var hasValue = false
-    private var lastColumnX: Int32 = 0
-    private var lastColumnZ: Int32 = 0
-    private var lastValue: Double = 0.0
+    private let cacheState: WorldScaleDensityFunctionCacheState
+    private let cacheNumber: Int
 
     init(wrapping argument: any DensityFunction) {
+        let cacheState = WorldScaleDensityFunctionCacheState()
         self.argument = argument
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(WorldScaleDensityFunctionCacheState.FlatCache())
+    }
+
+    fileprivate init(
+        wrapping argument: any DensityFunction,
+        cacheState: WorldScaleDensityFunctionCacheState,
+        cacheNumber: Int
+    ) {
+        self.argument = argument
+        self.cacheState = cacheState
+        self.cacheNumber = cacheNumber
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         _ = try container.decode(String.self, forKey: .type)
         self.argument = try container.decode(DensityFunctionInitializer.self, forKey: .argument).value
+        let cacheState = WorldScaleDensityFunctionCacheState()
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(WorldScaleDensityFunctionCacheState.FlatCache())
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -399,25 +475,41 @@ final class WorldScaleFlatCache: DensityFunction, DensityFunctionWrapperIntrospe
     }
 
     @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        let cache = self.cacheState.storage(
+            at: self.cacheNumber,
+            as: WorldScaleDensityFunctionCacheState.FlatCache.self
+        )
         let columnX = pos.x / 4
         let columnZ = pos.z / 4
-        if self.hasValue && columnX == self.lastColumnX && columnZ == self.lastColumnZ {
-            return self.lastValue
+        if cache.hasValue && columnX == cache.lastColumnX && columnZ == cache.lastColumnZ {
+            return cache.lastValue
         }
         let value = self.argument.sample(at: PosInt3D(x: columnX * 4, y: 0, z: columnZ * 4))
-        self.hasValue = true
-        self.lastColumnX = columnX
-        self.lastColumnZ = columnZ
-        self.lastValue = value
+        cache.hasValue = true
+        cache.lastColumnX = columnX
+        cache.lastColumnZ = columnZ
+        cache.lastValue = value
         return value
     }
 
     func bake(withBaker baker: any DensityFunctionBaker) throws -> any DensityFunction {
-        return WorldScaleFlatCache(wrapping: try self.argument.bake(withBaker: baker))
+        return WorldScaleFlatCache(
+            wrapping: try self.argument.bake(withBaker: baker),
+            cacheState: self.cacheState,
+            cacheNumber: self.cacheNumber
+        )
     }
 
     var wrappedDensityFunction: any DensityFunction {
         return self.argument
+    }
+
+    func replacingArgument(_ argument: any DensityFunction) -> WorldScaleFlatCache {
+        WorldScaleFlatCache(
+            wrapping: argument,
+            cacheState: self.cacheState,
+            cacheNumber: self.cacheNumber
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -501,8 +593,14 @@ private func densityFunctionIsQuartColumnFlat(_ function: any DensityFunction) -
 }
 
 final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
+    private let cacheState: WorldScaleDensityFunctionCacheState
     private var cacheMarkerMemo: [ObjectIdentifier: any DensityFunction] = [:]
     private var memo: [ObjectIdentifier: any DensityFunction] = [:]
+
+    fileprivate init(cacheState: WorldScaleDensityFunctionCacheState = WorldScaleDensityFunctionCacheState()) {
+        self.cacheState = cacheState
+    }
+
     func bake(noise: any DensityFunctionNoise) throws -> BakedNoise {
         guard let bakedNoise = noise as? BakedNoise else {
             throw BakingErrors.noiseNotAlreadyBaked(noise.key.name)
@@ -522,9 +620,17 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
         let baked: any DensityFunction
         switch cacheMarker.type {
         case .flatCache:
-            baked = WorldScaleFlatCache(wrapping: bakedArgument)
+            baked = WorldScaleFlatCache(
+                wrapping: bakedArgument,
+                cacheState: self.cacheState,
+                cacheNumber: self.cacheState.add(WorldScaleDensityFunctionCacheState.FlatCache())
+            )
         case .cache2D:
-            baked = WorldScaleCache2D(wrapping: bakedArgument)
+            baked = WorldScaleCache2D(
+                wrapping: bakedArgument,
+                cacheState: self.cacheState,
+                cacheNumber: self.cacheState.add(WorldScaleDensityFunctionCacheState.Cache2D())
+            )
         default:
             baked = bakedArgument
         }
@@ -537,11 +643,26 @@ final class WorldScaleDensityFunctionBaker: DensityFunctionBaker {
             let obj = function as AnyObject
             let key = ObjectIdentifier(obj)
             if let cached = self.memo[key] { return cached }
-            let baked = withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: nil)
+            var baked = try function.bake(withBaker: self)
+            if densityFunctionIsQuartColumnFlat(baked), !densityFunctionHasFlatCache(baked) {
+                baked = WorldScaleFlatCache(
+                    wrapping: baked,
+                    cacheState: self.cacheState,
+                    cacheNumber: self.cacheState.add(WorldScaleDensityFunctionCacheState.FlatCache())
+                )
+            }
             self.memo[key] = baked
             return baked
         }
-        return withAutoAppliedFlatCache(try function.bake(withBaker: self), bounds: nil)
+        let baked = try function.bake(withBaker: self)
+        guard densityFunctionIsQuartColumnFlat(baked), !densityFunctionHasFlatCache(baked) else {
+            return baked
+        }
+        return WorldScaleFlatCache(
+            wrapping: baked,
+            cacheState: self.cacheState,
+            cacheNumber: self.cacheState.add(WorldScaleDensityFunctionCacheState.FlatCache())
+        )
     }
 
     func bake(beardifier: BeardifierMarker) throws -> any DensityFunction {
@@ -964,19 +1085,99 @@ private func runtimeOnlyEncodeError(_ encoder: any Encoder, forType typeName: St
     )
 }
 
+/// Per-bake mutable storage for chunk-local cache functions. Cache wrappers contain only their
+/// delegate, immutable sampling metadata, and their numbered slot in this object.
+private final class ChunkDensityFunctionCacheState {
+    private var caches: [AnyObject] = []
+
+    func add<Storage: AnyObject>(_ storage: Storage) -> Int {
+        self.caches.append(storage)
+        return self.caches.count - 1
+    }
+
+    @inline(__always) func storage<Storage: AnyObject>(at index: Int, as type: Storage.Type) -> Storage {
+        // Slots and wrapper types are created together by ChunkDensityFunctionBaker.
+        return self.caches[index] as! Storage
+    }
+}
+
+private final class ChunkCache2DStorage {
+    var hasLocalValues = [Bool](repeating: false, count: ProtoChunk.sideLength * ProtoChunk.sideLength)
+    var localValues = [Double](repeating: 0.0, count: ProtoChunk.sideLength * ProtoChunk.sideLength)
+    var hasOutsideValue = false
+    var lastOutsideX: Int32 = 0
+    var lastOutsideZ: Int32 = 0
+    var lastOutsideValue: Double = 0.0
+}
+
+private final class ChunkFlatCacheStorage {
+    let values: [Double]
+
+    init(
+        delegate: any DensityFunction,
+        startBiomeX: Int32,
+        startBiomeZ: Int32,
+        horizontalCacheSize: Int
+    ) {
+        var values = [Double](repeating: 0.0, count: horizontalCacheSize * horizontalCacheSize)
+        for localBiomeZ in 0..<horizontalCacheSize {
+            let biomeZ = startBiomeZ + Int32(localBiomeZ)
+            let blockZ = blockCoord(fromBiome: biomeZ)
+            for localBiomeX in 0..<horizontalCacheSize {
+                let biomeX = startBiomeX + Int32(localBiomeX)
+                let blockX = blockCoord(fromBiome: biomeX)
+                let index = localBiomeX + localBiomeZ * horizontalCacheSize
+                values[index] = delegate.sample(at: PosInt3D(x: blockX, y: 0, z: blockZ))
+            }
+        }
+        self.values = values
+    }
+}
+
+private final class ChunkPositionCacheStorage {
+    var hasLocalValues: [Bool]
+    var localValues: [Double]
+
+    init(count: Int) {
+        self.hasLocalValues = [Bool](repeating: false, count: count)
+        self.localValues = [Double](repeating: 0.0, count: count)
+    }
+}
+
+private final class ChunkInterpolatedCacheStorage {
+    var cornerCache: [ChunkBlockKey: Double] = [:]
+    var hasLocalValues: [Bool]
+    var localValues: [Double]
+
+    init(count: Int) {
+        self.hasLocalValues = [Bool](repeating: false, count: count)
+        self.localValues = [Double](repeating: 0.0, count: count)
+    }
+}
+
 final class ChunkCache2D: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let bounds: ChunkSamplingBounds
-    private var hasLocalValues = [Bool](repeating: false, count: ProtoChunk.sideLength * ProtoChunk.sideLength)
-    private var localValues = [Double](repeating: 0.0, count: ProtoChunk.sideLength * ProtoChunk.sideLength)
-    private var hasOutsideValue = false
-    private var lastOutsideX: Int32 = 0
-    private var lastOutsideZ: Int32 = 0
-    private var lastOutsideValue: Double = 0.0
+    private let cacheState: ChunkDensityFunctionCacheState
+    private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
+        let cacheState = ChunkDensityFunctionCacheState()
         self.delegate = delegate
         self.bounds = bounds
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(ChunkCache2DStorage())
+    }
+
+    fileprivate init(
+        wrapping delegate: any DensityFunction,
+        bounds: ChunkSamplingBounds,
+        cacheState: ChunkDensityFunctionCacheState
+    ) {
+        self.delegate = delegate
+        self.bounds = bounds
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(ChunkCache2DStorage())
     }
 
     init(from decoder: any Decoder) throws {
@@ -988,25 +1189,26 @@ final class ChunkCache2D: DensityFunction, DensityFunctionWrapperIntrospectable 
     }
 
     @inline(__always) func sample(at pos: PosInt3D) -> Double {
+        let cache = self.cacheState.storage(at: self.cacheNumber, as: ChunkCache2DStorage.self)
         if self.bounds.containsColumn(x: pos.x, z: pos.z) {
             let columnIndex = self.bounds.localColumnIndex(x: pos.x, z: pos.z)
-            if self.hasLocalValues[columnIndex] {
-                return self.localValues[columnIndex]
+            if cache.hasLocalValues[columnIndex] {
+                return cache.localValues[columnIndex]
             }
             let value = self.delegate.sample(at: pos)
-            self.hasLocalValues[columnIndex] = true
-            self.localValues[columnIndex] = value
+            cache.hasLocalValues[columnIndex] = true
+            cache.localValues[columnIndex] = value
             return value
         }
 
-        if self.hasOutsideValue && self.lastOutsideX == pos.x && self.lastOutsideZ == pos.z {
-            return self.lastOutsideValue
+        if cache.hasOutsideValue && cache.lastOutsideX == pos.x && cache.lastOutsideZ == pos.z {
+            return cache.lastOutsideValue
         }
         let value = self.delegate.sample(at: pos)
-        self.hasOutsideValue = true
-        self.lastOutsideX = pos.x
-        self.lastOutsideZ = pos.z
-        self.lastOutsideValue = value
+        cache.hasOutsideValue = true
+        cache.lastOutsideX = pos.x
+        cache.lastOutsideZ = pos.z
+        cache.lastOutsideValue = value
         return value
     }
 
@@ -1029,26 +1231,46 @@ final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectabl
     private let startBiomeX: Int32
     private let startBiomeZ: Int32
     private let horizontalCacheSize: Int
-    private var cache: [Double]
+    private let cacheState: ChunkDensityFunctionCacheState
+    private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
+        let cacheState = ChunkDensityFunctionCacheState()
         self.delegate = delegate
         self.bounds = bounds
         self.startBiomeX = biomeCoord(fromBlock: bounds.minX)
         self.startBiomeZ = biomeCoord(fromBlock: bounds.minZ)
         self.horizontalCacheSize = Int(biomeCoord(fromBlock: Int32(ProtoChunk.sideLength))) + 1
-        self.cache = [Double](repeating: 0.0, count: self.horizontalCacheSize * self.horizontalCacheSize)
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(
+            ChunkFlatCacheStorage(
+                delegate: delegate,
+                startBiomeX: self.startBiomeX,
+                startBiomeZ: self.startBiomeZ,
+                horizontalCacheSize: self.horizontalCacheSize
+            )
+        )
+    }
 
-        for localBiomeZ in 0..<self.horizontalCacheSize {
-            let biomeZ = self.startBiomeZ + Int32(localBiomeZ)
-            let blockZ = blockCoord(fromBiome: biomeZ)
-            for localBiomeX in 0..<self.horizontalCacheSize {
-                let biomeX = self.startBiomeX + Int32(localBiomeX)
-                let blockX = blockCoord(fromBiome: biomeX)
-                let index = localBiomeX + localBiomeZ * self.horizontalCacheSize
-                self.cache[index] = delegate.sample(at: PosInt3D(x: blockX, y: 0, z: blockZ))
-            }
-        }
+    fileprivate init(
+        wrapping delegate: any DensityFunction,
+        bounds: ChunkSamplingBounds,
+        cacheState: ChunkDensityFunctionCacheState
+    ) {
+        self.delegate = delegate
+        self.bounds = bounds
+        self.startBiomeX = biomeCoord(fromBlock: bounds.minX)
+        self.startBiomeZ = biomeCoord(fromBlock: bounds.minZ)
+        self.horizontalCacheSize = Int(biomeCoord(fromBlock: Int32(ProtoChunk.sideLength))) + 1
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(
+            ChunkFlatCacheStorage(
+                delegate: delegate,
+                startBiomeX: self.startBiomeX,
+                startBiomeZ: self.startBiomeZ,
+                horizontalCacheSize: self.horizontalCacheSize
+            )
+        )
     }
 
     init(from decoder: any Decoder) throws {
@@ -1070,7 +1292,10 @@ final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectabl
             && localBiomeZ < Int32(self.horizontalCacheSize)
         {
             let index = Int(localBiomeX + localBiomeZ * Int32(self.horizontalCacheSize))
-            return self.cache[index]
+            return self.cacheState.storage(
+                at: self.cacheNumber,
+                as: ChunkFlatCacheStorage.self
+            ).values[index]
         }
         return self.delegate.sample(at: pos)
     }
@@ -1091,14 +1316,26 @@ final class ChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectabl
 final class ChunkPositionCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
     private let bounds: ChunkSamplingBounds
-    private var hasLocalValues: [Bool]
-    private var localValues: [Double]
+    private let cacheState: ChunkDensityFunctionCacheState
+    private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, bounds: ChunkSamplingBounds) {
+        let cacheState = ChunkDensityFunctionCacheState()
         self.delegate = delegate
         self.bounds = bounds
-        self.hasLocalValues = [Bool](repeating: false, count: bounds.localBlockCount)
-        self.localValues = [Double](repeating: 0.0, count: bounds.localBlockCount)
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(ChunkPositionCacheStorage(count: bounds.localBlockCount))
+    }
+
+    fileprivate init(
+        wrapping delegate: any DensityFunction,
+        bounds: ChunkSamplingBounds,
+        cacheState: ChunkDensityFunctionCacheState
+    ) {
+        self.delegate = delegate
+        self.bounds = bounds
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(ChunkPositionCacheStorage(count: bounds.localBlockCount))
     }
 
     init(from decoder: any Decoder) throws {
@@ -1114,13 +1351,14 @@ final class ChunkPositionCache: DensityFunction, DensityFunctionWrapperIntrospec
             return self.delegate.sample(at: pos)
         }
 
+        let cache = self.cacheState.storage(at: self.cacheNumber, as: ChunkPositionCacheStorage.self)
         let localIndex = self.bounds.localBlockIndex(for: pos)
-        if self.hasLocalValues[localIndex] {
-            return self.localValues[localIndex]
+        if cache.hasLocalValues[localIndex] {
+            return cache.localValues[localIndex]
         }
         let value = self.delegate.sample(at: pos)
-        self.hasLocalValues[localIndex] = true
-        self.localValues[localIndex] = value
+        cache.hasLocalValues[localIndex] = true
+        cache.localValues[localIndex] = value
         return value
     }
 
@@ -1142,9 +1380,8 @@ final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntro
     private let bounds: ChunkSamplingBounds
     private let horizontalCellBlockCount: Int32
     private let verticalCellBlockCount: Int32
-    private var cornerCache: [ChunkBlockKey: Double] = [:]
-    private var hasLocalValues: [Bool]
-    private var localValues: [Double]
+    private let cacheState: ChunkDensityFunctionCacheState
+    private let cacheNumber: Int
 
     init(
         wrapping delegate: any DensityFunction,
@@ -1152,12 +1389,28 @@ final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntro
         horizontalCellBlockCount: Int32,
         verticalCellBlockCount: Int32
     ) {
+        let cacheState = ChunkDensityFunctionCacheState()
         self.delegate = delegate
         self.bounds = bounds
         self.horizontalCellBlockCount = max(1, horizontalCellBlockCount)
         self.verticalCellBlockCount = max(1, verticalCellBlockCount)
-        self.hasLocalValues = [Bool](repeating: false, count: bounds.localBlockCount)
-        self.localValues = [Double](repeating: 0.0, count: bounds.localBlockCount)
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(ChunkInterpolatedCacheStorage(count: bounds.localBlockCount))
+    }
+
+    fileprivate init(
+        wrapping delegate: any DensityFunction,
+        bounds: ChunkSamplingBounds,
+        horizontalCellBlockCount: Int32,
+        verticalCellBlockCount: Int32,
+        cacheState: ChunkDensityFunctionCacheState
+    ) {
+        self.delegate = delegate
+        self.bounds = bounds
+        self.horizontalCellBlockCount = max(1, horizontalCellBlockCount)
+        self.verticalCellBlockCount = max(1, verticalCellBlockCount)
+        self.cacheState = cacheState
+        self.cacheNumber = cacheState.add(ChunkInterpolatedCacheStorage(count: bounds.localBlockCount))
     }
 
     init(from decoder: any Decoder) throws {
@@ -1169,12 +1422,13 @@ final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntro
     }
 
     private func sampleCorner(x: Int32, y: Int32, z: Int32) -> Double {
+        let cache = self.cacheState.storage(at: self.cacheNumber, as: ChunkInterpolatedCacheStorage.self)
         let key = ChunkBlockKey(x: x, y: y, z: z)
-        if let cached = self.cornerCache[key] {
+        if let cached = cache.cornerCache[key] {
             return cached
         }
         let sampled = self.delegate.sample(at: PosInt3D(x: x, y: y, z: z))
-        self.cornerCache[key] = sampled
+        cache.cornerCache[key] = sampled
         return sampled
     }
 
@@ -1183,9 +1437,10 @@ final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntro
             return self.delegate.sample(at: pos)
         }
 
+        let cache = self.cacheState.storage(at: self.cacheNumber, as: ChunkInterpolatedCacheStorage.self)
         let localIndex = self.bounds.localBlockIndex(for: pos)
-        if self.hasLocalValues[localIndex] {
-            return self.localValues[localIndex]
+        if cache.hasLocalValues[localIndex] {
+            return cache.localValues[localIndex]
         }
 
         let cellStartX = floorDiv(pos.x, by: self.horizontalCellBlockCount) * self.horizontalCellBlockCount
@@ -1214,8 +1469,8 @@ final class ChunkInterpolatedCache: DensityFunction, DensityFunctionWrapperIntro
             x1y1z1: self.sampleCorner(x: cellEndX, y: cellEndY, z: cellEndZ)
         )
 
-        self.hasLocalValues[localIndex] = true
-        self.localValues[localIndex] = interpolated
+        cache.hasLocalValues[localIndex] = true
+        cache.localValues[localIndex] = interpolated
         return interpolated
     }
 
@@ -1244,6 +1499,7 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
     private let bounds: ChunkSamplingBounds
     private let horizontalCellBlockCount: Int32
     private let verticalCellBlockCount: Int32
+    private let cacheState = ChunkDensityFunctionCacheState()
     private var cacheMarkerMemo: [ObjectIdentifier: any DensityFunction] = [:]
     private var memo: [ObjectIdentifier: any DensityFunction] = [:]
 
@@ -1280,17 +1536,30 @@ final class ChunkDensityFunctionBaker: DensityFunctionBaker {
         let baked: any DensityFunction
         switch cacheMarker.type {
         case .flatCache:
-            baked = ChunkFlatCache(wrapping: bakedArgument, bounds: self.bounds)
+            baked = ChunkFlatCache(
+                wrapping: bakedArgument,
+                bounds: self.bounds,
+                cacheState: self.cacheState
+            )
         case .cache2D:
-            baked = ChunkCache2D(wrapping: bakedArgument, bounds: self.bounds)
+            baked = ChunkCache2D(
+                wrapping: bakedArgument,
+                bounds: self.bounds,
+                cacheState: self.cacheState
+            )
         case .cache, .cacheOnce, .cacheAllInCell:
-            baked = ChunkPositionCache(wrapping: bakedArgument, bounds: self.bounds)
+            baked = ChunkPositionCache(
+                wrapping: bakedArgument,
+                bounds: self.bounds,
+                cacheState: self.cacheState
+            )
         case .interpolated:
             baked = ChunkInterpolatedCache(
                 wrapping: bakedArgument,
                 bounds: self.bounds,
                 horizontalCellBlockCount: self.horizontalCellBlockCount,
-                verticalCellBlockCount: self.verticalCellBlockCount
+                verticalCellBlockCount: self.verticalCellBlockCount,
+                cacheState: self.cacheState
             )
         }
         self.cacheMarkerMemo[key] = baked
@@ -2067,11 +2336,6 @@ private struct DirectPointSamplingDensityFunctionVariant {
     let biomeDensityFunctions: ChunkBiomeDensityFunctions
 }
 
-private struct DirectPointSamplingDensityFunctions {
-    let cached: DirectPointSamplingDensityFunctionVariant
-    let cacheless: DirectPointSamplingDensityFunctionVariant
-}
-
 private enum DirectPointSamplingCacheMode {
     case preserveWorldScaleCaches
     case stripAllCaches
@@ -2456,6 +2720,28 @@ private struct BiomeLatticePosition: Hashable {
     }
 }
 
+/// Per-caller mutable storage used while sampling with a ``WorldGenerator``.
+///
+/// Create one with ``WorldGenerator/makeGenerationState()`` and keep it confined to one task or
+/// thread. Multiple states may be used concurrently with the same generator. A state becomes
+/// invalid after that generator is reseeded.
+public final class WorldGeneratorState {
+    fileprivate let owner: ObjectIdentifier
+    fileprivate let revision: UInt64
+    fileprivate let densityFunctionCaches: WorldScaleDensityFunctionCacheState
+    fileprivate var compiledChunkTerrainDensityRegistry: [CompiledDensityFunctionBufferContext: CompiledDensityFunctionBulk] = [:]
+
+    fileprivate init(
+        owner: ObjectIdentifier,
+        revision: UInt64,
+        densityFunctionCaches: WorldScaleDensityFunctionCacheState
+    ) {
+        self.owner = owner
+        self.revision = revision
+        self.densityFunctionCaches = densityFunctionCaches
+    }
+}
+
 /// The thing that actually generates worlds.
 public final class WorldGenerator {
     private var worldSeed: WorldSeed
@@ -2476,17 +2762,15 @@ public final class WorldGenerator {
     private var searchTrees: [RegistryKey<Dimension>: BiomeSearchTree] = [:]
     private var compiledSearchTrees: [RegistryKey<Dimension>: CompiledBiomeSearchTree] = [:]
     private var endBiomeDimensions = Set<RegistryKey<Dimension>>()
-    private var directPointSamplingDensityFunctions: DirectPointSamplingDensityFunctions?
+    private var directPointSamplingDensityFunctions: DirectPointSamplingDensityFunctionVariant?
     private var compiledBiomeDensityFunctions: CompiledBiomeDensityFunctions?
-    /// The final-density program used by vanilla terrain generation. Its buffer shape is the
-    /// complete generation-cell corner lattice for one chunk, not a scalar sample.
-    private var compiledChunkTerrainDensityRegistry: [CompiledDensityFunctionBufferContext: CompiledDensityFunctionBulk] = [:]
     private var finalDensityBulkSamplers: [WeakCompiledDensityFunctionBulk] = []
     private var climateBiomeBulkSamplers: [WeakCompiledClimateBiomeBulkSampler] = []
     private var biomeIDBulkSamplers: [WeakCompiledNoiseRouterBiomeBulkSampler] = []
-    // Terrain generation walks a shared baked density-function graph composed of reference types.
-    // Serializing `generateInto` prevents concurrent cache mutation inside that shared graph.
-    private let terrainGenerationLock = NSLock()
+    private var generationStateRevision: UInt64 = 0
+    // Reseeding and retained compiled-sampler creation mutate generator configuration. Generation
+    // itself uses caller-owned WorldGeneratorState and does not acquire this lock.
+    private let configurationLock = NSLock()
 
     /// Initialise this world generator.
     /// Datapack setup and compiled graphs are retained separately from seed-dependent sampler state.
@@ -2520,10 +2804,11 @@ public final class WorldGenerator {
     }
 
     /// Rebuilds seed-dependent noises and density functions. Compiled graphs and biome search
-    /// trees are retained; their shared seed storage is updated in place.
+    /// trees are retained; their shared seed storage is updated in place. Do not reseed while a
+    /// generation or sampling call is active.
     public func setWorldSeed(_ seed: WorldSeed) throws {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        self.configurationLock.lock()
+        defer { self.configurationLock.unlock() }
 
         self.worldSeed = seed
         self.voronoiSHA = VoronoiBiomeSubsampler.makeVoronoiSHA(seed)
@@ -2533,7 +2818,6 @@ public final class WorldGenerator {
         if !self.hasInitialisedCompiledSeedState {
             self.registries.compiledDensityFunctionRegistry = nil
             self.compiledBiomeDensityFunctions = nil
-            self.compiledChunkTerrainDensityRegistry = [:]
             self.compiledSearchTrees = [:]
         }
         self.config = self.unbakedConfig
@@ -2558,6 +2842,7 @@ public final class WorldGenerator {
             try self.compileConfiguredFunctions()
             self.hasInitialisedCompiledSeedState = true
         }
+        self.generationStateRevision &+= 1
     }
 
     /// Labelled spelling retained for callers that prefer an explicit seed argument.
@@ -2812,7 +3097,7 @@ public final class WorldGenerator {
             for: "Final density bulk sampling"
         )
         return try compile(
-            densityFunction: functions.cacheless.finalDensity,
+            densityFunction: functions.finalDensity,
             bufferContext: volume,
             strategy: strategy,
             registry: self.registries.densityFunctionRegistry,
@@ -2853,7 +3138,7 @@ public final class WorldGenerator {
     ) throws -> CompiledClimateBiomeBulkSampler {
         let functions = try self.validatedDirectPointSamplingDensityFunctions(
             for: "Climate-biome bulk sampling"
-        ).cacheless.biomeDensityFunctions
+        ).biomeDensityFunctions
         let climateFunctions: [any DensityFunction] = [
             functions.temperature,
             functions.humidity,
@@ -3144,7 +3429,10 @@ public final class WorldGenerator {
 
         if self.config != nil {
             self.config = self.config!.with(noiseRouter: try self.config!.noiseRouter.bakeAll(withBaker: baker))
-            self.directPointSamplingDensityFunctions = try self.makeDirectPointSamplingDensityFunctions(from: self.config!)
+            self.directPointSamplingDensityFunctions = try self.makeDirectPointSamplingDensityFunctionVariant(
+                from: self.config!,
+                cacheMode: .stripAllCaches
+            )
         }
     }
 
@@ -3239,31 +3527,41 @@ public final class WorldGenerator {
 
     private func validatedDirectPointSamplingDensityFunctions(
         for operation: String
-    ) throws -> DirectPointSamplingDensityFunctions {
+    ) throws -> DirectPointSamplingDensityFunctionVariant {
         guard let functions = self.directPointSamplingDensityFunctions else {
             throw WorldGenerationErrors.noiseSettingsNotPresent("\(operation) requires a configured noise settings entry.")
         }
         return functions
     }
 
-    private func makeDirectPointSamplingDensityFunctions(
-        from config: NoiseSettings
-    ) throws -> DirectPointSamplingDensityFunctions {
-        return DirectPointSamplingDensityFunctions(
-            cached: try self.makeDirectPointSamplingDensityFunctionVariant(
-                from: config,
-                cacheMode: .preserveWorldScaleCaches
-            ),
-            cacheless: try self.makeDirectPointSamplingDensityFunctionVariant(
-                from: config,
-                cacheMode: .stripAllCaches
-            )
+    /// Creates mutable sampling state for one caller.
+    ///
+    /// A state may be reused across sequential generation calls. To generate concurrently, create
+    /// one state per task or thread. Do not use a state after calling ``setWorldSeed(_:)``.
+    public func makeGenerationState() throws -> WorldGeneratorState {
+        self.configurationLock.lock()
+        defer { self.configurationLock.unlock() }
+
+        _ = try self.validatedTerrainConfig(for: "Generation state creation")
+        let caches = WorldScaleDensityFunctionCacheState()
+        _ = try self.validatedDirectPointSamplingDensityFunctions(for: "Generation state creation")
+        return WorldGeneratorState(
+            owner: ObjectIdentifier(self),
+            revision: self.generationStateRevision,
+            densityFunctionCaches: caches
         )
+    }
+
+    private func validate(_ state: WorldGeneratorState) throws {
+        guard state.owner == ObjectIdentifier(self), state.revision == self.generationStateRevision else {
+            throw WorldGenerationErrors.invalidGenerationState
+        }
     }
 
     private func makeDirectPointSamplingDensityFunctionVariant(
         from config: NoiseSettings,
-        cacheMode: DirectPointSamplingCacheMode
+        cacheMode: DirectPointSamplingCacheMode,
+        cacheState: WorldScaleDensityFunctionCacheState? = nil
     ) throws -> DirectPointSamplingDensityFunctionVariant {
         let sampler = VanillaChunkTerrainSampler(
             chunkPos: PosInt2D(x: 0, z: 0),
@@ -3276,7 +3574,11 @@ public final class WorldGenerator {
         let noiseRouter: NoiseRouter
         switch cacheMode {
         case .preserveWorldScaleCaches:
-            noiseRouter = try config.noiseRouter.bakeAll(withBaker: WorldScaleDensityFunctionBaker())
+            noiseRouter = try config.noiseRouter.bakeAll(
+                withBaker: WorldScaleDensityFunctionBaker(
+                    cacheState: cacheState ?? WorldScaleDensityFunctionCacheState()
+                )
+            )
         case .stripAllCaches:
             noiseRouter = config.noiseRouter
         }
@@ -3384,6 +3686,7 @@ public final class WorldGenerator {
     private func generateTerrainChunk(
         at chunkPos: PosInt2D,
         using config: NoiseSettings,
+        state: WorldGeneratorState,
         storesBiomeData: Bool = true
     ) throws -> ProtoChunk {
         let chunk = ProtoChunk()
@@ -3406,6 +3709,7 @@ public final class WorldGenerator {
         let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
         let sampledTerrainDensity = self.compiledTerrainDensityIfPossible(
             fallback: terrainDensity,
+            state: state,
             chunkPos: chunkPos,
             minY: minY,
             height: height,
@@ -3425,6 +3729,7 @@ public final class WorldGenerator {
     /// interpreted terrain path.
     private func compiledTerrainDensityIfPossible(
         fallback: any DensityFunction,
+        state: WorldGeneratorState,
         chunkPos: PosInt2D,
         minY: Int32,
         height: Int32,
@@ -3441,14 +3746,14 @@ public final class WorldGenerator {
         }
 
         let compiled: CompiledDensityFunctionBulk
-        if let existing = self.compiledChunkTerrainDensityRegistry[context],
+        if let existing = state.compiledChunkTerrainDensityRegistry[context],
            existing.strategy == strategy {
             compiled = existing
         } else {
             guard let generated = try? compile(
                 densityFunction: try self.validatedDirectPointSamplingDensityFunctions(
                     for: "Compiled chunk terrain generation"
-                ).cacheless.finalDensity,
+                ).finalDensity,
                 bufferContext: context,
                 strategy: strategy,
                 registry: self.registries.densityFunctionRegistry,
@@ -3456,7 +3761,7 @@ public final class WorldGenerator {
             ) else {
                 return fallback
             }
-            self.compiledChunkTerrainDensityRegistry[context] = generated
+            state.compiledChunkTerrainDensityRegistry[context] = generated
             compiled = generated
         }
 
@@ -3804,8 +4109,7 @@ public final class WorldGenerator {
         }
     }
 
-    /// Samples the configured climate noise router at a world position.
-    /// Not concurrency-safe; the baked world-scale cache wrappers used here are mutable and require external synchronization.
+    /// Samples the configured climate noise router at a world position without shared mutable caches.
     /// - Parameter pos: The world position to sample.
     /// - Returns: The sampled climate point, or a zeroed point if no noise settings are configured.
     public func sampleNoisePoint(at pos: PosInt3D) -> NoisePoint {
@@ -3824,6 +4128,15 @@ public final class WorldGenerator {
             weirdness: self.config!.noiseRouter.weirdness.sample(at: pos),
             depth: self.config!.noiseRouter.depth.sample(at: pos)
         )
+    }
+
+    /// Samples the configured climate router using caller-owned caches.
+    public func sampleNoisePoint(
+        at pos: PosInt3D,
+        using state: WorldGeneratorState
+    ) throws -> NoisePoint {
+        try self.validate(state)
+        return self.sampleNoisePoint(at: pos)
     }
 
     @inline(__always)
@@ -3851,14 +4164,49 @@ public final class WorldGenerator {
         )
     }
 
+    @inline(__always)
+    private func sampleTheEndBiome(
+        at pos: PosInt3D,
+        using state: WorldGeneratorState
+    ) -> RegistryKey<Biome> {
+        return self.sampleTheEndBiome(at: pos)
+    }
+
     /// Samples the biome selected by the configured biome search tree at a world position.
-    /// Not concurrency-safe; this method delegates to `sampleNoisePoint(at:)` and shares its cache-mutation behavior.
     /// - Parameters:
     ///   - pos: The world position to sample.
     ///   - dim: The dimension whose biome search tree should be used.
     /// - Throws: Any error thrown by biome search tree lookup.
     /// - Returns: The selected biome key, or `nil` if no search tree is configured for `dim`.
     public func sampleBiome(at pos: PosInt3D, in dim: RegistryKey<Dimension>) throws -> RegistryKey<Biome>? {
+        return try self.sampleBiomeWithoutState(at: pos, in: dim)
+    }
+
+    /// Samples a biome using caller-owned mutable cache state.
+    public func sampleBiome(
+        at pos: PosInt3D,
+        in dim: RegistryKey<Dimension>,
+        using state: WorldGeneratorState
+    ) throws -> RegistryKey<Biome>? {
+        try self.validate(state)
+        if self.usesTheEndBiomeGetter(for: dim) {
+            return self.sampleTheEndBiome(at: pos, using: state)
+        }
+        let point = try self.sampleNoisePoint(at: pos, using: state)
+        guard let searchTree = self.searchTrees[dim] else {
+            assertionFailure("WorldGenerator.sampleBiome(at:in:) called without a search tree for \(dim.name)")
+            return nil
+        }
+        if let compiled = self.compiledSearchTrees[dim] {
+            return compiled(point)
+        }
+        return try searchTree.get(point)
+    }
+
+    private func sampleBiomeWithoutState(
+        at pos: PosInt3D,
+        in dim: RegistryKey<Dimension>
+    ) throws -> RegistryKey<Biome>? {
         if self.usesTheEndBiomeGetter(for: dim) {
             return self.sampleTheEndBiome(at: pos)
         }
@@ -3874,7 +4222,6 @@ public final class WorldGenerator {
     }
 
     /// Samples the final block biome selected after vanilla Voronoi subsampling at a world position.
-    /// Not concurrency-safe; this method delegates to `sampleNoisePoint(at:)` and shares its cache-mutation behavior.
     /// - Parameters:
     ///   - pos: The world block position to sample.
     ///   - dim: The dimension whose biome search tree should be used.
@@ -3890,8 +4237,22 @@ public final class WorldGenerator {
         return try self.sampleBiome(at: climatePos, in: dim)
     }
 
+    /// Samples the final block biome using caller-owned mutable cache state.
+    public func sampleBlockBiome(
+        at pos: PosInt3D,
+        in dim: RegistryKey<Dimension>,
+        using state: WorldGeneratorState
+    ) throws -> RegistryKey<Biome>? {
+        let biomePos = self.voronoiAccess3D(pos)
+        let climatePos = PosInt3D(
+            x: blockCoord(fromBiome: biomePos.x),
+            y: blockCoord(fromBiome: biomePos.y),
+            z: blockCoord(fromBiome: biomePos.z)
+        )
+        return try self.sampleBiome(at: climatePos, in: dim, using: state)
+    }
+
     /// Generates biomes in a rectangular area.
-    /// Not concurrency-safe; this method may use mutable cache wrappers during sampling.
     /// - Parameters:
     ///   - fromPos: The starting position; inclusive.
     ///   - toPos: The ending position; exclusive.
@@ -3910,8 +4271,12 @@ public final class WorldGenerator {
         in dim: RegistryKey<Dimension>,
         scale: Int32 = 4,
         forceNoBaking: Bool = false,
-        forceBaking: Bool = false
+        forceBaking: Bool = false,
+        using state: WorldGeneratorState? = nil
     ) throws -> [RegistryKey<Biome>]? {
+        if let state {
+            try self.validate(state)
+        }
         if scale <= 0 {
             throw WorldGenerationErrors.invalidScale
         }
@@ -3979,9 +4344,11 @@ public final class WorldGenerator {
                         let pos = PosInt3D(x: worldX, y: y, z: worldZ)
                         let biome: RegistryKey<Biome>
                         if isTheEnd {
-                            biome = self.sampleTheEndBiome(at: pos)
+                            biome = state.map { self.sampleTheEndBiome(at: pos, using: $0) }
+                                ?? self.sampleTheEndBiome(at: pos)
                         } else {
-                            let point = self.sampleNoisePoint(at: pos)
+                            let point = try state.map { try self.sampleNoisePoint(at: pos, using: $0) }
+                                ?? self.sampleNoisePoint(at: pos)
                             biome = selectBiome(
                                 temperature: point.temperature,
                                 humidity: point.humidity,
@@ -4003,9 +4370,11 @@ public final class WorldGenerator {
                         let pos = PosInt3D(x: x, y: y, z: z)
                         let biome: RegistryKey<Biome>
                         if isTheEnd {
-                            biome = self.sampleTheEndBiome(at: pos)
+                            biome = state.map { self.sampleTheEndBiome(at: pos, using: $0) }
+                                ?? self.sampleTheEndBiome(at: pos)
                         } else {
-                            let point = self.sampleNoisePoint(at: pos)
+                            let point = try state.map { try self.sampleNoisePoint(at: pos, using: $0) }
+                                ?? self.sampleNoisePoint(at: pos)
                             biome = selectBiome(
                                 temperature: point.temperature,
                                 humidity: point.humidity,
@@ -4022,7 +4391,9 @@ public final class WorldGenerator {
             }
         }
 
-        let baker = WorldScaleDensityFunctionBaker()
+        let baker = WorldScaleDensityFunctionBaker(
+            cacheState: state?.densityFunctionCaches ?? WorldScaleDensityFunctionCacheState()
+        )
 
         let noiseRouter = self.config!.noiseRouter
         let erosion = !isTheEnd ? try baker.bakeDensityFunction(noiseRouter.erosion) : nil
@@ -4041,7 +4412,8 @@ public final class WorldGenerator {
                     let pos = PosInt3D(x: worldX, y: y, z: worldZ)
                     let biome: RegistryKey<Biome>
                     if isTheEnd {
-                        biome = self.sampleTheEndBiome(at: pos)
+                        biome = state.map { self.sampleTheEndBiome(at: pos, using: $0) }
+                            ?? self.sampleTheEndBiome(at: pos)
                     } else {
                         biome = selectBiome(
                             temperature: temperature!.sample(at: pos),
@@ -4063,7 +4435,8 @@ public final class WorldGenerator {
                     let pos = PosInt3D(x: x, y: y, z: z)
                     let biome: RegistryKey<Biome>
                     if isTheEnd {
-                        biome = self.sampleTheEndBiome(at: pos)
+                        biome = state.map { self.sampleTheEndBiome(at: pos, using: $0) }
+                            ?? self.sampleTheEndBiome(at: pos)
                     } else {
                         biome = selectBiome(
                             temperature: temperature!.sample(at: pos),
@@ -4083,14 +4456,23 @@ public final class WorldGenerator {
     }
 
     /// Generates terrain, exact block-biome data, and quart-biome data into a `ProtoChunk` at the requested chunk position.
-    /// Concurrency-safe for calls on the same `WorldGenerator`; generation is internally synchronized around shared mutable terrain-sampling state.
+    /// This convenience overload creates independent mutable state for the call.
     /// - Parameters:
     ///   - chunk: The chunk to configure and populate.
     ///   - chunkPos: The chunk position in chunk coordinates.
     /// - Throws: Any error thrown while configuring the chunk, baking density functions, or sampling terrain and biomes.
     public func generateInto(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        try self.generateInto(chunk, at: chunkPos, using: self.makeGenerationState())
+    }
+
+    /// Generates a chunk using caller-owned mutable state. Use a distinct state for each
+    /// concurrent task; a state may be reused by sequential calls.
+    public func generateInto(
+        _ chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        using state: WorldGeneratorState
+    ) throws {
+        try self.validate(state)
 
         let config = try self.validatedTerrainConfig(for: "Terrain generation")
 
@@ -4140,6 +4522,7 @@ public final class WorldGenerator {
         chunk.aquiferSampler = aquifer
         let terrainDensity = self.compiledTerrainDensityIfPossible(
             fallback: chunkGenerationFunctions.terrainDensity,
+            state: state,
             chunkPos: chunkPos,
             minY: minY,
             height: height,
@@ -4159,11 +4542,14 @@ public final class WorldGenerator {
     /// represents final-density occupancy rather than aquifer material or biome data.  Avoid
     /// generating those unused layers when scanning many potential starts.
     func generateTerrainForStructureStartValidation(at chunkPos: PosInt2D) throws -> ProtoChunk {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
-
+        let state = try self.makeGenerationState()
         let config = try self.validatedTerrainConfig(for: "Structure-start terrain validation")
-        return try self.generateTerrainChunk(at: chunkPos, using: config, storesBiomeData: false)
+        return try self.generateTerrainChunk(
+            at: chunkPos,
+            using: config,
+            state: state,
+            storesBiomeData: false
+        )
     }
 
     /// Samples one raw-terrain heightmap column for structure-start validation without allocating
@@ -4182,9 +4568,7 @@ public final class WorldGenerator {
     func terrainHeightSamplerForStructureStartValidation(
         at chunkPos: PosInt2D
     ) throws -> StructureStartTerrainChunkSampler {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
-
+        let state = try self.makeGenerationState()
         let config = try self.validatedTerrainConfig(for: "Structure-start terrain-height validation")
         let minY = Int32(config.minY)
         let height = Int32(config.height)
@@ -4198,6 +4582,7 @@ public final class WorldGenerator {
         let terrainDensity = try chunkSampler.bakeDensityFunction(config.noiseRouter.finalDensity)
         let sampledTerrainDensity = self.compiledTerrainDensityIfPossible(
             fallback: terrainDensity,
+            state: state,
             chunkPos: chunkPos,
             minY: minY,
             height: height,
@@ -4213,8 +4598,6 @@ public final class WorldGenerator {
     /// Applies the configured surface rule to a previously generated chunk.
     /// Call this after ``generateInto(_:at:)`` and before ``carve(_:at:)``.
     public func applySurfaceRules(to chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
         let config = try self.validatedTerrainConfig(for: "Surface generation")
         guard chunk.minY == Int32(config.minY), chunk.height == Int32(config.height) else {
             throw WorldGenerationErrors.invalidProtoChunkHeight(Int(chunk.height))
@@ -4230,16 +4613,28 @@ public final class WorldGenerator {
     /// Runs configured biome carvers against a previously generated and surfaced chunk.
     /// Carver starts from the vanilla 17x17 source-chunk neighborhood are considered.
     public func carve(_ chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        try self.carve(chunk, at: chunkPos, using: self.makeGenerationState())
+    }
+
+    /// Runs configured biome carvers with caller-owned mutable sampling state.
+    public func carve(
+        _ chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        using state: WorldGeneratorState
+    ) throws {
+        try self.validate(state)
         let config = try self.validatedTerrainConfig(for: "Carving")
         guard chunk.minY == Int32(config.minY), chunk.height == Int32(config.height) else {
             throw WorldGenerationErrors.invalidProtoChunkHeight(Int(chunk.height))
         }
-        try self.applyCarvers(to: chunk, at: chunkPos)
+        try self.applyCarvers(to: chunk, at: chunkPos, state: state)
     }
 
-    private func applyCarvers(to chunk: ProtoChunk, at chunkPos: PosInt2D) throws {
+    private func applyCarvers(
+        to chunk: ProtoChunk,
+        at chunkPos: PosInt2D,
+        state: WorldGeneratorState
+    ) throws {
         guard !self.registries.configuredCarverRegistry.entries().isEmpty else { return }
         if chunk.aquiferSampler == nil {
             let config = try self.validatedTerrainConfig(for: "Carving")
@@ -4256,7 +4651,8 @@ public final class WorldGenerator {
                 if let dimension = self.configuredDimensionKey {
                     biomeKey = try self.sampleBiome(
                         at: PosInt3D(x: source.x * 16, y: 0, z: source.z * 16),
-                        in: dimension
+                        in: dimension,
+                        using: state
                     )
                 } else {
                     biomeKey = chunk.biome(atLocal: PosInt3D(x: 8, y: min(max(0, -chunk.minY), chunk.height - 1), z: 8))
@@ -4310,9 +4706,6 @@ public final class WorldGenerator {
     #if DEBUG && !(os(WASI) || arch(wasm32))
     // Visible for testing/benchmarking only.
     func benchmarkChunkGenerationComponents(at chunkPos: PosInt2D) throws -> ChunkGenerationComponentBenchmark {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
-
         let config = try self.validatedTerrainConfig(for: "Terrain generation benchmarking")
         let minY = Int32(config.minY)
         let height = Int32(config.height)
@@ -4450,9 +4843,6 @@ public final class WorldGenerator {
 
     // Visible for testing/benchmarking only.
     func benchmarkChunkGenerationDetailedProfile(at chunkPos: PosInt2D) throws -> ChunkGenerationDetailedProfileBenchmark {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
-
         let config = try self.validatedTerrainConfig(for: "Detailed terrain generation benchmarking")
         let minY = Int32(config.minY)
         let height = Int32(config.height)
@@ -4634,14 +5024,18 @@ public final class WorldGenerator {
     func sampleFinalDensity(at pos: PosInt3D) throws -> Double {
         return try self.validatedDirectPointSamplingDensityFunctions(
             for: "Final density sampling"
-        ).cacheless.finalDensity.sample(at: pos)
+        ).finalDensity.sample(at: pos)
     }
 
     // Currently visible for testing only.
     func cachedFinalDensityFunction() throws -> any DensityFunction {
-        return try self.validatedDirectPointSamplingDensityFunctions(
-            for: "Cached final density access"
-        ).cached.finalDensity
+        let state = try self.makeGenerationState()
+        let config = try self.validatedTerrainConfig(for: "Cached final density access")
+        return try self.makeDirectPointSamplingDensityFunctionVariant(
+            from: config,
+            cacheMode: .preserveWorldScaleCaches,
+            cacheState: state.densityFunctionCaches
+        ).finalDensity
     }
 
     // Currently visible for testing only. This form intentionally strips the
@@ -4650,7 +5044,7 @@ public final class WorldGenerator {
     func cachelessFinalDensityFunction() throws -> any DensityFunction {
         return try self.validatedDirectPointSamplingDensityFunctions(
             for: "Cacheless final density access"
-        ).cacheless.finalDensity
+        ).finalDensity
     }
 
     // Currently visible for testing only.
@@ -4676,8 +5070,8 @@ public final class WorldGenerator {
         for volume: CompiledDensityFunctionBufferContext,
         strategy: CompilationBackend? = nil
     ) throws -> CompiledDensityFunctionBulk {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        self.configurationLock.lock()
+        defer { self.configurationLock.unlock() }
 
         let selectedStrategy: CompilationBackend
         if let strategy {
@@ -4707,8 +5101,8 @@ public final class WorldGenerator {
         in dimension: RegistryKey<Dimension>,
         strategy: CompilationBackend? = nil
     ) throws -> CompiledClimateBiomeBulkSampler {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        self.configurationLock.lock()
+        defer { self.configurationLock.unlock() }
 
         let selectedStrategy: CompilationBackend
         if let strategy {
@@ -4739,8 +5133,8 @@ public final class WorldGenerator {
         in dimension: RegistryKey<Dimension>,
         strategy: CompilationBackend? = nil
     ) throws -> CompiledNoiseRouterBiomeBulkSampler {
-        self.terrainGenerationLock.lock()
-        defer { self.terrainGenerationLock.unlock() }
+        self.configurationLock.lock()
+        defer { self.configurationLock.unlock() }
 
         let selectedStrategy: CompilationBackend
         if let strategy {
@@ -4937,7 +5331,7 @@ public final class WorldGenerator {
         let configBox = UnsafeSendableBox(config)
         let sharedResults = SharedSampleLODResults()
         let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "LOD sampling")
-        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions)
         let needsCachedDirectPointFunctions = includeBiomes
         let midpoint: @Sendable (Int32, Int32) -> Int32 = { start, size in
             clampToInt32(Int64(start) + Int64(size / 2))
@@ -4997,7 +5391,12 @@ public final class WorldGenerator {
         }
 
         if workerCount == 1 {
-            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                ? try self.makeDirectPointSamplingDensityFunctionVariant(
+                    from: config,
+                    cacheMode: .preserveWorldScaleCaches
+                )
+                : nil
             for (chunkKey, chunkRequests) in chunkPlans {
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
@@ -5265,7 +5664,7 @@ public final class WorldGenerator {
         let configBox = UnsafeSendableBox(config)
         let streamingState = SharedLODStreamingState()
         let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "LOD streaming")
-        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions)
         let needsCachedDirectPointFunctions = includeBiomes
         let midpoint: @Sendable (Int32, Int32) -> Int32 = { start, size in
             clampToInt32(Int64(start) + Int64(size / 2))
@@ -5325,7 +5724,12 @@ public final class WorldGenerator {
         }
 
         if workerCount == 1 {
-            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                ? try self.makeDirectPointSamplingDensityFunctionVariant(
+                    from: config,
+                    cacheMode: .preserveWorldScaleCaches
+                )
+                : nil
             for (chunkKey, chunkRequests) in chunkPlans {
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
@@ -5603,7 +6007,7 @@ public final class WorldGenerator {
         let configBox = UnsafeSendableBox(config)
         let sharedResults = SharedSampleSurfaceLODResults()
         let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "Surface LOD sampling")
-        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions)
         let needsCachedDirectPointFunctions = includeBiomes
         let roundedSurfaceHeight: @Sendable (Double, Int32) -> Int32 = { surfaceLevel, ratio in
             let rounded = Int64((surfaceLevel / Double(ratio)).rounded()) * Int64(ratio)
@@ -5679,7 +6083,12 @@ public final class WorldGenerator {
         }
 
         if workerCount == 1 {
-            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                ? try self.makeDirectPointSamplingDensityFunctionVariant(
+                    from: config,
+                    cacheMode: .preserveWorldScaleCaches
+                )
+                : nil
             for (chunkKey, chunkRequests) in chunkPlans {
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
@@ -5982,7 +6391,7 @@ public final class WorldGenerator {
         let configBox = UnsafeSendableBox(config)
         let streamingState = SharedSurfaceLODStreamingState()
         let directPointFunctions = try self.validatedDirectPointSamplingDensityFunctions(for: "Surface LOD streaming")
-        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions.cacheless)
+        let statelessDirectPointFunctionsBox = UnsafeSendableBox(directPointFunctions)
         let needsCachedDirectPointFunctions = includeBiomes
         let roundedSurfaceHeight: @Sendable (Double, Int32) -> Int32 = { surfaceLevel, ratio in
             let rounded = Int64((surfaceLevel / Double(ratio)).rounded()) * Int64(ratio)
@@ -6058,7 +6467,12 @@ public final class WorldGenerator {
         }
 
         if workerCount == 1 {
-            let cachedDirectPointFunctions = needsCachedDirectPointFunctions ? directPointFunctions.cached : nil
+            let cachedDirectPointFunctions = needsCachedDirectPointFunctions
+                ? try self.makeDirectPointSamplingDensityFunctionVariant(
+                    from: config,
+                    cacheMode: .preserveWorldScaleCaches
+                )
+                : nil
             for (chunkKey, chunkRequests) in chunkPlans {
                 let biomeChunk = includeBiomes ? try self.generateLODBiomeChunk(
                     at: PosInt2D(x: chunkKey.x, z: chunkKey.z),
@@ -6215,4 +6629,5 @@ enum WorldGenerationErrors: Error {
     case invalidScale
     case invalidProtoChunkHeight(Int)
     case biomeSearchTreeNotPresent(String)
+    case invalidGenerationState
 }

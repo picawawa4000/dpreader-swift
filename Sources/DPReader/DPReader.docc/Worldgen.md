@@ -39,7 +39,7 @@ let block = chunk.block(atLocal: localPosition)
 
 For point queries, use ``WorldGenerator/sampleBlockBiome(at:in:)`` or the climate sampling APIs. For maps and renderers that do not require full block resolution, see ``WorldGenerator/sampleLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:threadCount:payloads:progressHandler:chunkHandler:)`` and ``WorldGenerator/sampleSurfaceLOD(from:radius:startingRadius:radiusStep:maxCellSizePower:threadCount:progressHandler:chunkHandler:)``.
 
-> Important: A `WorldGenerator` can be reused with a different seed through ``WorldGenerator/setWorldSeed(_:)``. A single generator synchronizes terrain generation internally, but individual ``ProtoChunk`` instances are not concurrency-safe.
+> Important: A `WorldGenerator` can be reused with a different seed through ``WorldGenerator/setWorldSeed(_:)``. Generation calls are concurrency-safe when they target distinct ``ProtoChunk`` instances. For repeated work, create one ``WorldGeneratorState`` per task with ``WorldGenerator/makeGenerationState()`` and pass it to the state-aware generation overloads. Do not reseed while generation is active, and do not reuse a state after reseeding the generator.
 
 ## Topics
 
@@ -48,6 +48,7 @@ For point queries, use ``WorldGenerator/sampleBlockBiome(at:in:)`` or the climat
 - ``DataPack``
 - ``DataPackRegistryLoadingOptions``
 - ``WorldGenerator``
+- ``WorldGeneratorState``
 - ``RegistryKey``
 - ``NoiseSettings``
 
