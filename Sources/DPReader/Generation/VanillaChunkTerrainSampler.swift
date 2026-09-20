@@ -139,7 +139,7 @@ private final class VanillaInterpolatedCacheStorage {
 
 private final class VanillaChunkCache2D: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
-    private let sampler: VanillaChunkTerrainSampler
+    private weak var sampler: VanillaChunkTerrainSampler!
     private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
@@ -227,7 +227,7 @@ private final class VanillaChunkBenchmarkProfilingDensityFunction: DensityFuncti
 
 private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
-    private let sampler: VanillaChunkTerrainSampler
+    private weak var sampler: VanillaChunkTerrainSampler!
     private let cacheNumber: Int
     private let startBiomeX: Int32
     private let startBiomeZ: Int32
@@ -282,7 +282,7 @@ private final class VanillaChunkFlatCache: DensityFunction, DensityFunctionWrapp
 
 private final class VanillaChunkCacheOnce: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
-    private let sampler: VanillaChunkTerrainSampler
+    private weak var sampler: VanillaChunkTerrainSampler!
     private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
@@ -344,7 +344,7 @@ private final class VanillaChunkCacheOnce: DensityFunction, VanillaChunkFillFunc
 
 private final class VanillaChunkCellCache: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     let delegate: any DensityFunction
-    private let sampler: VanillaChunkTerrainSampler
+    private weak var sampler: VanillaChunkTerrainSampler!
     private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
@@ -411,7 +411,7 @@ private final class VanillaChunkCellCache: DensityFunction, VanillaChunkFillFunc
 
 private final class VanillaChunkInterpolatedCache: DensityFunction, VanillaChunkFillFunction, DensityFunctionWrapperIntrospectable {
     private let delegate: any DensityFunction
-    private let sampler: VanillaChunkTerrainSampler
+    private weak var sampler: VanillaChunkTerrainSampler!
     private let cacheNumber: Int
 
     init(wrapping delegate: any DensityFunction, using sampler: VanillaChunkTerrainSampler) {
@@ -532,7 +532,7 @@ private final class VanillaChunkInterpolatedCache: DensityFunction, VanillaChunk
 
 private final class VanillaChunkTerrainInterpolator {
     private let delegate: any DensityFunction
-    private let sampler: VanillaChunkTerrainSampler
+    private weak var sampler: VanillaChunkTerrainSampler!
     private let horizontalCellCount: Int
     private let horizontalCellBlockCount: Int32
     private let columnSampleBlockZs: [Int32]
