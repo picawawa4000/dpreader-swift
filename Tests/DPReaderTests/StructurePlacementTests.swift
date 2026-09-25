@@ -65,6 +65,32 @@ private func cubiomesNetherComplexReferenceURL() -> URL {
     #expect(try placementSampler.validateStructureStart(for: cityKey, atChunk: actualStart, using: validationContext) != nil)
 }
 
+@Test func abandonedCampSeedNegative8709356560373516195IsReportedAt3712_2368() throws {
+    let seed: WorldSeed = 9_737_387_513_336_035_421 // -8709356560373516195
+    let pack = try DataPack(fromRootPath: URL(filePath: "vanilla/26.3-pre-1"))
+    let dimension = RegistryKey<DPReader.Dimension>(referencing: "minecraft:overworld")
+    let generator = try WorldGenerator(
+        withWorldSeed: seed,
+        usingDataPacks: [pack],
+        usingSettings: RegistryKey(referencing: "minecraft:overworld")
+    )
+    let context = try StructureStartValidationContext(
+        dimension: dimension,
+        seaLevel: 63,
+        worldGenerator: generator
+    )
+    let sampler = StructurePlacementSampler(withWorldSeed: seed, usingDataPacks: [pack])
+    let resolved = try #require(try sampler.resolveStructureSet(
+        inRegion: PosInt2D(x: 6, z: 4),
+        validatingWith: context,
+        for: RegistryKey(referencing: "minecraft:abandoned_camp")
+    ))
+
+    #expect(resolved.chunkPos == PosInt2D(x: 232, z: 148))
+    #expect(resolved.blockPos == PosInt2D(x: 3712, z: 2368))
+    #expect(resolved.structureKey == RegistryKey(referencing: "minecraft:abandoned_camp_cherry_grove"))
+}
+
 @Test func testGeneratedStructureStartHeightmapsMatchFullChunkTerrain() async throws {
     let pack = try DataPack(fromRootPath: try vanillaStructurePlacementPackURL())
     let generator = try WorldGenerator(

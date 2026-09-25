@@ -169,21 +169,37 @@ extension Structure {
             maximumY: Int32 = context.maximumWorldY &+ 1,
             preferredY: Int32 = context.seaLevel
         ) throws -> Bool {
+            try matchingBiomeInColumn(
+                x: x,
+                z: z,
+                minimumY: minimumY,
+                maximumY: maximumY,
+                preferredY: preferredY
+            ) != nil
+        }
+
+        func matchingBiomeInColumn(
+            x: Int32,
+            z: Int32,
+            minimumY: Int32 = context.minimumWorldY,
+            maximumY: Int32 = context.maximumWorldY &+ 1,
+            preferredY: Int32 = context.seaLevel
+        ) throws -> RegistryKey<Biome>? {
             let preferredQuartY = floorDiv(preferredY, by: 4)
             if let biome = try context.biome(at: PosInt3D(x: x, y: preferredQuartY &* 4, z: z)),
                allowedBiomeNames.contains(biome.name) {
-                return true
+                return biome
             }
             let minimumQuartY = floorDiv(minimumY, by: 4)
             let maximumQuartY = floorDiv(maximumY, by: 4)
-            guard minimumQuartY <= maximumQuartY else { return false }
+            guard minimumQuartY <= maximumQuartY else { return nil }
             for quartY in minimumQuartY...maximumQuartY where quartY != preferredQuartY {
                 if let biome = try context.biome(at: PosInt3D(x: x, y: quartY &* 4, z: z)),
                    allowedBiomeNames.contains(biome.name) {
-                    return true
+                    return biome
                 }
             }
-            return false
+            return nil
         }
 
         switch self.type {
@@ -348,16 +364,30 @@ extension Structure {
                 random: &random
             )
             if settings.projectStartToHeightmap != nil {
-                if !context.prefersHeightBeforeBiomeValidation {
-                    guard try biomeColumnCanMatch(
-                        x: horizontalPosition.x,
-                        z: horizontalPosition.z,
-                        minimumY: y &+ context.minimumWorldY,
-                        maximumY: y &+ context.maximumWorldY &+ 1,
-                        preferredY: y &+ context.seaLevel
-                    ) else { return nil }
+                let minimumY = y &+ context.minimumWorldY
+                let maximumY = y &+ context.maximumWorldY &+ 1
+                let preferredY = y &+ context.seaLevel
+                y &+= try context.height(
+                    .worldSurfaceWG,
+                    x: horizontalPosition.x,
+                    z: horizontalPosition.z
+                )
+                let position = PosInt3D(x: horizontalPosition.x, y: y, z: horizontalPosition.z)
+                if let biome = try context.biome(at: position), allowedBiomeNames.contains(biome.name) {
+                    return try makeValidatedStart(at: position, knownBiome: biome)
                 }
-                y &+= try context.height(.worldSurfaceWG, x: startX, z: startZ)
+                // Projected jigsaw starts can land in an underground biome when a cheap
+                // height query bottoms out at sea level. Vanilla's structure eligibility is
+                // based on the column's noise biome, so retain a matching column biome rather
+                // than dropping a valid surface structure such as an abandoned camp.
+                guard let biome = try matchingBiomeInColumn(
+                    x: horizontalPosition.x,
+                    z: horizontalPosition.z,
+                    minimumY: minimumY,
+                    maximumY: maximumY,
+                    preferredY: preferredY
+                ) else { return nil }
+                return try makeValidatedStart(at: position, knownBiome: biome)
             }
             return try makeValidatedStart(
                 at: PosInt3D(x: horizontalPosition.x, y: y, z: horizontalPosition.z)
